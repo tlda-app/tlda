@@ -30,6 +30,37 @@ export function fragmentKeyForReport(
   return report.shapeId
 }
 
+/**
+ * Per-tab resume for deck position.
+ *
+ * The navigator's current slide lives only in React state, so any reload or
+ * remount (tab death, navigation away and back, crash) restarts the deck at
+ * slide 1: the mount path reads `?slide` or defaults to the first slide and
+ * nothing ever records where the reader was. Keying the last shown index by
+ * document in sessionStorage lets a reloaded tab resume instead of resetting.
+ * sessionStorage is tab-local on purpose: no URL change, no cross-tab
+ * cross-talk, an explicit `?slide` link still wins.
+ */
+export function deckPositionKey(documentName: string): string {
+  return `tlda-deck-slide:${documentName}`
+}
+
+export function resolveInitialSlide(
+  slideParam: string | null,
+  stored: unknown,
+  totalSlides: number,
+): number {
+  const last = Math.max(0, totalSlides - 1)
+  if (slideParam !== null) {
+    const requested = Number.parseInt(slideParam, 10) - 1
+    if (!Number.isFinite(requested)) return 0
+    return Math.max(0, Math.min(requested, last))
+  }
+  const n = typeof stored === 'string' ? Number.parseInt(stored, 10) : NaN
+  if (!Number.isFinite(n)) return 0
+  return Math.max(0, Math.min(n, last))
+}
+
 export function hasUnsteppedFragments(fs: FragmentCounts | undefined): boolean {
   return !!fs && fs.current < fs.total
 }

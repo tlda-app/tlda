@@ -16,11 +16,29 @@ import type { SvgDocument } from './svgDocumentLoader'
 import { broadcastSlideFragment, broadcastSlideIndex, onSlideFragment, onSlideIndex } from './useYjsSync'
 import { getRole } from './viewerRole'
 import {
+  deckPositionKey,
   fragmentKeyForReport,
   fragmentKeyForSlide,
   nextSlideAction,
   prevSlideAction,
+  resolveInitialSlide,
 } from './slidesFragmentState'
+
+function readStoredSlide(key: string): string | null {
+  try {
+    return window.sessionStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function storeSlide(key: string, index: number): void {
+  try {
+    window.sessionStorage.setItem(key, String(index))
+  } catch {
+    // Private mode etc: resume is a convenience, never a requirement.
+  }
+}
 
 interface SlidesNavigatorProps {
   editor: Editor
@@ -212,9 +230,16 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
         editor.store.update(page.shapeId, (s) => ({ ...s, ...updates }))
       }
     }
-    const requested = Number.parseInt(new URLSearchParams(window.location.search).get('slide') || '1', 10) - 1
-    const initial = Number.isFinite(requested) ? Math.max(0, Math.min(requested, totalSlides - 1)) : 0
+    // An explicit ?slide link wins; otherwise resume this tab's last position
+    // so a reload/remount continues the deck instead of resetting to 1.
+    const positionKey = deckPositionKey(document.name)
+    const initial = resolveInitialSlide(
+      new URLSearchParams(window.location.search).get('slide'),
+      readStoredSlide(positionKey),
+      totalSlides,
+    )
     setCurrentSlide(initial)
+    storeSlide(positionKey, initial)
     navigateToSlide(editor, document, initial, false)
     window.document.body.classList.add('slides-mode')
     return () => {
@@ -226,6 +251,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   const goToSlide = useCallback((index: number, animate = true) => {
     const clamped = Math.max(0, Math.min(index, totalSlides - 1))
     setCurrentSlide(clamped)
+    storeSlide(deckPositionKey(document.name), clamped)
     navigateToSlide(editor, document, clamped, animate)
     const page = slideBoxes(document)[clamped]
     setFragmentInfo(page ? fragmentState.get(fragmentKeyForBox(page)) ?? null : null)
