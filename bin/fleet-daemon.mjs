@@ -67,7 +67,7 @@ import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
   getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs, getMintRegistrationDeadlineMs, getSourceChangeSettleDeadlineMs,
-  getOutboxInflightDeadlineMs, getOutboxFlushByteBudget, getNotificationWakeMaxAgeMs,
+  getOutboxInflightDeadlineMs, getOutboxFlushByteBudget, getNotificationWakeMaxAgeMs, getSuggestRestartCooldownMs,
   getFleetServerUrl, getServerUrl, getActiveEnvName, getRuntimeRoot,
 } from '../shared/config.mjs'
 import {
@@ -101,7 +101,7 @@ import { createGitSyncManager } from '../daemon/git-sync-manager.mjs'
 import { rebuildLinkedProject } from '../daemon/project-rebuild.mjs'
 import { resolveMintCwd } from '../daemon/mint-cwd.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
-import { actionForSymptom, notificationIsStale, performNotificationSymptomAction } from '../daemon/notification-symptom-action.mjs'
+import { actionForSymptom, notificationIsStale, performNotificationSymptomAction, suggestRestartDue } from '../daemon/notification-symptom-action.mjs'
 import {
   createJsonlProcessBindingReconciler,
   jsonlProcessBindingSignature,
@@ -1077,13 +1077,20 @@ async function rpcCheckAlive(args) {
 //   explicit refusal      -> nothing             (not a liveness fault)
 //
 // Both actions are idempotent, which is why the server keeps no memory of having
-// reported and this handler needs no deduplication: a process that is already
-// there makes `wake` a no-op, and hibernate-and-wake loses nothing — "it's just
-// a blip in the agent's running process."
+// reported: a process that is already there makes `wake` a no-op, and
+// hibernate-and-wake loses nothing — "it's just a blip in the agent's running
+// process." `suggest-restart` is the exception this paragraph used to miss: a
+// typed notice is a turn, not a no-op, so repeating it re-interrupts an agent
+// that is already told. That repeat is gated on a per-agent cooldown below.
 //
 // It delivers nothing. There is no text in the message and none is constructed
 // here: the agent comes up, calls `login()`, and the SERVER hands over the mail.
 // That is the whole reason the daemon is out of the notification path.
+
+// Last suggest-restart notice typed per agent id (ms epoch). In-memory by
+// design: a daemon restart clears it, and one extra notice per agent after a
+// restart is the bounded worst case.
+const lastSuggestRestartByAgent = new Map()
 async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }) {
   if (!agent_id) throw new Error('missing agent_id')
   if (!symptom) throw new Error('missing symptom')
@@ -1106,6 +1113,22 @@ async function rpcNotificationSymptom({ agent_id, symptom, observed_at, detail }
   if (notificationIsStale(observed_at, Date.now(), wakeMaxAgeMs)) {
     log.warn(`[notification-symptom] ${agent_id}: ${symptom} -> not acted (observed_at ${observed_at} older than ${Math.round(wakeMaxAgeMs / 60000)}m)`)
     return { ok: true, agent_id, symptom, recorded: true, acted: false, action: null, stale: true }
+  }
+
+  // A suggest-restart is a typed turn, not a no-op: repeating it faster than
+  // the agent can act re-interrupts an agent that is already told. The server
+  // reports channel-silent in bursts under load, so without this gate every
+  // burst types a notice into every slow pane. Daemon restart clears the map;
+  // worst case is one extra notice per agent after a restart.
+  if (actionForSymptom(symptom) === 'suggest-restart') {
+    const cooldownMs = getSuggestRestartCooldownMs()
+    const lastSuggestMs = lastSuggestRestartByAgent.get(agent_id) || 0
+    if (!suggestRestartDue(lastSuggestMs, Date.now(), cooldownMs)) {
+      const agoMin = Math.round((Date.now() - lastSuggestMs) / 60000)
+      log.warn(`[notification-symptom] ${agent_id}: ${symptom} -> not acted (suggest-restart on cooldown, last suggest ${agoMin}m ago)`)
+      return { ok: true, agent_id, symptom, recorded: true, acted: false, action: null, cooldown: true }
+    }
+    lastSuggestRestartByAgent.set(agent_id, Date.now())
   }
 
   try {

@@ -59,6 +59,19 @@ export function notificationIsStale(observedAt, now, maxAgeMs) {
   return (now - seen) > maxAgeMs
 }
 
+/**
+ * Whether a suggest-restart notice may be typed now. `lastSuggestMs` is when
+ * this agent last got one (0/null = never). A notice the agent has not had
+ * time to act on must not be repeated: the typed notice becomes a turn, so a
+ * repeat is not a reminder but a second interruption, and under load the
+ * repeats arrive in bursts that keep the box loaded.
+ */
+export function suggestRestartDue(lastSuggestMs, nowMs, cooldownMs) {
+  if (!cooldownMs) return true
+  if (!lastSuggestMs) return true
+  return (nowMs - lastSuggestMs) >= cooldownMs
+}
+
 export async function performNotificationSymptomAction({ symptom, ensureProcess, suggestRestart }) {
   const action = actionForSymptom(symptom)
   if (!action) return null

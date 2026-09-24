@@ -739,6 +739,22 @@ export function getNotificationWakeMaxAgeMs() {
   return ms
 }
 
+// Min interval between two suggest-restart notices typed into one agent's
+// pane. The notice asks the agent to restart its MCP — minutes of work — so
+// re-notifying faster than the agent can act is spam by construction, and
+// under load the server reports channel-silent in bursts (4 agents in 2s,
+// measured 2026-09-24), which would otherwise type a turn into every pane.
+// A duration with a unit. Absent = 30m. Omit the key to keep the default.
+export function getSuggestRestartCooldownMs() {
+  const declared = loadDaemonYaml().suggestRestartCooldown
+  if (declared === undefined || declared === null) return 30 * 60_000
+  const ms = parseDurationMs(declared)
+  if (!ms) {
+    throw new Error(`daemon.yaml: suggestRestartCooldown must be a duration WITH A UNIT (e.g. 30m, 10m); got ${JSON.stringify(declared)}`)
+  }
+  return ms
+}
+
 export function readAgentCap() {
   const cap = loadDaemonYaml().agentCap
   if (cap === undefined || cap === null) return null

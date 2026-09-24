@@ -5,6 +5,7 @@ import {
   actionForSymptom,
   NOTIFICATION_SYMPTOM_ACTION,
   performNotificationSymptomAction,
+  suggestRestartDue,
 } from './notification-symptom-action.mjs'
 
 // The table and its effectful dispatch are both covered here: a mapped action
@@ -69,4 +70,21 @@ test('a prototype key is not mistaken for a symptom', () => {
   for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
     assert.equal(actionForSymptom(key), null, `${key} must not resolve to an action`)
   }
+})
+
+// A typed notice is a turn: repeating it faster than the agent can act
+// re-interrupts an agent that is already told. Under load the server reports
+// channel-silent in bursts, so the repeat needs a per-agent cooldown.
+test('a suggest-restart is due when never sent or the cooldown elapsed', () => {
+  const cooldown = 30 * 60_000
+  assert.equal(suggestRestartDue(0, 1_000_000, cooldown), true)
+  assert.equal(suggestRestartDue(null, 1_000_000, cooldown), true)
+  assert.equal(suggestRestartDue(1_000_000, 1_000_000 + cooldown, cooldown), true)
+  assert.equal(suggestRestartDue(1_000_000, 1_000_000 + cooldown + 1, cooldown), true)
+})
+
+test('a suggest-restart inside the cooldown is not due', () => {
+  const cooldown = 30 * 60_000
+  assert.equal(suggestRestartDue(1_000_000, 1_000_000 + 1, cooldown), false)
+  assert.equal(suggestRestartDue(1_000_000, 1_000_000 + cooldown - 1, cooldown), false)
 })

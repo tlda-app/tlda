@@ -38,6 +38,9 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // file (see config/environment-variables.md §2: secrets stay env vars).
   'launchdEnv',
   'notificationWakeMaxAge',
+  // Read by getSuggestRestartCooldownMs(). Min interval between two
+  // suggest-restart notices typed into one agent's pane.
+  'suggestRestartCooldown',
   'agentCap',
   'terminalInputAllowed',
   // Named subscription sets, in the `{ default, values }` form `models:` and
