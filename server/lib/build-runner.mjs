@@ -19,6 +19,13 @@ import { promisify } from 'util'
 // JSON file is the source of truth for page geometry, and this is how the
 // server side already reads it.
 import { createDocumentManifest } from './document-manifest.mjs'
+import {
+  setBuildOutputSink,
+  getBuildOutputSink,
+  streamChildOutput,
+  describeChildFailure,
+  childFailureDetail,
+} from './incremental-qmd-build.mjs'
 const layoutConstants = JSON.parse(readFileSync(join(import.meta.dirname, '..', '..', 'shared', 'layout-constants.json'), 'utf8'))
 const _execAsync = promisify(execCb)
 // Ensure TeX binaries are available (launchd doesn't inherit full shell PATH).
@@ -154,7 +161,10 @@ async function texDiffOutput(name, shadowDir) {
  * Build-output streaming and child-failure reporting live in the shared
  * incremental engine now (`incremental-qmd-build.mjs`), which owns their only
  * render callers. Re-exported here so the worker and existing importers keep
- * their import path.
+ * their import path — alongside the import above, which is what `trackedExec`
+ * below calls. (A bare `export ... from` creates no local binding, so the
+ * import is load-bearing: without it every `run()` rejects with
+ * `ReferenceError` before its command starts.)
  */
 export {
   setBuildOutputSink,
@@ -162,7 +172,7 @@ export {
   streamChildOutput,
   describeChildFailure,
   childFailureDetail,
-} from './incremental-qmd-build.mjs'
+}
 
 export function assertLatexBuildHasNoErrors(errors) {
   if (errors.length > 0) {
