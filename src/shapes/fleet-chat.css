@@ -665,9 +665,15 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 }
 
 .fleet-chat-anchored-slice .chat-row-wrap {
-  position: absolute;
-  left: 0;
-  right: 0;
+  /* In flow at true heights: no computed position touches a visible row, so
+     a wrong estimate cannot warp rows against each other. Relative (not
+     static) keeps each row the containing block for its floating controls. */
+  position: relative;
+}
+
+.fleet-chat-anchored-spacer {
+  display: block;
+  width: 100%;
 }
 
 /* Countdown leaves keep fixed inline geometry while their text ticks. */
