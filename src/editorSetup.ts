@@ -802,22 +802,38 @@ export function anchorIdToLabel(anchorId: string): { type: string; displayLabel:
   return { type: rawType, displayLabel: `${displayType} ${number}` }
 }
 
+/**
+ * Create the document's page shapes and sweep shapes the document no longer
+ * owns. Every create*Shapes is idempotent -- existing shapes update in place
+ * and only non-expected owned shapes are deleted -- so this is safe to run
+ * again after sync hydration lands shapes that were not in the store at
+ * mount. That second run is not a courtesy: onMount fires before
+ * @tldraw/sync delivers the room snapshot, so the mount-time sweep runs
+ * against an empty store and every stale shape hydrates afterwards, unswept.
+ * Measured on qtm285-book 2026-09-24: 174 per-slide shapes alive with zero
+ * tombstones after repeated fresh-tab loads, while the one-doc page beside
+ * them carried the new URL -- the sweep ran and saw nothing.
+ */
+export function syncDocumentShapes(editor: Editor, document: SvgDocument): boolean {
+  // Create page shapes if they don't already exist (from Yjs sync)
+  if (HTML_PAGE_FORMATS.has(document.format || '')) {
+    return createHtmlShapes(editor, document)
+  } else if (document.format === 'slides') {
+    return createSlidesShapes(editor, document)
+  } else if (document.format === 'png') {
+    return createImageShapes(editor, document)
+  } else {
+    return createSvgShapes(editor, document)
+  }
+}
+
 export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   shapeIdSet: Set<TLShapeId>
   shapeIds: TLShapeId[]
   updateBounds: (bounds: any) => void
   ensurePagesAtBottom: () => void
 } {
-  // Create page shapes if they don't already exist (from Yjs sync)
-  if (HTML_PAGE_FORMATS.has(document.format || '')) {
-    createHtmlShapes(editor, document)
-  } else if (document.format === 'slides') {
-    createSlidesShapes(editor, document)
-  } else if (document.format === 'png') {
-    createImageShapes(editor, document)
-  } else {
-    createSvgShapes(editor, document)
-  }
+  syncDocumentShapes(editor, document)
 
   // Markdown parts (scratch/notes) attached to this project, if any. It
   // decides for itself which formats have parts to read.

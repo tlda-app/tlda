@@ -123,7 +123,7 @@ import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { openInEditor } from './texsync'
 import { updateReferenceDocviews } from './docviewReference'
-import { setupSvgEditor, anchorIdToLabel, type ReloadResult } from './editorSetup'
+import { setupSvgEditor, syncDocumentShapes, anchorIdToLabel, type ReloadResult } from './editorSetup'
 import * as sourceMap from './sourceMap'
 import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
 import { useCameraLink } from './hooks/useCameraLink'
@@ -1023,6 +1023,24 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   const syncStatusRef = useRef(storeWithStatus)
   syncStatusRef.current = storeWithStatus
 
+  // Reconcile page shapes once the room snapshot has landed. The mount-time
+  // sweep in setupSvgEditor runs against a pre-hydration store, so shapes the
+  // document no longer owns (deleted loader paths, renamed pages) hydrate
+  // afterwards and are never swept -- they sit beside the fresh pages until
+  // something looks at the store again. This is that look: the create path is
+  // idempotent, so re-running it only updates URLs and deletes the stale.
+  // Once per document; a room that never syncs has no remote shapes to sweep.
+  const reconciledAfterSyncRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (storeWithStatus.status !== 'synced-remote') return
+    const editor = editorRef.current
+    if (!editor || !document) return
+    const key = `${roomId}:${document.name}`
+    if (reconciledAfterSyncRef.current === key) return
+    reconciledAfterSyncRef.current = key
+    syncDocumentShapes(editor, document)
+  }, [storeWithStatus.status, roomId, document])
+
   // Override toolbar to replace note with math-note
   const overrides = useMemo(() => ({
     tools: (_editor: Editor, tools: any) => {
@@ -1528,7 +1546,9 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
           updateCameraBoundsRef.current = editorSetup.updateBounds
           ensurePagesAtBottomRef.current = editorSetup.ensurePagesAtBottom
 
-          // With @tldraw/sync, the store already has synced shapes when onMount fires.
+          // onMount fires BEFORE @tldraw/sync delivers the room snapshot -- the
+          // store here is pre-hydration, and the post-sync reconcile effect
+          // above re-runs the create/sweep pass once 'synced-remote' lands.
           // Ensure page backgrounds are at the bottom of the z-order.
           editorSetup.ensurePagesAtBottom()
 
