@@ -15,14 +15,26 @@ import { type Editor } from 'tldraw'
 import type { SvgDocument } from './svgDocumentLoader'
 import { broadcastSlideFragment, broadcastSlideIndex, onSlideFragment, onSlideIndex } from './useYjsSync'
 import { getRole } from './viewerRole'
+import {
+  fragmentKeyForReport,
+  fragmentKeyForSlide,
+  nextSlideAction,
+  prevSlideAction,
+} from './slidesFragmentState'
 
 interface SlidesNavigatorProps {
   editor: Editor
   document: SvgDocument
 }
 
-// Fragment state per slide, keyed by shape ID
+// Fragment state per slide. A deck shares ONE shapeId across every slide, so the
+// key is shape + reveal address (see slidesFragmentState); one shape per slide
+// documents keep the plain shapeId key.
 const fragmentState = new Map<string, { total: number; current: number }>()
+
+function fragmentKeyForBox(box: { shapeId: string; indexh?: number; indexv?: number }): string {
+  return fragmentKeyForSlide(box.shapeId, box.indexh, box.indexv)
+}
 
 /** Navigate camera to center on a specific slide */
 /**
@@ -118,8 +130,8 @@ function stepFragment(shapeId: string, direction: 'next' | 'prev'): boolean {
   return true
 }
 
-function reconcileFragment(shapeId: string, targetCurrent: number): boolean {
-  const fs = fragmentState.get(shapeId)
+function reconcileFragment(shapeId: string, key: string, targetCurrent: number): boolean {
+  const fs = fragmentState.get(key)
   if (!fs) return false
   const delta = targetCurrent - fs.current
   if (delta === 0) return true
@@ -138,19 +150,28 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   const pendingRemoteFragmentsRef = useRef(new Map<string, number>())
   const applyingRemoteFragmentRef = useRef(false)
   const applyingRemoteSlideRef = useRef(false)
+  // The viewer's current slide key for incoming fragment sync (no address on
+  // the wire, so the slide being shown is the one the signal is for).
+  const currentKeyRef = useRef<string | null>(null)
+  useEffect(() => {
+    const here = slideBoxes(document)[currentSlide]
+    currentKeyRef.current = here ? fragmentKeyForBox(here) : null
+  }, [document, currentSlide])
   // Listen for fragment state reports from iframes
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (e.data?.type === 'tlda-fragment-state') {
         const { shapeId, current, total } = e.data
-        fragmentState.set(shapeId, { total, current })
-        const pending = pendingRemoteFragmentsRef.current.get(shapeId)
+        const boxes = slideBoxes(document)
+        const key = fragmentKeyForReport(e.data, boxes.some(b => b.indexh !== undefined))
+        fragmentState.set(key, { total, current })
+        const pending = pendingRemoteFragmentsRef.current.get(key)
         if (pending !== undefined && pending !== current) {
-          if (reconcileFragment(shapeId, pending)) return
+          if (reconcileFragment(shapeId, key, pending)) return
         }
-        pendingRemoteFragmentsRef.current.delete(shapeId)
-        const pageIndex = document.pages.findIndex(page => page.shapeId === shapeId)
-        if (pageIndex === currentSlide) {
+        pendingRemoteFragmentsRef.current.delete(key)
+        const here = boxes[currentSlide]
+        if (here && key === fragmentKeyForBox(here)) {
           setFragmentInfo({ current, total })
           if (!applyingRemoteFragmentRef.current && getRole() === 'presenter') {
             broadcastSlideFragment(shapeId, current, total)
@@ -165,11 +186,12 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   useEffect(() => {
     return onSlideFragment((signal) => {
       if (getRole() !== 'viewer') return
+      const key = currentKeyRef.current ?? signal.shapeId
       applyingRemoteFragmentRef.current = true
-      pendingRemoteFragmentsRef.current.set(signal.shapeId, signal.current)
-      const applied = reconcileFragment(signal.shapeId, signal.current)
+      pendingRemoteFragmentsRef.current.set(key, signal.current)
+      const applied = reconcileFragment(signal.shapeId, key, signal.current)
       if (applied) {
-        const fs = fragmentState.get(signal.shapeId)
+        const fs = fragmentState.get(key)
         if (fs) {
           setFragmentInfo({ current: signal.current, total: signal.total })
         }
@@ -206,7 +228,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     setCurrentSlide(clamped)
     navigateToSlide(editor, document, clamped, animate)
     const page = slideBoxes(document)[clamped]
-    setFragmentInfo(page ? fragmentState.get(page.shapeId) ?? null : null)
+    setFragmentInfo(page ? fragmentState.get(fragmentKeyForBox(page)) ?? null : null)
     const shapeId = getDeckSyncShapeId(document)
     if (!applyingRemoteSlideRef.current && shapeId && getRole() === 'presenter') {
       broadcastSlideIndex(shapeId, clamped)
@@ -235,31 +257,32 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   }, [document, goToSlide])
 
   const handleNext = useCallback(() => {
-    const shapeId = slideBoxes(document)[currentSlide]?.shapeId
-    if (!shapeId) return
-    // Try advancing fragment first
-    const fs = fragmentState.get(shapeId)
-    if (fs && fs.current < fs.total) {
-      stepFragment(shapeId, 'next')
+    const box = slideBoxes(document)[currentSlide]
+    if (!box) return
+    // Fragments first, but only this slide's own: another slide's unstepped
+    // fragments must never hold the camera back.
+    const action = nextSlideAction(fragmentState, fragmentKeyForBox(box), currentSlide, totalSlides)
+    if (action === 'step-fragment') {
+      stepFragment(box.shapeId, 'next')
       return
     }
     // No more fragments — go to next slide
-    if (currentSlide < totalSlides - 1) {
+    if (action === 'advance-slide') {
       goToSlide(currentSlide + 1)
     }
   }, [currentSlide, totalSlides, document, goToSlide])
 
   const handlePrev = useCallback(() => {
-    const shapeId = slideBoxes(document)[currentSlide]?.shapeId
-    if (!shapeId) return
-    // Try going back a fragment first
-    const fs = fragmentState.get(shapeId)
-    if (fs && fs.current > 0) {
-      stepFragment(shapeId, 'prev')
+    const box = slideBoxes(document)[currentSlide]
+    if (!box) return
+    // Try going back a fragment first — this slide's own only
+    const action = prevSlideAction(fragmentState, fragmentKeyForBox(box), currentSlide)
+    if (action === 'step-fragment') {
+      stepFragment(box.shapeId, 'prev')
       return
     }
     // No more fragments back — go to prev slide
-    if (currentSlide > 0) {
+    if (action === 'retreat-slide') {
       goToSlide(currentSlide - 1)
     }
   }, [currentSlide, document, goToSlide])
