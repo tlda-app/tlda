@@ -62,9 +62,12 @@ export function DeckMidLevel({ shape }: { shape: DeckMidLevelShape }) {
     void load()
     return () => { live = false; controller.abort() }
   }, [shape.props.url])
-  // Canvas-space text shrinks with the zoom; sizing against it keeps titles
-  // at a readable ~13 screen px across the mid band.
-  const titlePx = 13 / Math.max(zoom, SPATIAL_MAP_ZOOM)
+  // Canvas-space lengths shrink with the zoom; sizing against it keeps
+  // titles, padding, and the cell hairline constant in screen px.
+  const z = Math.max(zoom, SPATIAL_MAP_ZOOM)
+  const titlePx = 13 / z
+  const padPx = 10 / z
+  const hairPx = 1.2 / z
   return (
     <HTMLContainer>
       <div
@@ -81,6 +84,7 @@ export function DeckMidLevel({ shape }: { shape: DeckMidLevelShape }) {
               top: cell.rect.y,
               width: cell.rect.width,
               height: cell.rect.height,
+              boxShadow: `inset 0 0 0 ${hairPx}px color-mix(in srgb, currentColor 22%, transparent)`,
             }}
             onPointerDown={(event) => stopEventPropagation(event)}
             onClick={() => {
@@ -93,7 +97,12 @@ export function DeckMidLevel({ shape }: { shape: DeckMidLevelShape }) {
             }}
             title={cell.title}
           >
-            <span className="deck-mid-cell-title" style={{ fontSize: titlePx }}>{cell.title}</span>
+            <span
+              className="deck-mid-cell-title"
+              style={{ fontSize: titlePx, top: padPx, left: padPx, right: padPx }}
+            >
+              {cell.title}
+            </span>
           </button>
         ))}
       </div>
