@@ -12,7 +12,7 @@ import { soleOwnedRuntime } from '../process-tree.mjs'
 
 const execFileP = promisify(execFile)
 
-export const loginPrompt = () => `${SYSTEM_MARKER} Call mcp__tlda__login exactly once, then mcp__tlda__inbox exactly once. Stop after those results or the first error. Do not call any other tools.`
+export const loginPrompt = () => `${SYSTEM_MARKER} Call mcp__tlda__login with the tlda MCP server. Then call mcp__tlda__inbox to check for a pending task.`
 
 export const capabilities = Object.freeze({
   headlessJson: true,
