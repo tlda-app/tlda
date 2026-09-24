@@ -158,6 +158,7 @@ export function createRemoteTransport({
   connect = url => new WebSocket(url, { headers: { authorization: `Bearer ${token}` } }),
   fetchImpl = fetch,
   logError = console.error,
+  cancelTimeoutMs = 30_000,
 } = {}) {
   if (!executorUrl) throw new Error('a remote build transport requires an executor URL')
   if (typeof readProject !== 'function') throw new Error('a remote build transport requires readProject')
@@ -169,6 +170,7 @@ export function createRemoteTransport({
       let socket = null
       let cancelled = false
       let finished = false
+      let cancelTimer = null
       const staged = []
 
       // One exit, whatever killed the build. A transport that can fail while
@@ -196,6 +198,10 @@ export function createRemoteTransport({
       const finish = (code, signal, output) => {
         if (finished) return
         finished = true
+        if (cancelTimer) {
+          clearTimeout(cancelTimer)
+          cancelTimer = null
+        }
         Promise.all(staged.map(dir => rm(dir, { recursive: true, force: true }).catch(() => {})))
           .then(() => onExit(code, signal, output || ''))
       }
@@ -313,7 +319,24 @@ export function createRemoteTransport({
           // The executor kills its worker and answers with `exit`. If it is
           // already gone, the socket's own close settles this instead — which is
           // why `finish` is idempotent rather than relying on one of the two.
-          if (socket?.readyState !== WebSocket.OPEN) finish(null, 'SIGTERM', `remote build for ${job.name} was cancelled with no executor connection`)
+          if (socket?.readyState !== WebSocket.OPEN) {
+            finish(null, 'SIGTERM', `remote build for ${job.name} was cancelled with no executor connection`)
+            return
+          }
+          // Wedged, not gone: the socket is open and the executor answers
+          // nothing — no `exit`, no close. Without a bound here the queue
+          // holds this build's slot until the server restarts, which is how
+          // corpse builds starve admitted jobs while each edit still logs as
+          // admitted. Settle locally when the wait outlasts the executor's
+          // plausible kill time; an answer that lands first still wins through
+          // `finish`'s idempotence.
+          if (cancelTimer) clearTimeout(cancelTimer)
+          cancelTimer = setTimeout(() => {
+            cancelTimer = null
+            try { socket?.close?.() } catch { /* already closing */ }
+            finish(null, 'SIGTERM', `remote build for ${job.name} left its cancel unanswered for ${Math.round(cancelTimeoutMs / 1000)}s; settling locally and releasing its slot`)
+          }, Math.max(1, cancelTimeoutMs))
+          cancelTimer.unref?.()
         },
         get cancelled() { return cancelled },
       }
