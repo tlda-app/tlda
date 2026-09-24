@@ -1569,6 +1569,85 @@ async function waitForMuseComposer(sessionName, timeoutMs, predicate) {
   }
 }
 
+// Queued-for-idle notices, one pending wake per pane. A notice that arrives
+// while the agent is mid-turn, still booting, or composing its own draft is
+// HELD, never dropped: the watcher below delivers it when the composer
+// frees. Latest content wins -- the notice is a wake pointing at inbox(),
+// which holds every message, so an older pointer carries nothing a newer
+// one lacks. Dropping here used to be silent (`return false`, mail waits),
+// which reads from the outside as the agent never getting its text.
+const MUSE_IDLE_POLL_MS = 2000;
+const musePendingNotice = new Map();
+const museIdleWatchers = new Set();
+
+function museNoticeQueuedError(sessionName) {
+  const err = new Error(`agent busy in ${sessionName}; notice queued for idle delivery`);
+  err.code = 'MUSE_NOTICE_QUEUED';
+  return err;
+}
+
+async function runMuseIdleWatcher(sessionName) {
+  try {
+    for (;;) {
+      let region = null;
+      try {
+        region = museComposerRegion(await tmuxCapturePane(sessionName));
+      } catch {
+        // Pane gone: the agent's process went with it, and the queued
+        // pointer dies in this sidecar -- but the reconnect flush on the
+        // next process says how much is waiting, so the wake survives.
+        musePendingNotice.delete(sessionName);
+        return;
+      }
+      if (region !== null && museSquatterKind(museComposerText(region)) !== 'foreign') {
+        const pending = musePendingNotice.get(sessionName);
+        musePendingNotice.delete(sessionName);
+        if (pending !== undefined) {
+          try {
+            await submitMuseNoticeChained(sessionName, pending);
+          } catch (e) {
+            // Raced a new turn after the poll saw idle: the submitter
+            // re-queued, so keep watching rather than exiting.
+            if (e?.code === 'MUSE_NOTICE_QUEUED') continue;
+            process.stderr.write(`[fleet-channel] queued notice for ${sessionName} failed: ${e.message}\n`);
+            return;
+          }
+        }
+        return;
+      }
+      await new Promise(resolve => { const t = setTimeout(resolve, MUSE_IDLE_POLL_MS); t.unref?.(); });
+    }
+  } finally {
+    museIdleWatchers.delete(sessionName);
+    // A notice that landed while the watcher was submitting re-arms it.
+    if (musePendingNotice.has(sessionName)) queueMuseNoticeForIdle(sessionName, musePendingNotice.get(sessionName));
+  }
+}
+
+function queueMuseNoticeForIdle(sessionName, content) {
+  musePendingNotice.set(sessionName, content);
+  if (museIdleWatchers.has(sessionName)) return;
+  museIdleWatchers.add(sessionName);
+  void runMuseIdleWatcher(sessionName).catch(e => {
+    process.stderr.write(`[fleet-channel] idle watcher for ${sessionName} died: ${e?.message || e}\n`);
+  });
+}
+
+// One submit flow per pane at a time. Notices arrive concurrently (the
+// channel handler is detached), and two flows typing at once would fuse
+// into one franken-turn. The chain serializes whole submit flows.
+const museDeliveryChains = new Map();
+function submitMuseNoticeChained(sessionName, content) {
+  const prev = museDeliveryChains.get(sessionName) || Promise.resolve();
+  const next = prev.catch(() => {}).then(() => tmuxSubmitTextVerified(sessionName, content));
+  museDeliveryChains.set(sessionName, next);
+  const release = () => { if (museDeliveryChains.get(sessionName) === next) museDeliveryChains.delete(sessionName); };
+  // A submitted wake subsumes any queued pointer: the agent is about to read
+  // its whole inbox, so a second turn would be pure noise.
+  next.then(ok => { if (ok === true) musePendingNotice.delete(sessionName); release(); }, release);
+  return next;
+}
+
 async function tmuxSubmitTextVerified(sessionName, text) {
   const line = String(text || '').replace(/\s*\n\s*/g, ' · ').trim();
   if (!line) return false;
@@ -1576,15 +1655,21 @@ async function tmuxSubmitTextVerified(sessionName, text) {
   // Hygiene BEFORE typing: never pile onto a squatter, never type blind.
   // The composer is WAITED for, not snapshotted: a pane still booting (trust
   // dialog, MCP startup, slow runtime -- node took 1-3s to first output on a
-  // loaded box, measured 2026-09-24) has no prompt line YET, and declining
-  // instantly would drop every notice during boot. No composer at all after
-  // the wait (a mid-turn render with no prompt line) declines rather than
-  // throws -- the agent is alive and working, the mail waits in inbox(), and
-  // typing now would land inside the turn.
+  // loaded box, measured 2026-09-24) has no prompt line YET. No composer at
+  // all after the wait (a mid-turn render with no prompt line), or a foreign
+  // squatter (the agent's own unfinished draft), QUEUES rather than declines
+  // -- typing now would land inside the turn or destroy work, and declining
+  // would silently drop the wake. The watcher above delivers on idle.
   const before = await museFirstComposer(sessionName, MUSE_TYPE_TIMEOUT_MS);
-  if (before === null) return false;
+  if (before === null) {
+    queueMuseNoticeForIdle(sessionName, text);
+    throw museNoticeQueuedError(sessionName);
+  }
   const squatter = museSquatterKind(museComposerText(before));
-  if (squatter === 'foreign') return false;
+  if (squatter === 'foreign') {
+    queueMuseNoticeForIdle(sessionName, text);
+    throw museNoticeQueuedError(sessionName);
+  }
   if (squatter === 'stale-notice') {
     execFileSync('tmux', ['send-keys', '-t', sessionName, 'C-u'], { timeout: 5000 });
     const replaced = await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS,
@@ -1617,7 +1702,7 @@ function submitNotificationIntoMusePane(content) {
     process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for terminal notification\n');
     return false;
   }
-  return tmuxSubmitTextVerified(sess, content);
+  return submitMuseNoticeChained(sess, content);
 }
 
 const AGY_NOTIFY_TYPE_TIMEOUT_MS = 30000;
@@ -6485,13 +6570,17 @@ async function handleChannelMessage(msg) {
   if (delivered && wakeAckId && isDirectTarget) {
     await acknowledgeWakeChannelNotice(agentId, wakeAckId);
   } else if (!delivered && wakeAckId && isDirectTarget) {
+    // Queued is a refusal with a future: the wake is held for idle, not
+    // dropped, and the reason says so. A refusal provokes no remedy.
+    const queued = deliveryError?.code === 'MUSE_NOTICE_QUEUED';
+    if (queued) process.stderr.write(`[fleet-channel] notice for ${agentId} queued for idle delivery\n`);
     await refuseWakeChannelNotice(
       agentId,
       wakeAckId,
-      deliveryError ? `channel-error: ${deliveryError.message}` : 'channel-declined',
+      queued ? 'channel-queued' : (deliveryError ? `channel-error: ${deliveryError.message}` : 'channel-declined'),
     );
   }
-  if (deliveryError) throw deliveryError;
+  if (deliveryError && deliveryError.code !== 'MUSE_NOTICE_QUEUED') throw deliveryError;
   if (delivered && eventId) {
     _deliveredChannelIds.add(eventId);
     setTimeout(() => _deliveredChannelIds.delete(eventId), CHANNEL_DEDUP_TTL_MS).unref?.();

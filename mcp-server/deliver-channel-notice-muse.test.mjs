@@ -377,63 +377,234 @@ test('a stale notice in the composer is replaced, not piled onto', { skip: skipW
   }
 })
 
-// The agent's own unfinished thought is not ours to touch. Clearing it would
-// destroy work and appending to it would submit a franken-turn, so delivery
-// declines (false, not a throw) and the pane is left exactly as found.
-test('foreign composer text declines delivery without touching the pane', { skip: skipWithoutTmux }, async () => {
-  const session = `muse-notice-foreign-${process.pid}`
+// The agent's own unfinished thought is not ours to touch -- but it is also
+// not a reason to drop the wake. Delivery QUEUES (a coded throw the channel
+// handler answers as `channel-queued`, never silent): the pane is left
+// exactly as found, and when the agent submits its draft the watcher
+// delivers the notice behind it. The draft must survive intact and the two
+// must not fuse.
+const FOREIGN_THEN_IDLE_PANE = `
+process.stdin.setRawMode(true)
+let buf = 'agent draft here'
+process.stdout.write('❯ ' + buf)
+process.stdin.on('data', d => {
+  for (const ch of d.toString('utf8')) {
+    if (ch === '\\x15') {
+      buf = ''
+      process.stdout.write('\\r❯ \\x1b[K')
+    } else if (ch === '\\r' || ch === '\\n') {
+      process.stdout.write('\\r\\n${PANE_MARKER}' + buf + '\\r\\n❯ ')
+      buf = ''
+    } else {
+      buf += ch
+      process.stdout.write(ch)
+    }
+  }
+})
+setTimeout(() => process.exit(0), 60000)
+`
+
+function startForeignThenIdlePane(name) {
+  const script = join(mkdtempSync(join(tmpdir(), 'muse-foreign-pane-')), 'pane.mjs')
+  writeFileSync(script, FOREIGN_THEN_IDLE_PANE)
+  execFileSync('tmux', ['new-session', '-d', '-s', name, 'sh', '-c', `stty -echo; exec ${process.execPath} ${script}`], { timeout: 5000 })
+  execFileSync('sleep', ['0.5'])
+}
+
+async function waitForPane(session, predicate, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const pane = capture(session)
+    if (predicate(pane)) return pane
+    if (Date.now() >= deadline) throw new Error(`pane ${session} never satisfied predicate within ${timeoutMs}ms; last capture:\n${pane}`)
+    await new Promise(resolve => setTimeout(resolve, 500))
+  }
+}
+
+function useMusePane(session) {
   const previousHarness = process.env.FLEET_HARNESS
   const previousSession = process.env.FLEET_TMUX_SESSION
-  execFileSync('tmux', [
-    'new-session', '-d', '-s', session,
-    'sh', '-c', `printf '❯ agent draft here'; sleep 30`,
-  ], { timeout: 5000 })
-  execFileSync('sleep', ['0.3'])
   process.env.FLEET_HARNESS = 'muse'
   process.env.FLEET_TMUX_SESSION = session
-
-  try {
-    const delivered = await deliverChannelNotice(NOTICE, { event_type: 'chat' })
-    assert.equal(delivered, false)
-
-    const pane = capture(session)
-    assert.match(pane, /agent draft here/)
-    assert.doesNotMatch(pane, /muse channel notice/)
-  } finally {
+  return () => {
     if (previousHarness === undefined) delete process.env.FLEET_HARNESS
     else process.env.FLEET_HARNESS = previousHarness
     if (previousSession === undefined) delete process.env.FLEET_TMUX_SESSION
     else process.env.FLEET_TMUX_SESSION = previousSession
     killPane(session)
   }
-})
+}
 
-// No composer at all (a mid-turn render with no prompt line) declines rather
-// than typing blind into the live turn.
-test('a pane with no composer declines without typing', { skip: skipWithoutTmux }, async () => {
-  const session = `muse-notice-nocomposer-${process.pid}`
-  const previousHarness = process.env.FLEET_HARNESS
-  const previousSession = process.env.FLEET_TMUX_SESSION
-  execFileSync('tmux', [
-    'new-session', '-d', '-s', session,
-    'sh', '-c', `printf '◇ Thinking (esc to interrupt)'; sleep 30`,
-  ], { timeout: 5000 })
-  execFileSync('sleep', ['0.3'])
-  process.env.FLEET_HARNESS = 'muse'
-  process.env.FLEET_TMUX_SESSION = session
+async function assertQueued(promise) {
+  const err = await promise.then(
+    () => { throw new Error('expected delivery to queue, but it returned') },
+    (e) => e,
+  )
+  assert.equal(err?.code, 'MUSE_NOTICE_QUEUED')
+  assert.match(String(err?.message || ''), /queued for idle delivery/)
+}
+
+test('foreign composer text queues and delivers behind the draft', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-notice-foreign-${process.pid}`
+  startForeignThenIdlePane(session)
+  const restore = useMusePane(session)
 
   try {
-    const delivered = await deliverChannelNotice(NOTICE, { event_type: 'chat' })
-    assert.equal(delivered, false)
+    await assertQueued(deliverChannelNotice(NOTICE, { event_type: 'chat' }))
+
+    let pane = capture(session)
+    assert.match(pane, /agent draft here/)
+    assert.doesNotMatch(pane, /muse channel notice/)
+
+    // The agent submits its own draft; the queued wake follows it.
+    execFileSync('tmux', ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    pane = await waitForPane(session, (text) => {
+      const markers = text.split('\n').filter(l => l.includes(PANE_MARKER))
+      return markers.length >= 2
+    })
+    const markers = pane.split('\n').filter(l => l.includes(PANE_MARKER))
+    assert.match(markers[0], /agent draft here/)
+    assert.doesNotMatch(markers[0], /muse channel notice/)
+    assert.match(markers[1], /muse channel notice/)
+    assert.doesNotMatch(markers[1], /agent draft here/)
+  } finally {
+    restore()
+  }
+})
+
+// No composer at all (a mid-turn render with no prompt line) queues rather
+// than typing blind into the live turn -- and delivers when the turn ends.
+// The fixture flips on a trigger file so the timing is deterministic: queue
+// first (past the initial composer wait), then flip, then the wake lands.
+const BUSY_THEN_IDLE_PANE = `
+const fs = require('fs')
+const trigger = process.argv[2]
+process.stdin.setRawMode(true)
+let buf = ''
+let idle = false
+process.stdout.write('◇ Thinking (esc to interrupt)')
+const timer = setInterval(() => {
+  if (!idle && fs.existsSync(trigger)) {
+    idle = true
+    // Clear the whole line: a bare \\r would leave 'Thinking...' sitting on
+    // the fresh prompt, which rightly reads as a foreign squatter.
+    process.stdout.write('\\r❯ \\x1b[K')
+  }
+}, 200)
+process.stdin.on('data', d => {
+  for (const ch of d.toString('utf8')) {
+    if (!idle) continue
+    if (ch === '\\x15') {
+      buf = ''
+      process.stdout.write('\\r❯ \\x1b[K')
+    } else if (ch === '\\r' || ch === '\\n') {
+      process.stdout.write('\\r\\n${PANE_MARKER}' + buf + '\\r\\n❯ ')
+      buf = ''
+    } else {
+      buf += ch
+      process.stdout.write(ch)
+    }
+  }
+})
+setTimeout(() => process.exit(0), 60000)
+`
+
+function startBusyThenIdlePane(name) {
+  const dir = mkdtempSync(join(tmpdir(), 'muse-busy-pane-'))
+  // .cjs, not .mjs: this is the one fixture that needs require('fs') for its
+  // trigger file, and require is undefined in ESM -- a crashed fixture holds
+  // no prompt glyph, so the queue half of the test would pass vacuously and
+  // the delivery half would time out. (Measured, not theorized.)
+  const script = join(dir, 'pane.cjs')
+  const trigger = join(dir, 'idle')
+  writeFileSync(script, BUSY_THEN_IDLE_PANE)
+  execFileSync('tmux', ['new-session', '-d', '-s', name, 'sh', '-c', `stty -echo; exec ${process.execPath} ${script} ${trigger}`], { timeout: 5000 })
+  execFileSync('sleep', ['0.5'])
+  return { trigger }
+}
+
+test('a pane with no composer queues and delivers on idle', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-notice-nocomposer-${process.pid}`
+  const { trigger } = startBusyThenIdlePane(session)
+  const restore = useMusePane(session)
+
+  try {
+    await assertQueued(deliverChannelNotice(NOTICE, { event_type: 'chat' }))
+
+    let pane = capture(session)
+    assert.match(pane, /Thinking \(esc to interrupt\)/)
+    assert.doesNotMatch(pane, /muse channel notice/)
+
+    writeFileSync(trigger, 'idle')
+    pane = await waitForPane(session, (text) => text.includes(PANE_MARKER))
+    assert.match(pane, new RegExp(`${PANE_MARKER}.*muse channel notice`))
+  } finally {
+    restore()
+  }
+})
+
+// Two wakes queued while busy collapse to ONE submission carrying the latest:
+// the notice is a pointer at inbox(), which holds every message, so the
+// older pointer adds nothing and a second turn would be pure noise.
+test('two queued notices collapse to one latest-wins delivery', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-notice-collapse-${process.pid}`
+  const { trigger } = startBusyThenIdlePane(session)
+  const restore = useMusePane(session)
+
+  try {
+    const first = '📬 muse channel notice firstevent'
+    const second = '📬 muse channel notice secondevent'
+    await assertQueued(deliverChannelNotice(first, { event_type: 'chat' }))
+    await assertQueued(deliverChannelNotice(second, { event_type: 'chat' }))
+
+    assert.match(capture(session), /Thinking \(esc to interrupt\)/)
+
+    writeFileSync(trigger, 'idle')
+    const pane = await waitForPane(session, (text) => text.includes(PANE_MARKER))
+    const markers = pane.split('\n').filter(l => l.includes(PANE_MARKER))
+    assert.equal(markers.length, 1)
+    assert.match(markers[0], /secondevent/)
+    assert.doesNotMatch(markers[0], /firstevent/)
+  } finally {
+    restore()
+  }
+})
+
+// Two concurrent delivers to an idle pane serialize whole submit flows: both
+// submit, in call order, with no fused line. Without the chain the two type
+// at once and the marker carries a franken-turn.
+function startMultiLinePane(name) {
+  execFileSync('tmux', [
+    'new-session', '-d', '-s', name,
+    'sh', '-c', `printf '❯ '; while read line; do echo "${PANE_MARKER}$line"; printf '❯ '; done; sleep 30`,
+  ], { timeout: 5000 })
+  execFileSync('sleep', ['0.3'])
+}
+
+test('concurrent delivers serialize without fusing', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-notice-mutex-${process.pid}`
+  startMultiLinePane(session)
+  const restore = useMusePane(session)
+
+  try {
+    const first = '📬 muse channel notice alpha001'
+    const second = '📬 muse channel notice beta002'
+    const [a, b] = await Promise.all([
+      deliverChannelNotice(first, { event_type: 'chat' }),
+      deliverChannelNotice(second, { event_type: 'chat' }),
+    ])
+    assert.equal(a, true)
+    assert.equal(b, true)
 
     const pane = capture(session)
-    assert.doesNotMatch(pane, /muse channel notice/)
+    const markers = pane.split('\n').filter(l => l.includes(PANE_MARKER))
+    assert.equal(markers.length, 2)
+    assert.match(markers[0], /alpha001/)
+    assert.doesNotMatch(markers[0], /beta002/)
+    assert.match(markers[1], /beta002/)
+    assert.doesNotMatch(markers[1], /alpha001/)
   } finally {
-    if (previousHarness === undefined) delete process.env.FLEET_HARNESS
-    else process.env.FLEET_HARNESS = previousHarness
-    if (previousSession === undefined) delete process.env.FLEET_TMUX_SESSION
-    else process.env.FLEET_TMUX_SESSION = previousSession
-    killPane(session)
+    restore()
   }
 })
 
