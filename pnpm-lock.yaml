@@ -211,6 +211,9 @@ importers:
       '@opentelemetry/sdk-node':
         specifier: ^0.220.0
         version: 0.220.0(@opentelemetry/api@1.9.1)(supports-color@7.2.0)
+      '@playwright/mcp':
+        specifier: 0.0.82
+        version: 0.0.82
       '@replit/codemirror-vim':
         specifier: ^6.3.0
         version: 6.4.0(@codemirror/commands@6.10.4)(@codemirror/language@6.12.4)(@codemirror/search@6.7.1)(@codemirror/state@6.7.1)(@codemirror/view@6.43.7)
@@ -1514,6 +1517,11 @@ packages:
 
   '@playwright/cli@0.1.17':
     resolution: {integrity: sha512-VBw6y3p8eqOqmjKg07IkWSPGKJkpIhMRNDFI6DOYsDD6fAfcI1XYEWMLWyhSZQ0B/Oc2KN49eq4XqE64PUPHBg==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  '@playwright/mcp@0.0.82':
+    resolution: {integrity: sha512-OCqftfb8H4dnqm/njbTBRk3seUvUPttOlJUxCtEzXGETYOlRH5Qt3bbXIjmZIuWAxD9RF+yg1ASrPeXvm0y5cA==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -4253,6 +4261,11 @@ packages:
     engines: {node: '>=20'}
     hasBin: true
 
+  playwright-core@1.64.0-alpha-1789764292000:
+    resolution: {integrity: sha512-ZgRaybFv4rRy7QMGnYprEGFdNJnvapNqcaER2w96bDQA+40BWIle1el1Yh9KHD3E6XYmieMB+r+UxFTCauTGGQ==}
+    engines: {node: '>=20'}
+    hasBin: true
+
   playwright@1.62.0:
     resolution: {integrity: sha512-Z14dG305dgaLu6foB1TXQagFiW8JfSUIUaUuPaKQ6NtBPKF1P/qXcqfh6c6K/icPqdy37JmjbiBXf6JNg6Sylw==}
     engines: {node: '>=20'}
@@ -4260,6 +4273,11 @@ packages:
 
   playwright@1.62.0-alpha-1783623505000:
     resolution: {integrity: sha512-6KV9h4PP3hqu4NaGdxxcijWfYh9LJcFI/R2sP4TTC4I5cFo3oRawN0ETlW5MkE3cQEgKhhoj0KUNz4sfpCT0Tg==}
+    engines: {node: '>=20'}
+    hasBin: true
+
+  playwright@1.64.0-alpha-1789764292000:
+    resolution: {integrity: sha512-3Ngs4ERGdC912uW3srEDtNVey4u1wSaQ/EFcKhxMpz0by0K6nidaJgM087pLpJc1osytiVnL7ack5gvgPArPNw==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -6422,6 +6440,11 @@ snapshots:
     dependencies:
       playwright: 1.62.0-alpha-1783623505000
       playwright-core: 1.62.0-alpha-1783623505000
+
+  '@playwright/mcp@0.0.82':
+    dependencies:
+      playwright: 1.64.0-alpha-1789764292000
+      playwright-core: 1.64.0-alpha-1789764292000
 
   '@protobufjs/aspromise@1.1.2': {}
 
@@ -9321,6 +9344,8 @@ snapshots:
 
   playwright-core@1.62.0-alpha-1783623505000: {}
 
+  playwright-core@1.64.0-alpha-1789764292000: {}
+
   playwright@1.62.0:
     dependencies:
       playwright-core: 1.62.0
@@ -9332,6 +9357,10 @@ snapshots:
       playwright-core: 1.62.0-alpha-1783623505000
     optionalDependencies:
       fsevents: 2.3.2
+
+  playwright@1.64.0-alpha-1789764292000:
+    dependencies:
+      playwright-core: 1.64.0-alpha-1789764292000
 
   points-on-curve@0.2.0: {}
 

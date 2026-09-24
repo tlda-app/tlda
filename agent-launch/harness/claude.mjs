@@ -49,8 +49,8 @@ function mcpConfig() {
       },
       playwright: {
         type: 'stdio',
-        command: 'npx',
-        args: ['-y', '@playwright/mcp'],
+        command: process.execPath,
+        args: [path.join(repoRoot(), 'node_modules', '@playwright', 'mcp', 'cli.js')],
       },
     },
   }

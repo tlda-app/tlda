@@ -40,6 +40,7 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.220.0",
     "@opentelemetry/sdk-metrics": "^2.9.0",
     "@opentelemetry/sdk-node": "^0.220.0",
+    "@playwright/mcp": "0.0.82",
     "@replit/codemirror-vim": "^6.3.0",
     "@tanstack/react-virtual": "^3.13.23",
     "@tldraw/editor": "git+https://github.com/tlda-app/tldraw-fork.git#b8ae2f885e3311129e788f67c4bbdacc8f2aef19",

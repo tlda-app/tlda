@@ -186,10 +186,15 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
       framing: 'line_delimited_json',
     },
     ...(settings.mcpServers?.playwright ? {} : {
+      // Absolute repo-local server file, never npx: spawning `npx -y`
+      // @playwright/mcp pays registry resolution plus a fresh install
+      // check (measured 38s warm), which exceeds the harness MCP startup
+      // timeout and the server is skipped at mint time. Direct node
+      // answers in ~1s.
       playwright: {
         transport: 'stdio',
-        command: 'npx',
-        args: ['-y', '@playwright/mcp'],
+        command: process.execPath,
+        args: [path.join(repoRoot(), 'node_modules', '@playwright', 'mcp', 'cli.js')],
       },
     }),
   }

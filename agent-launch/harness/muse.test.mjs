@@ -7,6 +7,7 @@ import path from 'node:path'
 import { HARNESS } from '../../shared/harness.ts'
 import { buildArgs, buildCmd, capabilities, launchEnvHasApiKey, prepareFleetConfig, resolveLiveSessionIdentity, resolveModelSelection, resumeId } from './muse.mjs'
 import { museAdapter, museSessionIdFromPath, museTranscriptPathForSession } from '../../agent-runtime/resolve-transcript.mjs'
+import { repoRoot } from '../identity.mjs'
 import { runtimeStateFromProcessList } from '../tmux.mjs'
 import { probeSpawnAvailability } from '../availability.mjs'
 import { readDaemonConfig, withDaemonModelAliases } from '../permission-ledger.mjs'
@@ -102,7 +103,7 @@ test('fleet MCP configuration isolates identity and references native auth witho
   assert.equal(settings.mcpServers.tlda.env.FLEET_HARNESS, 'muse')
   assert.equal(settings.mcpServers.tlda.env.FLEET_DAEMON_KEY, 'test-machine:testing')
   assert.equal(settings.mcpServers.tlda.framing, 'line_delimited_json')
-  assert.deepEqual(settings.mcpServers.playwright, { transport: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp'] })
+  assert.deepEqual(settings.mcpServers.playwright, { transport: 'stdio', command: process.execPath, args: [path.join(repoRoot(), 'node_modules', '@playwright', 'mcp', 'cli.js')] })
   assert.equal(settings.endpoint_transport, undefined)
   assert.equal(settings.model_catalog, undefined)
   assert.equal(settings.tui.theme, 'dark')
