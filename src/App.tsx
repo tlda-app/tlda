@@ -8,7 +8,7 @@ import { attachAppRecordingEditor, isAppRecordingOn, recordsByDefault, setAppRec
 import { isClassroomSurface } from './classroom/classroomSurface'
 import { buildFailureReason, emptyDocumentNotice } from './documentBuildNotice'
 import { log } from './logger'
-import { SHAPE_RENDER_ERROR_EVENT, errorFromShapeRenderEvent } from './shape-error-surface'
+import { SHAPE_RENDER_ERROR_EVENT, dispatchBuildFailureReport, errorFromShapeRenderEvent, isBuildFailureReport } from './shape-error-surface'
 import { BookViewer } from './BookViewer'
 import { DocumentWithLayers } from './classroom/DocumentWithLayers'
 import { IdentityPicker } from './IdentityPicker'
@@ -89,6 +89,13 @@ class ErrorBoundary extends Component<
   private handleShapeRenderError = (event: Event) => {
     const error = errorFromShapeRenderEvent(event)
     if (!error) return
+    // A build-failure report is recorded, not shown: the pages on screen are
+    // the last success, and taking them down for the report would destroy the
+    // thing the reader is looking at. Only a render crash takes the screen.
+    if (isBuildFailureReport((event as CustomEvent).detail)) {
+      log.error('build-failure', error.message, { stack: error.stack ?? null })
+      return
+    }
     this.props.onError?.()
     this.setState({ hasError: true, error })
   }
@@ -474,6 +481,22 @@ function DocumentApp() {
       document = { ...document, title: config.name || projectName }
 
       setState({ phase: 'svg', document, roomId })
+      // Pages are up but the newest build failed: the render going on screen
+      // is the last success, not the current source. Report the failure
+      // through the shape-error event so it lands in the error channel
+      // instead of failing silently; the boundary records the report and
+      // leaves these pages alone.
+      if (config.buildStatus === 'error') {
+        fetchBuildFailureReason(projectName).then(reason => {
+          if (gen !== loadGeneration) return
+          const label = config.name || projectName
+          dispatchBuildFailureReport(
+            reason
+              ? `newest build of "${label}" failed: ${reason}`
+              : `newest build of "${label}" failed`,
+          )
+        })
+      }
     } catch (e) {
       if (signal.aborted) return  // expected abort, don't show error
       console.error('Failed to load document:', e)
