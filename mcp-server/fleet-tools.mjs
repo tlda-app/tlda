@@ -1498,6 +1498,29 @@ function tmuxCapturePane(sessionName) {
   });
 }
 
+// Styled capture for the muse path only: muse 1.3.0 renders its composer
+// hint as dim text a plain capture cannot tell from a real draft, so the
+// squatter check needs the styles (see `museComposerGhost`). The agy path
+// keeps the plain capture -- its `>`-anchored matcher would not survive
+// leading SGR codes.
+function tmuxCapturePaneStyled(sessionName) {
+  return new Promise((resolve, reject) => {
+    execFile('tmux', ['capture-pane', '-t', sessionName, '-p', '-e', '-S', '-100'], { timeout: 5000 }, (err, stdout) => {
+      if (err) reject(new Error(`capture-pane failed for ${sessionName}: ${err.message}`));
+      else resolve(String(stdout || ''));
+    });
+  });
+}
+
+// Strip SGR styling and character-set selects. Region detection and probe
+// matching read through the styles so styled and plain captures behave the
+// same; ghost detection reads the styles themselves.
+export function stripAnsi(s) {
+  return String(s ?? '')
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    .replace(/\x1b[()][0-9A-Z]/g, '');
+}
+
 // The compose region is the last line carrying muse's prompt glyph PLUS the
 // lines below it up to the separator rule. Submitted text scrolls above the
 // glyph as transcript; unsubmitted composer text sits ON the glyph line once
@@ -1509,14 +1532,18 @@ function tmuxCapturePane(sessionName) {
 // region so transcript above and footer below can never satisfy a probe.
 export function museComposerRegion(paneText) {
   const lines = String(paneText || '').split('\n');
+  // Detection reads through the styles (a styled rule line starts with SGR,
+  // not `─`) but the region keeps the original lines: ghost detection below
+  // needs the styles, and plain input comes through byte-identical.
+  const plain = lines.map(stripAnsi);
   let start = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].includes('❯')) { start = i; break; }
+  for (let i = plain.length - 1; i >= 0; i--) {
+    if (plain[i].includes('❯')) { start = i; break; }
   }
   if (start < 0) return null;
   const region = [lines[start]];
   for (let i = start + 1; i < lines.length && region.length < 9; i++) {
-    if (/^─{10,}/.test(lines[i])) break;
+    if (/^─{10,}/.test(plain[i])) break;
     region.push(lines[i]);
   }
   return region;
@@ -1526,7 +1553,8 @@ export function museComposerRegion(paneText) {
 // joined. Empty (glyph-only) means an idle prompt.
 export function museComposerText(region) {
   if (!region || !region.length) return '';
-  return [region[0].replace('❯', ''), ...region.slice(1)].join('\n').trim();
+  const plain = region.map(stripAnsi);
+  return [plain[0].replace('❯', ''), ...plain.slice(1)].join('\n').trim();
 }
 
 // Our notices are always 📬-led (handleChannelMessage and the unread flush
@@ -1541,6 +1569,64 @@ export function museSquatterKind(text) {
   return 'foreign';
 }
 
+// Muse 1.3.0 renders a rotating hint INSIDE an empty composer
+// (`❯ /tasks shows workflows...`), which a plain capture cannot tell from a
+// real draft -- so an idle pane read as 'foreign', every notice queued behind
+// a watcher that re-checks the same foreign text forever, and the daemon
+// recorded `channel-queued` refusals while the agent sat idle (measured
+// 2026-09-24 on fleet:bdcb6292: seven refusals in twenty minutes against an
+// idle prompt; a fleet-wide pane scan showed the hint on every idle muse
+// composer). The styles discriminate: hint text is dim grey 38;2;103;108;116,
+// typed input is bright 38;2;204;211;219, dialog options are 256-palette.
+// Ghost is ALL-non-whitespace-dim; any bright run (a real draft, an
+// autocomplete suffix after typed text) stays foreign, and unstyled input is
+// never ghost, so plain captures keep today's behavior exactly. Parse
+// confusion fails toward foreign (queue, today's behavior), never toward an
+// 'empty' that would type into a real draft.
+const MUSE_GHOST_FG = '38;2;103;108;116';
+export function museComposerGhost(region) {
+  if (!region || !region.length) return false;
+  const first = String(region[0] ?? '');
+  const cut = first.indexOf('❯');
+  const body = (cut >= 0 ? first.slice(cut + 1) : first) + '\n' + region.slice(1).join('\n');
+  let fg = null;
+  let seen = false;
+  let allDim = true;
+  const token = /\x1b\[([0-9;]*)m|(\x1b[()][0-9A-Z]|\x1b)|([^\x1b]+)/g;
+  let m;
+  while ((m = token.exec(body)) !== null) {
+    if (m[3] !== undefined) {
+      for (const ch of m[3]) {
+        if (/\s/.test(ch)) continue;
+        seen = true;
+        if (fg !== MUSE_GHOST_FG) allDim = false;
+      }
+    } else if (m[1] !== undefined) {
+      const params = m[1] === '' ? ['0'] : m[1].split(';');
+      for (let i = 0; i < params.length; i++) {
+        const p = params[i];
+        if (p === '0') fg = null;
+        else if (p === '39') fg = null;
+        else if (p === '38' && params[i + 1] === '2' && params.length >= i + 5) {
+          fg = `38;2;${params[i + 2]};${params[i + 3]};${params[i + 4]}`;
+          i += 4;
+        } else if (p === '38' && params[i + 1] === '5' && params.length >= i + 3) {
+          fg = `38;5;${params[i + 2]}`;
+          i += 2;
+        }
+      }
+    }
+  }
+  return seen && allDim;
+}
+
+// One decision point for styled regions: a ghost hint is an empty composer,
+// everything else classifies by content as before.
+export function museSquatterKindStyled(region) {
+  if (museComposerGhost(region)) return 'empty';
+  return museSquatterKind(museComposerText(region));
+}
+
 // A narrow pane wraps a long line, so the whole notification may never sit on
 // one row. The leading glyph makes even a short prefix distinctive.
 function museProbe(line) {
@@ -1552,7 +1638,7 @@ function museProbe(line) {
 async function museFirstComposer(sessionName, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const region = museComposerRegion(await tmuxCapturePane(sessionName));
+    const region = museComposerRegion(await tmuxCapturePaneStyled(sessionName));
     if (region !== null) return region;
     if (Date.now() >= deadline) return null;
     await new Promise(resolve => setTimeout(resolve, MUSE_POLL_INTERVAL_MS));
@@ -1562,7 +1648,7 @@ async function museFirstComposer(sessionName, timeoutMs) {
 async function waitForMuseComposer(sessionName, timeoutMs, predicate) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const region = museComposerRegion(await tmuxCapturePane(sessionName));
+    const region = museComposerRegion(await tmuxCapturePaneStyled(sessionName));
     if (region !== null && predicate(region)) return true;
     if (Date.now() >= deadline) return false;
     await new Promise(resolve => setTimeout(resolve, MUSE_POLL_INTERVAL_MS));
@@ -1580,9 +1666,10 @@ const MUSE_IDLE_POLL_MS = 2000;
 const musePendingNotice = new Map();
 const museIdleWatchers = new Set();
 
-function museNoticeQueuedError(sessionName) {
-  const err = new Error(`agent busy in ${sessionName}; notice queued for idle delivery`);
+function museNoticeQueuedError(sessionName, detail = 'busy') {
+  const err = new Error(`agent busy in ${sessionName}; notice queued for idle delivery (${detail})`);
   err.code = 'MUSE_NOTICE_QUEUED';
+  err.queueDetail = detail;
   return err;
 }
 
@@ -1591,15 +1678,18 @@ async function runMuseIdleWatcher(sessionName) {
     for (;;) {
       let region = null;
       try {
-        region = museComposerRegion(await tmuxCapturePane(sessionName));
-      } catch {
+        region = museComposerRegion(await tmuxCapturePaneStyled(sessionName));
+      } catch (e) {
         // Pane gone: the agent's process went with it, and the queued
         // pointer dies in this sidecar -- but the reconnect flush on the
         // next process says how much is waiting, so the wake survives.
+        // Said out loud: this catch also eats transient tmux failures, and
+        // a dropped wake must never be silent about which it was.
+        process.stderr.write(`[fleet-channel] idle watcher for ${sessionName} lost its pane read (${e?.message || e}); dropping queued notice\n`);
         musePendingNotice.delete(sessionName);
         return;
       }
-      if (region !== null && museSquatterKind(museComposerText(region)) !== 'foreign') {
+      if (region !== null && museSquatterKindStyled(region) !== 'foreign') {
         const pending = musePendingNotice.get(sessionName);
         musePendingNotice.delete(sessionName);
         if (pending !== undefined) {
@@ -1663,37 +1753,48 @@ async function tmuxSubmitTextVerified(sessionName, text) {
   const before = await museFirstComposer(sessionName, MUSE_TYPE_TIMEOUT_MS);
   if (before === null) {
     queueMuseNoticeForIdle(sessionName, text);
-    throw museNoticeQueuedError(sessionName);
+    throw museNoticeQueuedError(sessionName, 'no-composer');
   }
-  const squatter = museSquatterKind(museComposerText(before));
+  const squatter = museSquatterKindStyled(before);
   if (squatter === 'foreign') {
     queueMuseNoticeForIdle(sessionName, text);
-    throw museNoticeQueuedError(sessionName);
+    throw museNoticeQueuedError(sessionName, `foreign:${JSON.stringify(museComposerText(before).slice(0, 48))}`);
   }
   if (squatter === 'stale-notice') {
     execFileSync('tmux', ['send-keys', '-t', sessionName, 'C-u'], { timeout: 5000 });
     const replaced = await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS,
-      region => museSquatterKind(museComposerText(region)) === 'empty');
-    if (!replaced) throw new Error(`stale notice already sitting in the prompt in ${sessionName} and C-u did not clear it; refusing to pile on`);
+      region => museSquatterKindStyled(region) === 'empty');
+    if (!replaced) {
+      // Same persistence as a lost submit below: the TUI is not consuming
+      // keys right now, so hold the wake for idle rather than dropping it.
+      queueMuseNoticeForIdle(sessionName, text);
+      throw museNoticeQueuedError(sessionName, 'stale-unreplaceable');
+    }
   }
   execFileSync('tmux', ['send-keys', '-t', sessionName, '--', line], { timeout: 5000 });
-  if (!await waitForMuseComposer(sessionName, MUSE_TYPE_TIMEOUT_MS, region => region.some(l => l.includes(probe)))) {
+  if (!await waitForMuseComposer(sessionName, MUSE_TYPE_TIMEOUT_MS, region => region.some(l => stripAnsi(l).includes(probe)))) {
     throw new Error(`typed text never reached the prompt in ${sessionName}; not sending Enter blindly`);
   }
   for (let attempt = 1; ; attempt++) {
     execFileSync('tmux', ['send-keys', '-t', sessionName, 'Enter'], { timeout: 5000 });
-    if (await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS, region => !region.some(l => l.includes(probe)))) return true;
+    if (await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS, region => !region.some(l => stripAnsi(l).includes(probe)))) return true;
     if (attempt >= MUSE_SUBMIT_ATTEMPTS) break;
   }
-  // Withdraw, then throw. A dropped notification has to be loud -- but loud
-  // is the error, not a parked draft: leaving our text behind turns every
-  // later notice into a pile-up and reads as the agent's own composing.
-  // C-u clears the muse composer in both renders (measured 2026-09-24); the
-  // clear is verified, and failing to clear says so rather than claiming it.
+  // Withdraw, then QUEUE. A lost Enter is a busy TUI, not a dead one -- boot,
+  // turn transitions, and heavy renders all eat keys for longer than three
+  // attempts span, at exactly the moments a wake matters. Withdrawing keeps
+  // the composer clean (a parked draft turns every later notice into a
+  // pile-up), and queueing retries at idle instead of dropping the wake: the
+  // watcher re-fires on the empty (or stale, if the withdraw also lost its
+  // C-u) composer, and the retry loop only ever runs against an empty or
+  // stale prompt, so an agent composing its own draft pauses it. Loud either
+  // way: the queue reason names the loss, and a parked remainder names that.
   execFileSync('tmux', ['send-keys', '-t', sessionName, 'C-u'], { timeout: 5000 });
-  const withdrew = await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS, region => !region.some(l => l.includes(probe)));
-  if (withdrew) throw new Error(`notification still sitting in the prompt in ${sessionName} after ${MUSE_SUBMIT_ATTEMPTS} Enters; withdrew our text with C-u, refusing to report it delivered`);
-  throw new Error(`notification still sitting in the prompt in ${sessionName} after ${MUSE_SUBMIT_ATTEMPTS} Enters; C-u withdraw FAILED and our text may still be parked, refusing to report it delivered`);
+  const withdrew = await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS, region => !region.some(l => stripAnsi(l).includes(probe)));
+  queueMuseNoticeForIdle(sessionName, text);
+  throw museNoticeQueuedError(sessionName, withdrew
+    ? `submit-lost-${MUSE_SUBMIT_ATTEMPTS}x-withdrew`
+    : `submit-lost-${MUSE_SUBMIT_ATTEMPTS}x-parked`);
 }
 
 function submitNotificationIntoMusePane(content) {
@@ -1993,7 +2094,7 @@ export function getFleetTools() {
           view: {
             type: 'string',
             enum: INBOX_VIEWS,
-            description: 'Read-time inbox view. default = bounded NOW/BATCHED/BACKGROUND; review = reports/gates/missing evidence; monitoring = blockers/stale/incident/release gates; current-task = active task/thread first; all = broad grouped view. "oh fuck" is different in kind from the rest: fleet-wide, not your own mail — everything raised as urgent or important, anywhere, that NO recipient has read yet. Use it when you come back to a mess or suspect something broke while nobody was looking. It acknowledges nothing, so it is safe to call any time and it will not consume your inbox.',
+            description: 'Read-time inbox view. default = bounded NOW/BATCHED/BACKGROUND; review = reports/gates/missing evidence; monitoring = blockers/stale/incident/release gates; current-task = active task/thread first; all = broad grouped view; principal = attention index grouped by priority (URGENT/IMPORTANT/NORMAL) plus WAITING ON YOU, for PA-supported principals — non-acking like "oh fuck", safe to re-read. "oh fuck" is different in kind from the rest: fleet-wide, not your own mail — everything raised as urgent or important, anywhere, that NO recipient has read yet. Use it when you come back to a mess or suspect something broke while nobody was looking. It acknowledges nothing, so it is safe to call any time and it will not consume your inbox.',
           },
           hours: {
             type: 'number',
@@ -2837,6 +2938,42 @@ function formatInboxBody({ mode, task, tasks, messages, counts = null, now = Dat
       lines.push('');
     }
     lines.push(...groupedInboxLines(messages));
+    return lines.join('\n').trimEnd();
+  }
+
+  // Prototype: PA-principal attention index. Priority groups over the page
+  // plus WAITING ON YOU; ordinary active tasks are deliberately omitted
+  // (they live in the default view). Non-acking by construction — see the
+  // handler branch. Rows stay full-text for the prototype; excerpting is
+  // deferred until observed use says what an orientation excerpt is.
+  if (mode === 'principal') {
+    const urgent = messages.filter(m => m.priority === 'urgent');
+    const important = messages.filter(m => m.priority === 'important');
+    const normal = messages.filter(m => m.priority !== 'urgent' && m.priority !== 'important');
+    const waitingTasks = activeTasks.filter(t => t.status === 'blocked' || t.metadata?.requires_approval);
+    if (!messages.length && !waitingTasks.length) {
+      lines.push('');
+      lines.push('- Clear. Nothing currently deserves your attention.');
+      return lines.join('\n');
+    }
+    for (const [label, rows] of [['URGENT', urgent], ['IMPORTANT', important], ['NORMAL', normal]]) {
+      if (!rows.length) continue;
+      lines.push('');
+      lines.push(`## ${label} (${rows.length})`);
+      pushInboxEntries(lines, rows, m => inboxDefaultLine(m, now));
+    }
+    lines.push('');
+    lines.push('## WAITING ON YOU');
+    if (!waitingTasks.length) {
+      lines.push('- Nothing blocked on you.');
+    } else {
+      waitingTasks.forEach((t, i) => {
+        if (i > 0) lines.push('');
+        const blockedBy = Array.isArray(t.blockedBy) && t.blockedBy.length ? ` blocked by ${t.blockedBy.join(', ')}` : '';
+        const approval = t.metadata?.requires_approval ? ' [requires approval before close]' : '';
+        lines.push(`- [${t.id}] ${t.description || '(untitled task)'} — ${t.status || 'active'}${blockedBy}${approval}`);
+      });
+    }
     return lines.join('\n').trimEnd();
   }
 
@@ -4363,6 +4500,33 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         resolveImages: resolveInboxImages,
       })));
       return { content: formatInboxContent({ text: formatRaisedUnreadText(rows, data), messages: rows }) };
+    }
+
+    // The principal view. Same non-acking rule as above, different page: the
+    // reader's own unread (not the fleet-wide raised set), grouped as an
+    // attention index. It renders a subset by design — priority groups plus
+    // WAITING ON YOU, with ordinary active tasks deliberately omitted — so it
+    // must never ack, by construction and not by a caller-passed peek.
+    if (view === 'principal') {
+      let principalData;
+      try {
+        principalData = await mcpFleetTransport.ephemeral('my-task', { agent: activeAgentId(), peek: true });
+      } catch (e) {
+        return { content: [{ type: 'text', text: `Fleet transport failed; nothing was read or acknowledged: ${e.message}` }], isError: true };
+      }
+      const principalRows = await Promise.all((principalData.messages || []).map(m => resolveInboxMessage(m, {
+        resolveChipTokens: resolveInboxChipTokens,
+        resolveTheoremRefs,
+        resolveImages: resolveInboxImages,
+      })));
+      const principalText = formatInboxText({
+        mode: 'principal',
+        task: principalData.task || null,
+        tasks: principalData.tasks || null,
+        messages: principalRows,
+        counts: principalData.counts || null,
+      });
+      return { content: formatInboxContent({ text: principalText, messages: principalRows }) };
     }
 
     // drain: page through the whole backlog rather than the first page.
@@ -6573,11 +6737,16 @@ async function handleChannelMessage(msg) {
     // Queued is a refusal with a future: the wake is held for idle, not
     // dropped, and the reason says so. A refusal provokes no remedy.
     const queued = deliveryError?.code === 'MUSE_NOTICE_QUEUED';
-    if (queued) process.stderr.write(`[fleet-channel] notice for ${agentId} queued for idle delivery\n`);
+    // The queue detail rides the refusal reason into the server trace and the
+    // daemon log, which is the telemetry that names the loss: squatter kind
+    // and composer preview for a held wake, submit-loss counts for a TUI
+    // eating keys. A bare `channel-queued` cannot be diagnosed from the log.
+    const queueDetail = queued && deliveryError?.queueDetail ? `:${deliveryError.queueDetail}` : '';
+    if (queued) process.stderr.write(`[fleet-channel] notice for ${agentId} queued for idle delivery${queueDetail}\n`);
     await refuseWakeChannelNotice(
       agentId,
       wakeAckId,
-      queued ? 'channel-queued' : (deliveryError ? `channel-error: ${deliveryError.message}` : 'channel-declined'),
+      queued ? `channel-queued${queueDetail}` : (deliveryError ? `channel-error: ${deliveryError.message}` : 'channel-declined'),
     );
   }
   if (deliveryError && deliveryError.code !== 'MUSE_NOTICE_QUEUED') throw deliveryError;

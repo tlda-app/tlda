@@ -20,7 +20,7 @@ writeFileSync(join(CONFIG_DIR_FIXTURE, 'daemon.yaml'), [
   '',
 ].join('\n'))
 
-const { deliverChannelNotice, museComposerRegion, museComposerText, museSquatterKind } = await import('./fleet-tools.mjs')
+const { deliverChannelNotice, museComposerRegion, museComposerText, museSquatterKind, museComposerGhost, museSquatterKindStyled, stripAnsi } = await import('./fleet-tools.mjs')
 
 // The fixture pane presents muse's prompt glyph, reads one line, echoes it
 // behind a marker, then presents a fresh prompt. That shape is what the
@@ -305,10 +305,16 @@ test('a pane that never submits fails loudly instead of reporting delivery', { s
   process.env.FLEET_TMUX_SESSION = session
 
   try {
-    await assert.rejects(
-      () => deliverChannelNotice(NOTICE, { event_type: 'chat' }),
-      /still sitting in the prompt/,
+    // Persistence contract: a TUI eating Enters holds the wake for idle
+    // instead of dropping it. Still a rejection (never reported delivered),
+    // still loud -- but coded QUEUED with the loss named, so the watcher
+    // retries when the pane frees instead of the notice dying here.
+    const err = await deliverChannelNotice(NOTICE, { event_type: 'chat' }).then(
+      () => { throw new Error('expected delivery to queue, but it returned') },
+      (e) => e,
     )
+    assert.equal(err?.code, 'MUSE_NOTICE_QUEUED')
+    assert.match(String(err?.queueDetail || ''), /submit-lost-3x-parked/)
   } finally {
     if (previousHarness === undefined) delete process.env.FLEET_HARNESS
     else process.env.FLEET_HARNESS = previousHarness
@@ -608,8 +614,9 @@ test('concurrent delivers serialize without fusing', { skip: skipWithoutTmux }, 
   }
 })
 
-// A pane that drops every Enter gets its parked text WITHDRAWN before the
-// loud failure: the throw says what happened, and the composer is left clean
+// A pane that drops every Enter gets its parked text WITHDRAWN, then the wake
+// is HELD for idle rather than dropped: the coded throw names the loss and
+// the watcher retries when the pane frees. The composer is left clean
 // instead of holding a phantom draft. Raw fixture so C-u behaviour is exact:
 // Enter ignored, C-u clears and re-renders an empty prompt.
 const DROP_ENTER_HONOR_CU_PANE = `
@@ -639,7 +646,7 @@ function startDropEnterHonorCuPane(name) {
   execFileSync('sleep', ['0.5'])
 }
 
-test('a failed submit withdraws our text and fails loudly', { skip: skipWithoutTmux }, async () => {
+test('a failed submit withdraws our text and queues with the loss named', { skip: skipWithoutTmux }, async () => {
   const session = `muse-notice-withdraw-${process.pid}`
   const previousHarness = process.env.FLEET_HARNESS
   const previousSession = process.env.FLEET_TMUX_SESSION
@@ -648,10 +655,12 @@ test('a failed submit withdraws our text and fails loudly', { skip: skipWithoutT
   process.env.FLEET_TMUX_SESSION = session
 
   try {
-    await assert.rejects(
-      () => deliverChannelNotice(NOTICE, { event_type: 'chat' }),
-      /withdrew our text with C-u/,
+    const err = await deliverChannelNotice(NOTICE, { event_type: 'chat' }).then(
+      () => { throw new Error('expected delivery to queue, but it returned') },
+      (e) => e,
     )
+    assert.equal(err?.code, 'MUSE_NOTICE_QUEUED')
+    assert.match(String(err?.queueDetail || ''), /submit-lost-3x-withdrew/)
     const pane = capture(session)
     assert.doesNotMatch(pane, /muse channel notice/)
   } finally {
@@ -695,10 +704,12 @@ test('a failed withdraw says the text may still be parked', { skip: skipWithoutT
   process.env.FLEET_TMUX_SESSION = session
 
   try {
-    await assert.rejects(
-      () => deliverChannelNotice(NOTICE, { event_type: 'chat' }),
-      /withdraw FAILED.*still be parked/,
+    const err = await deliverChannelNotice(NOTICE, { event_type: 'chat' }).then(
+      () => { throw new Error('expected delivery to queue, but it returned') },
+      (e) => e,
     )
+    assert.equal(err?.code, 'MUSE_NOTICE_QUEUED')
+    assert.match(String(err?.queueDetail || ''), /submit-lost-3x-parked/)
     const pane = capture(session)
     assert.match(pane, /muse channel notice/)
   } finally {
@@ -741,4 +752,133 @@ test('muse composer region covers both live renders', () => {
   assert.equal(museSquatterKind(museComposerText(museComposerRegion(idle))), 'empty')
 
   assert.equal(museComposerRegion('◇ Thinking (esc to interrupt)'), null)
+})
+
+// Muse 1.3.0 renders a rotating hint INSIDE an empty composer, dim grey; a
+// plain capture reads it as the agent's own draft ('foreign'), so every
+// notice to an idle pane queued behind a watcher that re-checks the same
+// foreign text forever. Measured live 2026-09-24: seven `channel-queued`
+// refusals in twenty minutes against the idle prompt of fleet:bdcb6292, and
+// a fleet-wide scan showing the hint on every idle muse composer. The
+// vectors below are exact `tmux capture-pane -e` bytes (rule length
+// illustrative); the styles are the whole subject.
+const GHOST_HINT_PANE = [
+  '── Voice input (⌥ + v to start) ──',
+  '\x1b[0m\x1b[38;2;251;191;36m❯ \x1b[38;2;103;108;116m/compact frees context in long sessions\x1b[39m',
+  '\x1b[2m\x1b[38;2;103;108;116m────────────────────────────────────────',
+  '\x1b[0m\x1b[38;2;103;108;116m  \x1b[38;2;90;160;255mmuse-spark-1.3-contributor\x1b[38;2;138;144;152m · \x1b[38;2;90;160;255mmax\x1b[38;2;138;144;152m · ~/work/tlda · \x1b[38;2;243;139;168mYOLO\x1b[39m',
+].join('\n')
+
+const STYLED_DRAFT_PANE = [
+  '\x1b[0m\x1b[38;2;251;191;36m❯ \x1b[38;2;204;211;219mfix-mcps manual kickoff 00:30 (novel text to dodge duplicate-drop): call login() with the tlda MCP server, then call \x1b[39m',
+  '\x1b[38;2;103;108;116m  \x1b[38;2;204;211;219minbox() and work the queued items.\x1b[39m',
+].join('\n')
+
+const STYLED_TRUST_PANE =
+  ' \x1b[38;5;153m❯\x1b[39m \x1b[38;5;246m1.\x1b[39m \x1b[38;5;153mYes,\x1b[39m \x1b[38;5;153mI\x1b[39m \x1b[38;5;153mtrust\x1b[39m \x1b[38;5;153mthis\x1b[39m \x1b[38;5;153mfolder'
+
+test('a dim ghost hint reads as an empty composer', () => {
+  const region = museComposerRegion(GHOST_HINT_PANE)
+  // The styled rule still bounds the region: footer excluded.
+  assert.deepEqual(region, [GHOST_HINT_PANE.split('\n')[1]])
+  assert.equal(museComposerGhost(region), true)
+  assert.equal(museSquatterKindStyled(region), 'empty')
+  // And the plain-text path still sees the trap: without styles there is
+  // no discrimination, so unstyled input must stay conservative.
+  assert.equal(museComposerGhost(museComposerRegion(stripAnsi(GHOST_HINT_PANE))), false)
+})
+
+test('a styled real draft stays foreign', () => {
+  const region = museComposerRegion(STYLED_DRAFT_PANE)
+  assert.equal(museComposerGhost(region), false)
+  assert.equal(museSquatterKindStyled(region), 'foreign')
+})
+
+test('a styled trust-dialog option stays foreign', () => {
+  const region = museComposerRegion(STYLED_TRUST_PANE)
+  assert.equal(museComposerGhost(region), false)
+  assert.equal(museSquatterKindStyled(region), 'foreign')
+})
+
+test('mixed bright-and-dim composer text stays foreign', () => {
+  // Typed text plus a ghost autocomplete suffix: any bright run is real
+  // input, so the whole line is a draft no notice may type into.
+  const region = museComposerRegion('\x1b[0m\x1b[38;2;251;191;36m❯ \x1b[38;2;204;211;219m/ta\x1b[38;2;103;108;116msks show workflows\x1b[39m')
+  assert.equal(museComposerGhost(region), false)
+  assert.equal(museSquatterKindStyled(region), 'foreign')
+})
+
+test('unstyled hint-shaped text stays foreign', () => {
+  // Conservative fallback: a plain capture cannot discriminate, so it must
+  // not invent emptiness. Only styled dim text earns 'empty'.
+  const region = museComposerRegion('❯ /compact frees context in long sessions')
+  assert.equal(museComposerGhost(region), false)
+  assert.equal(museSquatterKindStyled(region), 'foreign')
+})
+
+test('stripAnsi removes SGR and charset selects', () => {
+  assert.equal(stripAnsi('\x1b[0m\x1b[38;2;251;191;36m❯ \x1b[39m'), '❯ ')
+  assert.equal(stripAnsi('plain'), 'plain')
+  assert.equal(stripAnsi('\x1b(Btext'), 'text')
+  assert.equal(stripAnsi(''), '')
+})
+
+// A TUI eating Enters through a busy window must still be notified when it
+// frees: the lost submit withdraws and queues, and the watcher delivers
+// behind the wedge. The fixture drops Enters until the trigger flips, then
+// accepts. On the old contract this rejects with a plain Error and nothing
+// ever delivers, so the marker wait times out.
+const DROP_ENTER_UNTIL_TRIGGER_PANE = `
+const fs = require('fs')
+const trigger = process.argv[2]
+process.stdin.setRawMode(true)
+let buf = ''
+process.stdout.write('❯ ')
+process.stdin.on('data', d => {
+  for (const ch of d.toString('utf8')) {
+    if (ch === '\\x15') {
+      buf = ''
+      process.stdout.write('\\r❯ \\x1b[K')
+    } else if (ch === '\\r' || ch === '\\n') {
+      if (!fs.existsSync(trigger)) continue
+      process.stdout.write('\\r\\n${PANE_MARKER}' + buf + '\\r\\n❯ ')
+      buf = ''
+    } else {
+      buf += ch
+      process.stdout.write(ch)
+    }
+  }
+})
+setTimeout(() => process.exit(0), 90000)
+`
+
+function startDropEnterUntilTriggerPane(name) {
+  const dir = mkdtempSync(join(tmpdir(), 'muse-unwedge-pane-'))
+  const script = join(dir, 'pane.cjs')
+  const trigger = join(dir, 'free')
+  writeFileSync(script, DROP_ENTER_UNTIL_TRIGGER_PANE)
+  execFileSync('tmux', ['new-session', '-d', '-s', name, 'sh', '-c', `stty -echo; exec ${process.execPath} ${script} ${trigger}`], { timeout: 5000 })
+  execFileSync('sleep', ['0.5'])
+  return { trigger }
+}
+
+test('a lost submit re-delivers when the pane unwedges', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-notice-unwedge-${process.pid}`
+  const { trigger } = startDropEnterUntilTriggerPane(session)
+  const restore = useMusePane(session)
+
+  try {
+    const err = await deliverChannelNotice(NOTICE, { event_type: 'chat' }).then(
+      () => { throw new Error('expected delivery to queue, but it returned') },
+      (e) => e,
+    )
+    assert.equal(err?.code, 'MUSE_NOTICE_QUEUED')
+    assert.match(String(err?.queueDetail || ''), /submit-lost-3x-withdrew/)
+
+    writeFileSync(trigger, 'free')
+    const pane = await waitForPane(session, (text) => text.includes(PANE_MARKER))
+    assert.match(pane, new RegExp(`${PANE_MARKER}.*muse channel notice`))
+  } finally {
+    restore()
+  }
 })
