@@ -1498,16 +1498,47 @@ function tmuxCapturePane(sessionName) {
   });
 }
 
-// The compose line is the last line carrying muse's prompt glyph. Submitted
-// text scrolls above it as transcript, so "is our text still on THIS line"
-// is what distinguishes a lost Enter from an accepted one -- a substring
-// search over the whole pane cannot, because a submitted line stays on screen.
-function musePromptLine(paneText) {
-  const lines = paneText.split('\n');
+// The compose region is the last line carrying muse's prompt glyph PLUS the
+// lines below it up to the separator rule. Submitted text scrolls above the
+// glyph as transcript; unsubmitted composer text sits ON the glyph line once
+// the session has completed a turn, and BELOW it on a virgin session that has
+// not (measured 2026-09-24 on live 1.3.0 panes: both renders, both send-keys
+// forms). Reading only the glyph line misses the virgin render -- the
+// type-wait then throws "never reached the prompt" about text sitting right
+// there, and the parked text is never withdrawn. The rule line bounds the
+// region so transcript above and footer below can never satisfy a probe.
+export function museComposerRegion(paneText) {
+  const lines = String(paneText || '').split('\n');
+  let start = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].includes('❯')) return lines[i];
+    if (lines[i].includes('❯')) { start = i; break; }
   }
-  return null;
+  if (start < 0) return null;
+  const region = [lines[start]];
+  for (let i = start + 1; i < lines.length && region.length < 9; i++) {
+    if (/^─{10,}/.test(lines[i])) break;
+    region.push(lines[i]);
+  }
+  return region;
+}
+
+// Composer text: the glyph stripped from the region's first line, the rest
+// joined. Empty (glyph-only) means an idle prompt.
+export function museComposerText(region) {
+  if (!region || !region.length) return '';
+  return [region[0].replace('❯', ''), ...region.slice(1)].join('\n').trim();
+}
+
+// Our notices are always 📬-led (handleChannelMessage and the unread flush
+// build them so). An agent composing its own 📬-led turn is absurd, so a
+// 📬-led squatter is our own stale pointer and safe to replace -- inbox()
+// holds the mail it pointed at. Anything else in the composer is the agent's
+// own unfinished thought: clearing it would destroy work and appending to it
+// would submit a franken-turn, so delivery declines and the mail waits.
+export function museSquatterKind(text) {
+  if (!text) return 'empty';
+  if (text.startsWith('📬')) return 'stale-notice';
+  return 'foreign';
 }
 
 // A narrow pane wraps a long line, so the whole notification may never sit on
@@ -1516,11 +1547,23 @@ function museProbe(line) {
   return line.slice(0, 32);
 }
 
-async function waitForMusePrompt(sessionName, timeoutMs, predicate) {
+// First sighting of a composer, or null after the wait. Split from
+// waitForMuseComposer because hygiene needs the region itself, not a boolean.
+async function museFirstComposer(sessionName, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const prompt = musePromptLine(await tmuxCapturePane(sessionName));
-    if (prompt !== null && predicate(prompt)) return true;
+    const region = museComposerRegion(await tmuxCapturePane(sessionName));
+    if (region !== null) return region;
+    if (Date.now() >= deadline) return null;
+    await new Promise(resolve => setTimeout(resolve, MUSE_POLL_INTERVAL_MS));
+  }
+}
+
+async function waitForMuseComposer(sessionName, timeoutMs, predicate) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const region = museComposerRegion(await tmuxCapturePane(sessionName));
+    if (region !== null && predicate(region)) return true;
     if (Date.now() >= deadline) return false;
     await new Promise(resolve => setTimeout(resolve, MUSE_POLL_INTERVAL_MS));
   }
@@ -1530,16 +1573,42 @@ async function tmuxSubmitTextVerified(sessionName, text) {
   const line = String(text || '').replace(/\s*\n\s*/g, ' · ').trim();
   if (!line) return false;
   const probe = museProbe(line);
+  // Hygiene BEFORE typing: never pile onto a squatter, never type blind.
+  // The composer is WAITED for, not snapshotted: a pane still booting (trust
+  // dialog, MCP startup, slow runtime -- node took 1-3s to first output on a
+  // loaded box, measured 2026-09-24) has no prompt line YET, and declining
+  // instantly would drop every notice during boot. No composer at all after
+  // the wait (a mid-turn render with no prompt line) declines rather than
+  // throws -- the agent is alive and working, the mail waits in inbox(), and
+  // typing now would land inside the turn.
+  const before = await museFirstComposer(sessionName, MUSE_TYPE_TIMEOUT_MS);
+  if (before === null) return false;
+  const squatter = museSquatterKind(museComposerText(before));
+  if (squatter === 'foreign') return false;
+  if (squatter === 'stale-notice') {
+    execFileSync('tmux', ['send-keys', '-t', sessionName, 'C-u'], { timeout: 5000 });
+    const replaced = await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS,
+      region => museSquatterKind(museComposerText(region)) === 'empty');
+    if (!replaced) throw new Error(`stale notice already sitting in the prompt in ${sessionName} and C-u did not clear it; refusing to pile on`);
+  }
   execFileSync('tmux', ['send-keys', '-t', sessionName, '--', line], { timeout: 5000 });
-  if (!await waitForMusePrompt(sessionName, MUSE_TYPE_TIMEOUT_MS, prompt => prompt.includes(probe))) {
+  if (!await waitForMuseComposer(sessionName, MUSE_TYPE_TIMEOUT_MS, region => region.some(l => l.includes(probe)))) {
     throw new Error(`typed text never reached the prompt in ${sessionName}; not sending Enter blindly`);
   }
   for (let attempt = 1; ; attempt++) {
     execFileSync('tmux', ['send-keys', '-t', sessionName, 'Enter'], { timeout: 5000 });
-    if (await waitForMusePrompt(sessionName, MUSE_SUBMIT_TIMEOUT_MS, prompt => !prompt.includes(probe))) return true;
+    if (await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS, region => !region.some(l => l.includes(probe)))) return true;
     if (attempt >= MUSE_SUBMIT_ATTEMPTS) break;
   }
-  throw new Error(`notification still sitting in the prompt in ${sessionName} after ${MUSE_SUBMIT_ATTEMPTS} Enters; refusing to report it delivered`);
+  // Withdraw, then throw. A dropped notification has to be loud -- but loud
+  // is the error, not a parked draft: leaving our text behind turns every
+  // later notice into a pile-up and reads as the agent's own composing.
+  // C-u clears the muse composer in both renders (measured 2026-09-24); the
+  // clear is verified, and failing to clear says so rather than claiming it.
+  execFileSync('tmux', ['send-keys', '-t', sessionName, 'C-u'], { timeout: 5000 });
+  const withdrew = await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS, region => !region.some(l => l.includes(probe)));
+  if (withdrew) throw new Error(`notification still sitting in the prompt in ${sessionName} after ${MUSE_SUBMIT_ATTEMPTS} Enters; withdrew our text with C-u, refusing to report it delivered`);
+  throw new Error(`notification still sitting in the prompt in ${sessionName} after ${MUSE_SUBMIT_ATTEMPTS} Enters; C-u withdraw FAILED and our text may still be parked, refusing to report it delivered`);
 }
 
 function submitNotificationIntoMusePane(content) {

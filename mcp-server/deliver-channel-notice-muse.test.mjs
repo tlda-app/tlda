@@ -20,7 +20,7 @@ writeFileSync(join(CONFIG_DIR_FIXTURE, 'daemon.yaml'), [
   '',
 ].join('\n'))
 
-const { deliverChannelNotice } = await import('./fleet-tools.mjs')
+const { deliverChannelNotice, museComposerRegion, museComposerText, museSquatterKind } = await import('./fleet-tools.mjs')
 
 // The fixture pane presents muse's prompt glyph, reads one line, echoes it
 // behind a marker, then presents a fresh prompt. That shape is what the
@@ -316,4 +316,258 @@ test('a pane that never submits fails loudly instead of reporting delivery', { s
     else process.env.FLEET_TMUX_SESSION = previousSession
     killPane(session)
   }
+})
+
+// A stale notice squatting in the composer must be REPLACED, not piled onto.
+// Observed live 2026-09-24: two notices fused into one 11k-char franken-turn
+// on a production pane, submitted and reported delivered. The fixture boots
+// with a 📬-led squatter rendered; C-u clears it; the fresh notice submits
+// alone. The marker line must carry the fresh notice WITHOUT the squatter.
+const SQUATTER_PANE = `
+process.stdin.setRawMode(true)
+let buf = '📬 stale squatter pointer — call inbox()'
+process.stdout.write('❯ ' + buf)
+process.stdin.on('data', d => {
+  for (const ch of d.toString('utf8')) {
+    if (ch === '\\x15') {
+      buf = ''
+      process.stdout.write('\\r❯ \\x1b[K')
+    } else if (ch === '\\r' || ch === '\\n') {
+      process.stdout.write('\\r\\n${PANE_MARKER}' + buf + '\\r\\n❯ ')
+      buf = ''
+    } else {
+      buf += ch
+      process.stdout.write(ch)
+    }
+  }
+})
+setTimeout(() => process.exit(0), 30000)
+`
+
+function startSquatterPane(name) {
+  const script = join(mkdtempSync(join(tmpdir(), 'muse-squatter-pane-')), 'pane.mjs')
+  writeFileSync(script, SQUATTER_PANE)
+  execFileSync('tmux', ['new-session', '-d', '-s', name, 'sh', '-c', `stty -echo; exec ${process.execPath} ${script}`], { timeout: 5000 })
+  execFileSync('sleep', ['0.5'])
+}
+
+test('a stale notice in the composer is replaced, not piled onto', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-notice-squatter-${process.pid}`
+  const previousHarness = process.env.FLEET_HARNESS
+  const previousSession = process.env.FLEET_TMUX_SESSION
+  startSquatterPane(session)
+  process.env.FLEET_HARNESS = 'muse'
+  process.env.FLEET_TMUX_SESSION = session
+
+  try {
+    const delivered = await deliverChannelNotice(NOTICE, { event_type: 'chat' })
+    assert.equal(delivered, true)
+
+    const pane = capture(session)
+    const markerLine = pane.split('\n').find(l => l.includes(PANE_MARKER))
+    assert.ok(markerLine, 'expected a submitted marker line')
+    assert.match(markerLine, /muse channel notice/)
+    assert.doesNotMatch(markerLine, /stale squatter/)
+  } finally {
+    if (previousHarness === undefined) delete process.env.FLEET_HARNESS
+    else process.env.FLEET_HARNESS = previousHarness
+    if (previousSession === undefined) delete process.env.FLEET_TMUX_SESSION
+    else process.env.FLEET_TMUX_SESSION = previousSession
+    killPane(session)
+  }
+})
+
+// The agent's own unfinished thought is not ours to touch. Clearing it would
+// destroy work and appending to it would submit a franken-turn, so delivery
+// declines (false, not a throw) and the pane is left exactly as found.
+test('foreign composer text declines delivery without touching the pane', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-notice-foreign-${process.pid}`
+  const previousHarness = process.env.FLEET_HARNESS
+  const previousSession = process.env.FLEET_TMUX_SESSION
+  execFileSync('tmux', [
+    'new-session', '-d', '-s', session,
+    'sh', '-c', `printf '❯ agent draft here'; sleep 30`,
+  ], { timeout: 5000 })
+  execFileSync('sleep', ['0.3'])
+  process.env.FLEET_HARNESS = 'muse'
+  process.env.FLEET_TMUX_SESSION = session
+
+  try {
+    const delivered = await deliverChannelNotice(NOTICE, { event_type: 'chat' })
+    assert.equal(delivered, false)
+
+    const pane = capture(session)
+    assert.match(pane, /agent draft here/)
+    assert.doesNotMatch(pane, /muse channel notice/)
+  } finally {
+    if (previousHarness === undefined) delete process.env.FLEET_HARNESS
+    else process.env.FLEET_HARNESS = previousHarness
+    if (previousSession === undefined) delete process.env.FLEET_TMUX_SESSION
+    else process.env.FLEET_TMUX_SESSION = previousSession
+    killPane(session)
+  }
+})
+
+// No composer at all (a mid-turn render with no prompt line) declines rather
+// than typing blind into the live turn.
+test('a pane with no composer declines without typing', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-notice-nocomposer-${process.pid}`
+  const previousHarness = process.env.FLEET_HARNESS
+  const previousSession = process.env.FLEET_TMUX_SESSION
+  execFileSync('tmux', [
+    'new-session', '-d', '-s', session,
+    'sh', '-c', `printf '◇ Thinking (esc to interrupt)'; sleep 30`,
+  ], { timeout: 5000 })
+  execFileSync('sleep', ['0.3'])
+  process.env.FLEET_HARNESS = 'muse'
+  process.env.FLEET_TMUX_SESSION = session
+
+  try {
+    const delivered = await deliverChannelNotice(NOTICE, { event_type: 'chat' })
+    assert.equal(delivered, false)
+
+    const pane = capture(session)
+    assert.doesNotMatch(pane, /muse channel notice/)
+  } finally {
+    if (previousHarness === undefined) delete process.env.FLEET_HARNESS
+    else process.env.FLEET_HARNESS = previousHarness
+    if (previousSession === undefined) delete process.env.FLEET_TMUX_SESSION
+    else process.env.FLEET_TMUX_SESSION = previousSession
+    killPane(session)
+  }
+})
+
+// A pane that drops every Enter gets its parked text WITHDRAWN before the
+// loud failure: the throw says what happened, and the composer is left clean
+// instead of holding a phantom draft. Raw fixture so C-u behaviour is exact:
+// Enter ignored, C-u clears and re-renders an empty prompt.
+const DROP_ENTER_HONOR_CU_PANE = `
+process.stdin.setRawMode(true)
+let buf = ''
+process.stdout.write('❯ ')
+process.stdin.on('data', d => {
+  for (const ch of d.toString('utf8')) {
+    if (ch === '\\x15') {
+      buf = ''
+      process.stdout.write('\\r❯ \\x1b[K')
+    } else if (ch === '\\r' || ch === '\\n') {
+      continue
+    } else {
+      buf += ch
+      process.stdout.write(ch)
+    }
+  }
+})
+setTimeout(() => process.exit(0), 60000)
+`
+
+function startDropEnterHonorCuPane(name) {
+  const script = join(mkdtempSync(join(tmpdir(), 'muse-withdraw-pane-')), 'pane.mjs')
+  writeFileSync(script, DROP_ENTER_HONOR_CU_PANE)
+  execFileSync('tmux', ['new-session', '-d', '-s', name, 'sh', '-c', `stty -echo; exec ${process.execPath} ${script}`], { timeout: 5000 })
+  execFileSync('sleep', ['0.5'])
+}
+
+test('a failed submit withdraws our text and fails loudly', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-notice-withdraw-${process.pid}`
+  const previousHarness = process.env.FLEET_HARNESS
+  const previousSession = process.env.FLEET_TMUX_SESSION
+  startDropEnterHonorCuPane(session)
+  process.env.FLEET_HARNESS = 'muse'
+  process.env.FLEET_TMUX_SESSION = session
+
+  try {
+    await assert.rejects(
+      () => deliverChannelNotice(NOTICE, { event_type: 'chat' }),
+      /withdrew our text with C-u/,
+    )
+    const pane = capture(session)
+    assert.doesNotMatch(pane, /muse channel notice/)
+  } finally {
+    if (previousHarness === undefined) delete process.env.FLEET_HARNESS
+    else process.env.FLEET_HARNESS = previousHarness
+    if (previousSession === undefined) delete process.env.FLEET_TMUX_SESSION
+    else process.env.FLEET_TMUX_SESSION = previousSession
+    killPane(session)
+  }
+})
+
+// The control: a pane that honours neither Enter nor C-u must say the text
+// may still be parked, not claim a withdraw it did not verify.
+const DROP_ENTER_DROP_CU_PANE = `
+process.stdin.setRawMode(true)
+let buf = ''
+process.stdout.write('❯ ')
+process.stdin.on('data', d => {
+  for (const ch of d.toString('utf8')) {
+    if (ch === '\\x15' || ch === '\\r' || ch === '\\n') continue
+    buf += ch
+    process.stdout.write(ch)
+  }
+})
+setTimeout(() => process.exit(0), 60000)
+`
+
+function startDropEnterDropCuPane(name) {
+  const script = join(mkdtempSync(join(tmpdir(), 'muse-parked-pane-')), 'pane.mjs')
+  writeFileSync(script, DROP_ENTER_DROP_CU_PANE)
+  execFileSync('tmux', ['new-session', '-d', '-s', name, 'sh', '-c', `stty -echo; exec ${process.execPath} ${script}`], { timeout: 5000 })
+  execFileSync('sleep', ['0.5'])
+}
+
+test('a failed withdraw says the text may still be parked', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-notice-parked-${process.pid}`
+  const previousHarness = process.env.FLEET_HARNESS
+  const previousSession = process.env.FLEET_TMUX_SESSION
+  startDropEnterDropCuPane(session)
+  process.env.FLEET_HARNESS = 'muse'
+  process.env.FLEET_TMUX_SESSION = session
+
+  try {
+    await assert.rejects(
+      () => deliverChannelNotice(NOTICE, { event_type: 'chat' }),
+      /withdraw FAILED.*still be parked/,
+    )
+    const pane = capture(session)
+    assert.match(pane, /muse channel notice/)
+  } finally {
+    if (previousHarness === undefined) delete process.env.FLEET_HARNESS
+    else process.env.FLEET_HARNESS = previousHarness
+    if (previousSession === undefined) delete process.env.FLEET_TMUX_SESSION
+    else process.env.FLEET_TMUX_SESSION = previousSession
+    killPane(session)
+  }
+})
+
+// Pure unit coverage for the region reader, no tmux: the virgin render keeps
+// unsubmitted text BELOW the glyph line (measured live 2026-09-24), the
+// post-turn render keeps it ON the line, and the separator rule bounds the
+// region so footer text can never satisfy a probe.
+test('muse composer region covers both live renders', () => {
+  const virgin = [
+    '── Voice input (⌥ + v to start) ──',
+    '❯',
+    '  📬 live probe notice',
+    '────────────────────────────────────────',
+    '  muse-spark-1.3-contributor · high · ~/work/tlda · YOLO',
+  ].join('\n')
+  const virginRegion = museComposerRegion(virgin)
+  assert.deepEqual(virginRegion, ['❯', '  📬 live probe notice'])
+  assert.equal(museSquatterKind(museComposerText(virginRegion)), 'stale-notice')
+
+  const postTurn = [
+    '◆ TURNONE-DONE',
+    '── Voice input (⌥ + v to start) ──',
+    '❯ POSTTURN-PROBE-xyz',
+    '────────────────────────────────────────',
+    '  muse-spark-1.3-contributor · high · ~/work/tlda · YOLO',
+  ].join('\n')
+  const postTurnRegion = museComposerRegion(postTurn)
+  assert.deepEqual(postTurnRegion, ['❯ POSTTURN-PROBE-xyz'])
+  assert.equal(museSquatterKind(museComposerText(postTurnRegion)), 'foreign')
+
+  const idle = ['❯', '', '────────────────────────────────────────'].join('\n')
+  assert.equal(museSquatterKind(museComposerText(museComposerRegion(idle))), 'empty')
+
+  assert.equal(museComposerRegion('◇ Thinking (esc to interrupt)'), null)
 })
