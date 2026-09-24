@@ -1,6 +1,6 @@
 import { Box, AssetRecordType, createShapeId } from 'tldraw'
 import type { SvgPage, SvgDocument, SlideInfo } from './types'
-import { deckLayout, type DeckSlide } from './deckLayout'
+import { deckLayout, type DeckSlide, type DeckLayout } from './deckLayout'
 
 export type SlidePageEntry = SlideInfo
 export type SlidePageEntryInput = Omit<SlideInfo, 'variant'> & { variant?: 'chapter' | 'slides' }
@@ -82,4 +82,33 @@ export function createSlidesDocumentFromPageInfo(
 
   console.log(`Slides document ready (one deck document, ${slides.length} slides, ${layout.stripWidth}×${layout.stripHeight})`)
   return { name, pages, basePath, format: 'slides', slideInfo: pageInfos, deckLayout: layout }
+}
+
+/**
+ * A book deck opened as its own presentation, in one-doc mode.
+ *
+ * The HTML document carries the deck as ONE page (the whole-deck iframe) and
+ * its slides on slideInfo. Filter to that page, lay the slides out exactly as
+ * a solo deck does, and the navigator, fragment keys and presenter sync all
+ * run the same path for both — that shared path is the whole point, and the
+ * per-slide expansion it replaces is deleted rather than kept beside it.
+ *
+ * No matching slideInfo (a deck whose build predates the slides array, or a
+ * file that is not a deck at all) still presents the page: navigation falls
+ * back to the one box, the way a slideless solo deck does.
+ */
+export function presentationDocumentForRoutedDeck(document: SvgDocument, deckFile: string): SvgDocument {
+  const pages = document.pages.filter(page => page.meta?.materializedFile === deckFile)
+  const info = document.slideInfo?.find(entry => entry.file === deckFile)
+  const slides = info?.slides ?? []
+  const layout: DeckLayout | undefined = slides.length > 0 && info
+    ? deckLayout(slides, { width: info.width, height: info.height })
+    : undefined
+  return {
+    ...document,
+    pages,
+    format: 'slides' as const,
+    slideInfo: info ? [info] : undefined,
+    deckLayout: layout,
+  }
 }

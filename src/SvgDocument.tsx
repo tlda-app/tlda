@@ -98,7 +98,7 @@ import { FormatToolbar } from './toolbar/FormatToolbar'
 import { ProjectContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { NoteDropHandler } from './NoteDropHandler'
 import { MarkdownDropHandler } from './MarkdownDropHandler'
-import { setCurrentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
+import { presentationDocumentForRoutedDeck, setCurrentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { presentationLocationMatchesPage, presentationPath, presentationRoute } from './presentationRoute'
 import { STORE_HTTP } from './activeConfig'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
@@ -587,16 +587,16 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
   const routedAppPage = appDocumentRoute
     ? document.pages.find(page => presentationLocationMatchesPage(appDocumentRoute, page.source?.file, page.src))
     : null
-  const routedDeckFile = routedAppPage?.meta?.spatialWorldDocument
+  const routedDeckFile = routedAppPage?.meta?.spatialWorldDocument &&
+    typeof routedAppPage.meta.materializedFile === 'string'
     ? routedAppPage.meta.materializedFile
     : null
   const routedProjectPageNumber = routedAppPage ? document.pages.indexOf(routedAppPage) + 1 : undefined
   const presentationDocument = useMemo(() => {
-    if (routedDeckFile) return {
-        ...document,
-        pages: document.pages.filter(page => page.meta?.materializedFile === routedDeckFile),
-        format: 'slides' as const,
-      }
+    // A routed book deck presents through the one-doc deck path: one page,
+    // the whole-deck iframe, and the slide layout the navigator pans across —
+    // the same document a solo deck loads, built from the same pieces.
+    if (routedDeckFile) return presentationDocumentForRoutedDeck(document, routedDeckFile)
     if (appDocumentRoute && routedAppPage) return { ...document, pages: [routedAppPage] }
     return document
   }, [appDocumentRoute, document, routedAppPage, routedDeckFile])

@@ -3,8 +3,8 @@ import {
   AssetRecordType,
   createShapeId,
 } from 'tldraw'
-import type { SvgPage, SvgDocument } from './types'
-import { deckLayout, type DeckSlide } from './deckLayout'
+import type { SvgPage, SvgDocument, SlideInfo } from './types'
+import type { DeckSlide } from './deckLayout'
 
 export interface HtmlPageEntry {
   file: string
@@ -133,7 +133,6 @@ export function createHtmlDocumentFromPageInfo(
   }
 
   const pages: SvgPage[] = []
-  const deckPages: SvgPage[] = []
   const takenSlugs = new Set<string>()
   // A map-keyed document takes no positional page at all, INCLUDING the default
   // one. Letting the first map reuse `page:page` would leave exactly one chapter
@@ -191,17 +190,19 @@ export function createHtmlDocumentFromPageInfo(
     const info = pageInfos[i]
     const placement = placements.get(i)!
     const pageId = `${name}-page-${i}`
-    const slides = isBookDeck(info) && info.slides?.length ? info.slides : null
-    const layout = slides ? deckLayout(slides, { width: info.width, height: info.height }) : null
-    const firstRect = layout?.rects[0]
-    const firstSlide = slides?.[0]
+    // One entry, one page — including decks. A book deck used to fan out here
+    // into one page per slide, each with its own iframe, Reveal instance and
+    // webR session; that expansion is deleted, and the deck loads whole through
+    // the same one-doc URL solo decks use (see pageUrl's book-deck branch).
+    // The shape resizes itself to the strip at runtime when the bridge reports
+    // the deck extent, so the loader sizes the authored slide, not the strip.
     pages.push({
-      src: pageUrl(firstSlide ? { ...info, ...firstSlide, slideIndex: firstSlide.index } : info, basePath),
+      src: pageUrl(info, basePath),
       bounds: new Box(
-        placement.left + (firstRect?.x || 0),
-        firstRect?.y || 0,
-        firstRect?.width || info.width,
-        firstRect?.height || info.height,
+        placement.left,
+        0,
+        info.width,
+        info.height,
       ),
       assetId: AssetRecordType.createId(pageId),
       shapeId: createShapeId(pageId),
@@ -218,35 +219,23 @@ export function createHtmlDocumentFromPageInfo(
         : undefined,
       source: info.source,
     })
-    if (slides && layout) {
-      for (let s = 1; s < slides.length; s++) {
-        const slide = slides[s]
-        const rect = layout.rects[s]
-        const slidePageId = `${pageId}-slide-${slide.index}`
-        deckPages.push({
-          src: pageUrl({ ...info, ...slide, slideIndex: slide.index }, basePath),
-          bounds: new Box(placement.left + rect.x, rect.y, rect.width, rect.height),
-          assetId: AssetRecordType.createId(slidePageId),
-          shapeId: createShapeId(slidePageId),
-          width: rect.width,
-          height: rect.height,
-          tldrawPageId: placement.tlPageId,
-          tldrawPageName: placement.pageName,
-          meta: {
-            spatialWorldDocument: true,
-            spatialWorldTitle: slide.title || info.title || info.file.replace(/\.html$/, ''),
-            materializedFile: info.file,
-          },
-          source: info.source,
-        })
-      }
-    }
   }
 
-  // ToC rows address the original page-info positions. Extra slides therefore
-  // follow those rows rather than being inserted between chapters.
-  pages.push(...deckPages)
+  // Pages align one-to-one with page-info positions, which is what the ToC
+  // navigates by (navigateToPage reads doc.pages[n - 1]). There is no second
+  // array appended after: a deck is one page here, and its slides ride on
+  // slideInfo for the routed presentation to lay out.
+  const slideInfo: SlideInfo[] = pageInfos
+    .filter(info => info.slides?.length)
+    .map(info => ({
+      file: info.file,
+      width: info.width,
+      height: info.height,
+      title: info.title,
+      slides: info.slides,
+      ...(info.variant === 'slides' ? { variant: 'slides' as const } : {}),
+    }))
 
   console.log(`HTML document ready (${pageInfos.length} pages, ${maps.length} TLDraw pages)`)
-  return { name, pages, basePath, format: 'html' }
+  return { name, pages, basePath, format: 'html', slideInfo: slideInfo.length > 0 ? slideInfo : undefined }
 }

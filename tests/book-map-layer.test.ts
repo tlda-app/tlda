@@ -49,7 +49,7 @@ test('a chapter and its deck are independent docs on one map', () => {
   assert.equal(document.pages[1].meta?.spatialWorldDocument, true)
 })
 
-test('a book deck lays every slide horizontally without renumbering chapter rows', () => {
+test('a book deck loads whole: one page, one iframe, slides on slideInfo', () => {
   const document = createHtmlDocumentFromPageInfo('course', '/docs/course/', [
     chapter('one', 'one.qmd', { variant: 'chapter' }),
     chapter('two', 'two.qmd', { variant: 'chapter' }),
@@ -65,16 +65,17 @@ test('a book deck lays every slide horizontally without renumbering chapter rows
     }),
   ])
 
-  assert.match(document.pages[2].src, /_tldaH=0&_tldaV=0$/)
+  // One entry, one page: the per-slide expansion is deleted, so a deck no
+  // longer fans out into a page per slide with _tldaH-locked URLs.
+  assert.equal(document.pages.length, 3)
+  assert.match(document.pages[2].src, /[?&]_tldaDeck=1&view=scroll$/)
+  assert.doesNotMatch(document.pages[2].src, /_tldaH=/)
   assert.equal(document.pages[2].source?.file, 'one-slides.qmd')
-  assert.equal(document.pages.length, 5)
-  const slides = [document.pages[2], document.pages[3], document.pages[4]]
-  assert.deepEqual(slides.map(page => page.bounds.y), [0, 0, 0])
-  assert.deepEqual(slides.map(page => page.bounds.x), [
-    slides[0].bounds.x,
-    slides[0].bounds.x + 1800,
-    slides[0].bounds.x + 3600,
-  ])
+  assert.equal(document.pages[2].meta?.spatialWorldDocument, true)
+  // The address space rides along for the routed presentation to lay out.
+  assert.equal(document.slideInfo?.length, 1)
+  assert.equal(document.slideInfo?.[0].file, 'one-slides.html')
+  assert.equal(document.slideInfo?.[0].slides?.length, 3)
 })
 
 test('group still means side-by-side comparison', () => {
