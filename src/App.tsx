@@ -6,7 +6,7 @@ import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
 import { attachAppRecordingEditor, isAppRecordingOn, recordsByDefault, setAppRecording } from './recording/recorder'
 import { isClassroomSurface } from './classroom/classroomSurface'
-import { buildFailureReason, emptyDocumentNotice, staleBuildNotice } from './documentBuildNotice'
+import { buildFailureReason, emptyDocumentNotice } from './documentBuildNotice'
 import { log } from './logger'
 import { SHAPE_RENDER_ERROR_EVENT, errorFromShapeRenderEvent } from './shape-error-surface'
 import { BookViewer } from './BookViewer'
@@ -136,7 +136,7 @@ type State =
   // acts on stays one sentence.
   | { phase: 'error'; message: string; errorType?: ErrorType; detail?: string }
   | { phase: 'picker'; manifest: Record<string, DocConfig> }
-  | { phase: 'svg'; document: SvgDoc; roomId: string; buildFailure?: { message: string; detail?: string | null } }
+  | { phase: 'svg'; document: SvgDoc; roomId: string }
   | { phase: 'book'; bookName: string; members: BookMember[] }
 
 // What the development environment asks its own server about itself. Pages do
@@ -473,18 +473,7 @@ function DocumentApp() {
       // the URL slug before this.
       document = { ...document, title: config.name || projectName }
 
-      // Pages exist but the newest build failed: the render going on screen
-      // is the last success, not the current source, and showing it without
-      // saying so is the failure going silent. The banner carries the
-      // sentence; the reason arrives underneath when the errors route answers.
-      const staleFailure = staleBuildNotice(config.name || projectName, config.buildStatus, config.pages)
-      setState({ phase: 'svg', document, roomId, buildFailure: staleFailure ? { message: staleFailure.message } : undefined })
-      if (staleFailure) {
-        fetchBuildFailureReason(projectName).then(reason => {
-          if (!reason || gen !== loadGeneration) return
-          setState(s => (s && s.phase === 'svg') ? { ...s, buildFailure: { message: staleFailure.message, detail: reason } } : s)
-        })
-      }
+      setState({ phase: 'svg', document, roomId })
     } catch (e) {
       if (signal.aborted) return  // expected abort, don't show error
       console.error('Failed to load document:', e)
@@ -596,12 +585,6 @@ function DocumentApp() {
       return (
         <div className="App">
           <IdentityPicker />
-          {state.buildFailure && (
-            <div className="BuildFailureBanner" role="alert">
-              <span className="build-failure-message">⚠ {state.buildFailure.message}</span>
-              {state.buildFailure.detail && <pre className="build-failure-detail">{state.buildFailure.detail}</pre>}
-            </div>
-          )}
           <DocumentRadio />
           <ErrorBoundary>
             <DocumentWithLayers document={state.document} roomId={state.roomId} initialCamera={initialCamera} onEditorMount={attachAppRecordingEditor} />

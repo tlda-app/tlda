@@ -37,27 +37,6 @@ export function emptyDocumentNotice(label: string, buildStatus?: string): EmptyD
   }
 }
 
-export type StaleBuildNotice =
-  | { kind: 'stale-build-failed'; message: string }
-  | null
-
-/**
- * The banner half of the failure notice: pages exist, but the newest build
- * failed, so what is on screen is the last successful render, not the current
- * source. Only `error` with pages > 0. Zero pages belongs to
- * `emptyDocumentNotice`, and every other status is a render on its way or a
- * healthy tree — none of those is a failure to banner.
- */
-export function staleBuildNotice(label: string, buildStatus?: string, pages?: number): StaleBuildNotice {
-  if (buildStatus === 'error' && (pages || 0) > 0) {
-    return {
-      kind: 'stale-build-failed',
-      message: `The newest build of "${label}" failed — showing the last successful render.`,
-    }
-  }
-  return null
-}
-
 /**
  * The reason to put under that sentence, from `GET /:name/build/errors`.
  *
