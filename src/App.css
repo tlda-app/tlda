@@ -248,6 +248,34 @@ body.tlda-pan-mode * {
   overflow-wrap: anywhere;
 }
 
+/* Banner over a stale render: the newest build failed but an older one is on
+   screen, so this names the failure without taking the pages away. */
+.BuildFailureBanner {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #fef3c7;
+  border-bottom: 1px solid #f59e0b;
+  padding: 0.5rem 1rem;
+  z-index: 10;
+}
+
+.build-failure-message {
+  font-size: 0.875rem;
+  color: #92400e;
+  font-weight: 500;
+}
+
+.build-failure-detail {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: #92400e;
+  margin: 0.25rem 0 0;
+  max-height: 6rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .error-home-link {
   margin-top: 1rem;
   font-size: 0.875rem;
