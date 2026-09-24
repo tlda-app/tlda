@@ -783,11 +783,34 @@ async function recordAdmission(job) {
  * project broken because a newer revision replaced its build would be a false
  * report. `complete` is already the worker's to record, and re-recording it
  * here would race the success it just wrote.
+ *
+ * The lifecycle phase below is the load-bearing half. The API overlays
+ * `buildStatus` from the source-revision lifecycle, and terminal phases
+ * otherwise arrive only via the worker's `recordBuildResult` RPC — which a
+ * pre-worker failure (revision mismatch at the transport health check,
+ * executor-side pre-boot fetch errors, a worker dead before its own catch)
+ * never sends. Without this, the revision sits at `pending` and reads
+ * `building` forever despite the failed queue row.
  */
 async function recordDisposition(job, state, result = null) {
   if (state !== 'failed') return
   const reason = result?.error || result?.reason || 'build worker exited without recording a reason'
   const diagnostic = result?.errorStack ? `${reason}\n${result.errorStack}` : reason
+  // The admission is written first because `recordRevisionPhase` refuses a
+  // revision it has never seen; admission normally already exists from the
+  // admit path, so this is a no-op that covers only the ordering gap.
+  if (job.sourceRevision) {
+    try {
+      const lifecycle = await sourceLifecycleStore(job.name)
+      lifecycle.recordRevisionAdmission(job.name, job.sourceRevision, job.acceptSeq)
+      lifecycle.recordRevisionPhase(job.name, job.sourceRevision, 'build', 'build_failed', { ok: false, error: reason })
+    } catch (e) {
+      // Best effort, same as the records below: this runs from the queue's
+      // settle path, where throwing would abandon the rest of the disposition
+      // and take `drain()` with it. The log below still gets written without it.
+      console.error(`[build] could not record failed lifecycle phase for ${job.name}: ${e?.message || e}`)
+    }
+  }
   try {
     await updateProject(job.name, { buildStatus: 'error' })
   } catch (e) {

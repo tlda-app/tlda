@@ -6,7 +6,8 @@ import { join } from 'node:path'
 
 import { createBuildQueue } from './build-queue.mjs'
 import { BuildQueueStore } from './build-queue-store.mjs'
-import { closeProjectStore, createProject, extractBuildErrors, initProjectStore, readProject } from './project-store.mjs'
+import { closeProjectStore, createProject, extractBuildErrors, initProjectStore, readProject, sourceLifecycleStore } from './project-store.mjs'
+import { projectRevisionStatus } from './source-lifecycle.mjs'
 import { createDispatcherWithOptions } from './build-dispatch.mjs'
 
 // A worker that dies without running its own catch — SIGKILL, the OOM killer,
@@ -58,6 +59,16 @@ test('a worker that dies without recording leaves the project failed, with a rea
 
   assert.notEqual(project.buildStatus, 'building', 'a dead worker must not leave the project reading as building')
   assert.equal(project.buildStatus, 'error')
+
+  // The API overlays buildStatus from the source-revision lifecycle, not from
+  // the project record above. A pre-worker failure (no worker RPC ever arrives)
+  // must still record a terminal build phase, or the row reads `building`
+  // forever despite the failed queue row.
+  const lifecycle = await sourceLifecycleStore('doc')
+  const durable = projectRevisionStatus(lifecycle.listRevisionLifecycles('doc'))
+  assert.equal(durable.sourceRevision, 'r1')
+  assert.equal(durable.status, 'error')
+  assert.equal(durable.phase, 'build')
 
   // And the reason has to be READABLE by the thing that reports it, not merely
   // written somewhere: this is the command that said "left no log".
