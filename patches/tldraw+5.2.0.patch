@@ -1,12 +1,18 @@
 diff --git a/node_modules/tldraw/dist-cjs/lib/shapes/shared/defaultStyleDefs.js b/node_modules/tldraw/dist-cjs/lib/shapes/shared/defaultStyleDefs.js
-index e85fa54..d0841d7 100644
+index e85fa54..5973493 100644
 --- a/node_modules/tldraw/dist-cjs/lib/shapes/shared/defaultStyleDefs.js
 +++ b/node_modules/tldraw/dist-cjs/lib/shapes/shared/defaultStyleDefs.js
-@@ -70,9 +70,11 @@ function getFillDefForCanvas() {
+@@ -70,9 +70,17 @@ function getFillDefForCanvas() {
    };
  }
  const TILE_PATTERN_SIZE = 8;
 +const MAX_PATTERN_IMAGE_SIZE = 16384;
++// tlda: cap the prefetched pattern LOD levels. maxEffectiveZoom is
++// zoomSteps[last]/zoomSteps[0], and the spatial map stretches the floor to
++// 0.001, so uncapped this prefetches 14 levels x2 themes including 16384px
++// canvases (~1GB each) on every editor mount. LOD 4 covers effective zooms
++// to 16; viewed zoom tops out at 8.
++const MAX_PATTERN_LOD = 4;
  const generateImage = (dpr, currentZoom, solid) => {
    return new Promise((resolve, reject) => {
 -    const size = TILE_PATTERN_SIZE * currentZoom * dpr;
@@ -15,7 +21,7 @@ index e85fa54..d0841d7 100644
      const canvasEl = (0, import_editor.getGlobalDocument)().createElement("canvas");
      canvasEl.width = size;
      canvasEl.height = size;
-@@ -85,9 +87,9 @@ const generateImage = (dpr, currentZoom, solid) => {
+@@ -85,9 +93,9 @@ const generateImage = (dpr, currentZoom, solid) => {
      ctx.fillRect(0, 0, size, size);
      ctx.globalCompositeOperation = "destination-out";
      ctx.lineCap = "round";
@@ -27,15 +33,30 @@ index e85fa54..d0841d7 100644
      ctx.beginPath();
      ctx.moveTo(s(t * 1), s(t * 3));
      ctx.lineTo(s(t * 3), s(t * 1));
+@@ -157,7 +165,7 @@ function useGetHashPatternZoomName() {
+ function getPatternLodsToGenerate(maxZoom) {
+   const levels = [];
+   const minLod = 0;
+-  const maxLod = getPatternLodForZoomLevel(maxZoom);
++  const maxLod = Math.min(getPatternLodForZoomLevel(maxZoom), MAX_PATTERN_LOD);
+   for (let i = minLod; i <= maxLod; i++) {
+     levels.push(Math.pow(2, i));
+   }
 diff --git a/node_modules/tldraw/dist-esm/lib/shapes/shared/defaultStyleDefs.mjs b/node_modules/tldraw/dist-esm/lib/shapes/shared/defaultStyleDefs.mjs
-index 5d9181e..333a44c 100644
+index 5d9181e..b5b5169 100644
 --- a/node_modules/tldraw/dist-esm/lib/shapes/shared/defaultStyleDefs.mjs
 +++ b/node_modules/tldraw/dist-esm/lib/shapes/shared/defaultStyleDefs.mjs
-@@ -57,9 +57,11 @@ function getFillDefForCanvas() {
+@@ -57,9 +57,17 @@ function getFillDefForCanvas() {
    };
  }
  const TILE_PATTERN_SIZE = 8;
 +const MAX_PATTERN_IMAGE_SIZE = 16384;
++// tlda: cap the prefetched pattern LOD levels. maxEffectiveZoom is
++// zoomSteps[last]/zoomSteps[0], and the spatial map stretches the floor to
++// 0.001, so uncapped this prefetches 14 levels x2 themes including 16384px
++// canvases (~1GB each) on every editor mount. LOD 4 covers effective zooms
++// to 16; viewed zoom tops out at 8.
++const MAX_PATTERN_LOD = 4;
  const generateImage = (dpr, currentZoom, solid) => {
    return new Promise((resolve, reject) => {
 -    const size = TILE_PATTERN_SIZE * currentZoom * dpr;
@@ -44,7 +65,7 @@ index 5d9181e..333a44c 100644
      const canvasEl = getGlobalDocument().createElement("canvas");
      canvasEl.width = size;
      canvasEl.height = size;
-@@ -72,9 +74,9 @@ const generateImage = (dpr, currentZoom, solid) => {
+@@ -72,9 +80,9 @@ const generateImage = (dpr, currentZoom, solid) => {
      ctx.fillRect(0, 0, size, size);
      ctx.globalCompositeOperation = "destination-out";
      ctx.lineCap = "round";
@@ -56,6 +77,15 @@ index 5d9181e..333a44c 100644
      ctx.beginPath();
      ctx.moveTo(s(t * 1), s(t * 3));
      ctx.lineTo(s(t * 3), s(t * 1));
+@@ -144,7 +152,7 @@ function useGetHashPatternZoomName() {
+ function getPatternLodsToGenerate(maxZoom) {
+   const levels = [];
+   const minLod = 0;
+-  const maxLod = getPatternLodForZoomLevel(maxZoom);
++  const maxLod = Math.min(getPatternLodForZoomLevel(maxZoom), MAX_PATTERN_LOD);
+   for (let i = minLod; i <= maxLod; i++) {
+     levels.push(Math.pow(2, i));
+   }
 diff --git a/node_modules/tldraw/src/lib/shapes/shared/defaultStyleDefs.tsx b/node_modules/tldraw/src/lib/shapes/shared/defaultStyleDefs.tsx
 index fb6c4e6..13239e3 100644
 --- a/node_modules/tldraw/src/lib/shapes/shared/defaultStyleDefs.tsx
