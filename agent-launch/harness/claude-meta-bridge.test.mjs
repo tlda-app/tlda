@@ -28,6 +28,16 @@ test('fleet meta-routed launch maps the deployment key and unsets sibling creden
   assert.ok(cmd.includes(`--model '${META_MODEL}'`))
 })
 
+test('fleet launches carry the Playwright MCP server alongside tlda', () => {
+  const cmd = buildCmd({
+    ...base,
+    fleetId: 'fleet:example',
+    env: { META_API_KEY: 'deployment-secret' },
+  })
+  assert.ok(cmd.includes('playwright'))
+  assert.ok(cmd.includes('@playwright/mcp'))
+})
+
 test('fleet meta-routed launch without a deployment key fails loudly instead of falling back', () => {
   assert.throws(
     () => buildCmd({ ...base, fleetId: 'fleet:example', env: {} }),

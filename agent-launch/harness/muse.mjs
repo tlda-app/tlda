@@ -185,6 +185,13 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
       env: mcpEnv,
       framing: 'line_delimited_json',
     },
+    ...(settings.mcpServers?.playwright ? {} : {
+      playwright: {
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', '@playwright/mcp'],
+      },
+    }),
   }
   fs.mkdirSync(target, { recursive: true, mode: 0o700 })
   fs.writeFileSync(path.join(target, 'settings.json'), `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })

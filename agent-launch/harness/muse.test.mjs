@@ -102,6 +102,7 @@ test('fleet MCP configuration isolates identity and references native auth witho
   assert.equal(settings.mcpServers.tlda.env.FLEET_HARNESS, 'muse')
   assert.equal(settings.mcpServers.tlda.env.FLEET_DAEMON_KEY, 'test-machine:testing')
   assert.equal(settings.mcpServers.tlda.framing, 'line_delimited_json')
+  assert.deepEqual(settings.mcpServers.playwright, { transport: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp'] })
   assert.equal(settings.endpoint_transport, undefined)
   assert.equal(settings.model_catalog, undefined)
   assert.equal(settings.tui.theme, 'dark')

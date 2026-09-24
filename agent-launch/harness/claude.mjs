@@ -47,6 +47,11 @@ function mcpConfig() {
         command: process.execPath,
         args: [path.join(repoRoot(), 'mcp-server', 'index.mjs')],
       },
+      playwright: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', '@playwright/mcp'],
+      },
     },
   }
 }
