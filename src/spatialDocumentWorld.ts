@@ -20,6 +20,16 @@ const WORLD_GAP = 90_000
  *  view is a normal sequence of zoom-outs rather than one 50x jump. */
 export const SPATIAL_MAP_ZOOM_STEPS = [0.001, 0.002, 0.005, 0.01, 0.025]
 export const SPATIAL_MAP_MIN_ZOOM = SPATIAL_MAP_ZOOM_STEPS[0]
+/** Zoom at and below which a page renders its mid-level sketch instead of
+ *  full content: structural, in place, clickable. Below SPATIAL_MAP_ZOOM the
+ *  page is a placeholder and the world map carries the meaning. */
+export const SPATIAL_MID_ZOOM = 0.5
+export type SpatialLodLevel = 'full' | 'mid' | 'map'
+export function spatialLodLevelForZoom(z: number): SpatialLodLevel {
+  if (z <= SPATIAL_MAP_ZOOM) return 'map'
+  if (z <= SPATIAL_MID_ZOOM) return 'mid'
+  return 'full'
+}
 const DOCUMENT_W = 800
 const DOCUMENT_H = 1200
 

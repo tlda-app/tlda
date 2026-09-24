@@ -22,7 +22,7 @@ import {
   recordHtmlNavigationEnd,
   recordHtmlNavigationStart,
 } from '../html-page-navigation-history'
-import { SPATIAL_MAP_ZOOM } from '../spatialDocumentWorld'
+import { spatialLodLevelForZoom } from '../spatialDocumentWorld'
 import { getOptionalVisibilityViewport, useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { deckLayout } from '../loaders/deckLayout'
@@ -33,6 +33,7 @@ import { PAGES_FROM } from '../activeConfig'
 import { ProjectContext } from '../PanelContext'
 import { presentationPath } from '../presentationRoute'
 import { clearHtmlHeadingOutline, setHtmlHeadingOutline } from '../htmlHeadingOutline'
+import { DeckMidLevel } from './DeckMidLevel'
 
 /** How many pages either side of the viewport keep their iframe mounted, on
  *  each axis. Measured in pages rather than viewports so it means the same
@@ -433,17 +434,21 @@ export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
 function SpatialLodHtmlPage({ shape }: { shape: any }) {
   const editor = useEditor()
   const viewportId = useVisibilityViewportId()
-  const mapLevel = useValue(
+  const level = useValue(
     `spatial-lod-html-${shape.id}`,
     () => {
-      if (!viewportId) return editor.getZoomLevel() <= SPATIAL_MAP_ZOOM
+      if (!viewportId) return spatialLodLevelForZoom(editor.getZoomLevel())
       const viewport = getOptionalVisibilityViewport(editor, viewportId)
-      return !viewport || viewport.camera.z <= SPATIAL_MAP_ZOOM
+      if (!viewport) return 'map' as const
+      return spatialLodLevelForZoom(viewport.camera.z)
     },
     [editor, shape.id, viewportId],
   )
-  if (mapLevel) {
+  if (level === 'map') {
     return <HTMLContainer><MapPagePlaceholder shape={shape} /></HTMLContainer>
+  }
+  if (level === 'mid' && String(shape.props.url || '').includes('_tldaDeck=1')) {
+    return <DeckMidLevel shape={shape} />
   }
   return <HtmlPageComponent shape={shape} />
 }

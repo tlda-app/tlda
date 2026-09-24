@@ -1,0 +1,28 @@
+.deck-mid-level {
+  position: relative;
+  background: color-mix(in srgb, var(--tlda-canvas-background, #f8fafb) 35%, white);
+}
+
+.deck-mid-cell {
+  position: absolute;
+  padding: 8px 10px;
+  text-align: left;
+  background: color-mix(in srgb, white 88%, var(--tlda-canvas-background, #f8fafb));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 14%, transparent);
+  border: 0;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.deck-mid-cell:hover {
+  background: white;
+}
+
+.deck-mid-cell-title {
+  display: block;
+  line-height: 1.3;
+  color: color-mix(in srgb, currentColor 72%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
