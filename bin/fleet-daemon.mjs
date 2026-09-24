@@ -871,6 +871,18 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
         if (!containment.ok) {
           throw new Error(`${project} was not linked: local Git history is missing ${containment.missing.length} server version(s), beginning ${containment.missing.slice(0, 3).join(', ')}`)
         }
+        // Containment is objects; continuity is ancestry. A fetch alone puts
+        // the server versions in this repo without descending from them, and
+        // preserving the server head over such a checkout stalls every later
+        // settle at WrongHead with no mergeable base. The short-circuit holds
+        // only when the link head descends from every server version; anything
+        // else fails the link loudly with its recovery (relink without
+        // acceptContainedServerHistory to adopt local history), never a
+        // silent un-syncable binding.
+        const ancestry = await shadowMirror.containsCommitsInHistory({ sourceDir, ref: seedRevision, hashes })
+        if (!ancestry.ok) {
+          throw new Error(`${project} was not linked: ${ancestry.missing.length} server version(s) are present but not ancestors of ${seedRevision}, beginning ${ancestry.missing.slice(0, 3).join(', ')}; relink without acceptContainedServerHistory to adopt local history`)
+        }
         serverHistoryContained = true
         log.info(`${project}: all ${hashes.length} server versions are contained in ${sourceDir}; preserving server history during relink`)
       }

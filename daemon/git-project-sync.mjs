@@ -577,7 +577,23 @@ export function createGitProjectSync({
       // Anything else is a broken invocation and must not be reported as a
       // conflict -- that would turn a bug in this code into a story about the
       // two authors.
-      if (error?.code !== 1) throw error
+      //
+      // One fatal is a STATE, not a crash: exit 128 refusing unrelated
+      // histories means the accepted head and this revision share no merge
+      // base (a relink preserved server history the checkout never descended
+      // from), so no merge can exist and none will exist on retry. Name it so
+      // the refusal channel carries it with its recovery; throwing here
+      // stalls every auto-settle identically forever. Any other fatal still
+      // throws as itself, with the code and the fatal line attached.
+      if (error?.code === 128 && /unrelated histor/i.test(String(error.stderr || ''))) {
+        return { ok: false, status: 'unrelated-histories' }
+      }
+      if (error?.code !== 1) {
+        if (error && error.code !== undefined) {
+          throw new Error(`merge-tree failed (${error.code}): ${String(error.stderr || error.message || '').split('\n')[0]}`)
+        }
+        throw error
+      }
       const lines = String(error.stdout || '').split('\n')
       const conflicted = [...new Set(lines
         .map(line => line.match(/^\d{6} [0-9a-f]{40} [123]\t(.+)$/))
@@ -640,6 +656,16 @@ export function createGitProjectSync({
       const accepted = (await rev(fetchedRef)) || match[1]
       const merge = await combineWithAcceptedHead(accepted, revision)
       if (!merge.ok) {
+        if (merge.status === 'unrelated-histories') {
+          // No merge can exist: the accepted head shares no history with this
+          // checkout (a relink preserved server history the checkout never
+          // descended from). Adopting one lineage over the other is an
+          // operator act, not this code's -- name the state and point at the
+          // recovery; the refusal channel carries it with its all-clear.
+          const reason = `${project}: the accepted source shares no history with this checkout (accepted ${accepted.slice(0, 7)}); relink adopting local history to resume sync`
+          log.warn?.(reason)
+          return { ok: false, status: 'unrelated-histories', head: accepted, revision, reason }
+        }
         // HELD, and named as what it is. Both sides are recoverable: the
         // person's work is their own commit on their branch, and the accepted
         // head is parked at fetchedRef. Nothing is discarded and no winner is

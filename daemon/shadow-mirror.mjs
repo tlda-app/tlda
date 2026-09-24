@@ -36,6 +36,26 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
     return { ok: requested.every(hash => available.has(hash)), missing: requested.filter(hash => !available.has(hash)) }
   }
 
+  /**
+   * The ancestry-scoped half of the relink containment question.
+   *
+   * `containsCommits` asks whether the objects EXIST anywhere in the repo --
+   * a fetch alone satisfies it. But the relink short-circuit built on it
+   * promises CONTINUITY: the first settle must descend from the server head,
+   * or every push dies as WrongHead and the combine dies refusing unrelated
+   * histories. Objects present but unreachable from the link head satisfy the
+   * letter and break the promise -- measured on testing 2026-09-24, a full
+   * day of dead auto-settles behind it. This asks the question the promise
+   * needs: every server version an ancestor of the revision being linked.
+   */
+  async function containsCommitsInHistory({ sourceDir, ref, hashes }) {
+    const requested = [...new Set((hashes || []).map(String).filter(hash => /^[0-9a-f]{40}$/i.test(hash)))]
+    if (requested.length !== (hashes || []).length) throw new Error('server history contained an invalid commit id')
+    const { stdout } = await execFileP('git', ['rev-list', ref], { cwd: sourceDir, timeout: 120000, maxBuffer: 64 * 1024 * 1024 })
+    const available = new Set(stdout.split('\n').filter(Boolean))
+    return { ok: requested.every(hash => available.has(hash)), missing: requested.filter(hash => !available.has(hash)) }
+  }
+
   async function mirrorShadowRef({ project, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq, refusedRevision = null }) {
     if (!project) throw new Error('missing project')
     if (!/^[0-9a-f]{40}$/i.test(String(hash || ''))) throw new Error(`invalid shadow hash: ${hash}`)
@@ -133,7 +153,7 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
     return { ok: true, empty: false, project, sourceDir, head, repositoryDir: sourceDir, cleanup: async () => {} }
   }
 
-  return { mirrorShadowRef, prepareHistorySeed, containsCommits }
+  return { mirrorShadowRef, prepareHistorySeed, containsCommits, containsCommitsInHistory }
 }
 
 // How many times to re-ask for a confirmation that never came. Each ask costs
