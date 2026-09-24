@@ -1,5 +1,10 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { chmodSync, constants as fsConstants } from 'node:fs'
+import { access as accessCb } from 'node:fs/promises'
+import { arch as osArch, platform as osPlatform } from 'node:os'
+import { dirname, join as joinPath } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   terminalBackscrollCaptureArgs,
   terminalVisibleCaptureArgs,
@@ -18,6 +23,41 @@ function tmuxSessionAlreadyGone(error) {
     || /no sessions?/i.test(text)
     || /can't find session/i.test(text)
     || /no session/i.test(text)
+}
+
+// node-pty shells process setup through a prebuilt spawn-helper binary, and
+// the bit must be set or every spawn fails `posix_spawnp failed` -- which is
+// exactly a terminal hover that seeds (capture-pane works) and then never
+// updates (the PTY attach dies). The repo postinstall chmods it, but deploy
+// releases install fresh without an effective postinstall (measured
+// 2026-09-24: every retained release had -rw-r--r--), so the daemon heals its
+// own dependency rather than trusting the install. Best-effort by design: if
+// the chmod fails the spawn fails loudly as before. `helperPath` overrides
+// the derived path for tests, so the suite never touches the real binary.
+export function nodePtySpawnHelperPath() {
+  const entryUrl = import.meta.resolve('node-pty')
+  const pkgRoot = dirname(dirname(fileURLToPath(entryUrl)))
+  return joinPath(pkgRoot, 'prebuilds', `${osPlatform()}-${osArch()}`, 'spawn-helper')
+}
+
+export async function ensureSpawnHelperExecutable({ log = null, helperPath = null } = {}) {
+  const tell = (level, msg) => { try { log?.[level]?.(msg) } catch { /* logging never breaks PTY setup */ } }
+  try {
+    const helper = helperPath || nodePtySpawnHelperPath()
+    try {
+      await accessCb(helper, fsConstants.X_OK)
+      return helper
+    } catch {
+      // Not executable (or missing): fall through to the chmod, whose own
+      // failure is caught below and leaves today's loud failure in place.
+    }
+    chmodSync(helper, 0o755)
+    tell('info', `terminal-watch: set +x on node-pty spawn-helper at ${helper}`)
+    return helper
+  } catch (e) {
+    tell('warn', `terminal-watch: could not ensure spawn-helper executable: ${e?.message || e}`)
+    return null
+  }
 }
 
 export function promptAcceptanceInput(acceptKey = '1') {
@@ -430,6 +470,7 @@ export function createTerminalRpc({
       try {
         const mod = await import('node-pty')
         ptyModule = mod.default || mod
+        await ensureSpawnHelperExecutable({ log })
       } catch (e) { throw new Error('node-pty not available: ' + e.message) }
     }
     return ptyModule
