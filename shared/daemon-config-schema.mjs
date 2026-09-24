@@ -65,6 +65,7 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'buildMaxConcurrency',
   'buildPriority',
   'buildStallTimeoutMs',
+  'buildTimeBudgetMs',
   // How many search children this deployment runs. Absent means 4.
   //
   // One child meant a single slow query blocked every other search, so this is

@@ -748,6 +748,7 @@ export function initBuildDispatcher() {
     maxConcurrency: config.buildMaxConcurrency,
     priority: config.buildPriority,
     stallTimeoutMs: config.buildStallTimeoutMs,
+    timeBudgetMs: config.buildTimeBudgetMs,
     storePath: join(getProjectsDir(), '.build-queue.sqlite'),
     notifyHeadChanged: (...args) => headNotifier?.(...args),
   })

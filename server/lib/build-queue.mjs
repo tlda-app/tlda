@@ -8,6 +8,13 @@ export function failedBuildRpcResult(id, error) {
   }
 }
 
+function formatBudget(ms) {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
+  return `${Math.round(ms / 3_600_000)}h`
+}
+
 export function createBuildQueue({
   transport,
   getProjectsDir,
@@ -34,6 +41,15 @@ export function createBuildQueue({
   // a test does when it drives the clock itself.
   const configuredStall = Number(options.stallTimeoutMs)
   const stallTimeoutMs = Number.isFinite(configuredStall) && configuredStall >= 0 ? configuredStall : 90_000
+  // How long one build ATTEMPT may run before it is failed and its slot taken
+  // back. The stall watchdog above is liveness, not progress: heartbeats prove
+  // the worker's event loop, and a render hung with its loop alive never trips
+  // it — measured on testing 2026-09-24 as corpse builds holding both worker
+  // slots, one 10 days old, while admitted jobs starved. The budget bounds the
+  // attempt: 12h default is twenty times the longest legitimate build on
+  // record (0.6h), so it reaps the hung, not the slow. Set to 0 to disable.
+  const configuredBudget = Number(options.timeBudgetMs)
+  const timeBudgetMs = Number.isFinite(configuredBudget) && configuredBudget >= 0 ? configuredBudget : 43_200_000
   // Deliberately NOT an injectable clock. An injected `now` looks testable and
   // is not: the watchdog below is a real `setInterval`, so a test that advances
   // a fake clock proves the arithmetic and never runs the timer that has to
@@ -114,6 +130,8 @@ export function createBuildQueue({
     const job = jobFromRow(row)
     let workerFailure = null
     let cancelled = false
+    let budgetExceeded = false
+    let budgetTimer = null
     let relays = Promise.resolve()
     let lastHeard = now()
     activeCount += 1
@@ -150,6 +168,27 @@ export function createBuildQueue({
     }, Math.max(100, Math.floor(stallTimeoutMs / 4))) : null
     stallTimer?.unref?.()
 
+    // The wall-clock bound on one ATTEMPT. The stall watchdog above is
+    // liveness: heartbeats prove the worker's event loop, so a render hung
+    // with its loop alive never trips it. The budget does not care what the
+    // worker is doing -- outlast it and the attempt settles as failed with
+    // reason `build-time-budget`, the worker is cancelled first, and the slot
+    // releases so the queue drains on. Same shape as the stall kill:
+    // `workerFailure`, not `cancelled`, because nobody asked for this.
+    if (timeBudgetMs > 0) {
+      budgetTimer = setTimeout(() => {
+        if (cancelled || !running.has(row.id)) return
+        budgetExceeded = true
+        const overrun = new Error(
+          `build exceeded its time budget of ${formatBudget(timeBudgetMs)} without finishing; treating the build as failed and releasing its slot`,
+        )
+        logError(job.name, overrun)
+        workerFailure = overrun
+        running.get(row.id)?.handle?.cancel?.()
+      }, timeBudgetMs)
+      budgetTimer?.unref?.()
+    }
+
     function relay(message, channel) {
       // ANY message is proof the worker's event loop is running. In particular,
       // heartbeats do not depend on a renderer producing stdout.
@@ -175,6 +214,7 @@ export function createBuildQueue({
 
     async function onExit(code, signal, output) {
       if (stallTimer) clearInterval(stallTimer)
+      if (budgetTimer) clearTimeout(budgetTimer)
       await relays
       if (!running.delete(row.id)) return
       activeCount = Math.max(0, activeCount - 1)
@@ -200,7 +240,12 @@ export function createBuildQueue({
           row,
           cancelled ? 'killed' : workerFailure ? 'failed' : 'complete',
           workerFailure
-            ? { error: workerFailure.message, errorStack: workerFailure.remoteStack || workerFailure.stack, exitCode: code }
+            ? {
+                error: workerFailure.message,
+                errorStack: workerFailure.remoteStack || workerFailure.stack,
+                exitCode: code,
+                ...(budgetExceeded ? { reason: 'build-time-budget' } : {}),
+              }
             : cancelled
               ? { reason: job.cancelReason || 'cancelled', exitCode: code }
               : { exitCode: code },

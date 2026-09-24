@@ -35,6 +35,15 @@ uploadDir: /app/server/persist/uploads
 # to stdout. Do not kill a healthy course build during that quiet interval.
 buildStallTimeoutMs: 3600000
 
+# Wall-clock bound on one build attempt. A render hung with its event loop
+# alive (R waiting on input only it can see) sends heartbeats forever and
+# never trips the stall watchdog above, so it held its worker slot for good --
+# measured as corpse builds holding both slots, one 10 days old, while admitted
+# jobs starved. An attempt that outlasts this settles as failed with reason
+# build-time-budget and its slot releases. 12h is twenty times the longest
+# legitimate build on record (0.6h).
+buildTimeBudgetMs: 43200000
+
 # How many search children run here. One meant a single slow query blocked every
 # other search, and the timeout that recycles a stuck child would have cancelled
 # queries that had done nothing wrong.
