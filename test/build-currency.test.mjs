@@ -27,13 +27,14 @@ test('diverged sequences with no build running are loudly stale-dead', () => {
   assert.match(v.label, /no following build/)
 })
 
-test('diverged sequences while building are loudly stale-building', () => {
+test('diverged sequences while building are quiet stale-building, never red', () => {
   const v = describeBuildCurrency({
     renderedRevision: R1, renderedSeq: 3, savedRevision: R2, savedSeq: 4,
     status: 'building', lastBuild: new Date().toISOString(),
   })
   assert.equal(v.state, 'stale-building')
-  assert.equal(v.loud, true)
+  assert.equal(v.loud, false)
+  assert.doesNotMatch(v.label, /STALE/)
 })
 
 test('equal sequences while building are quiet building, not stale', () => {

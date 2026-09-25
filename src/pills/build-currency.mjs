@@ -8,15 +8,16 @@
  * writes, polls the build queue, or starts anything: it names what is on
  * screen so "old pages shown as new" is impossible to miss.
  *
- * States:
- *   current        rendered == saved — quiet
- *   building       equal but a build is running — quiet
- *   stale-building diverged while a build runs — LOUD (a newer save is on its way)
- *   stale-dead     diverged with no build running — LOUD (a save has no
+ * States (one tiny styling throughout; the flagged ones render red-little,
+ * never a banner — this surface is for writing, not monitoring):
+ *   current        rendered == saved
+ *   building       equal but a build is running
+ *   stale-building diverged while a build runs (a newer save is on its way)
+ *   stale-dead     diverged with no build running (a save has no
  *                  following build, as far as display can tell)
- *   failed         the newest revision's build settled as failed — LOUD
- *   unbuilt        saves exist but nothing rendered yet — LOUD
- *   unknown        neither side is known — quiet
+ *   failed         the newest revision's build settled as failed
+ *   unbuilt        saves exist but nothing rendered yet
+ *   unknown        neither side is known
  */
 
 /** @param {unknown} revision */
@@ -112,10 +113,12 @@ export function describeBuildCurrency({
   }
   if (diverged(renderedRevision, renderedSeq, savedRevision, savedSeq)) {
     if (status === 'building') {
+      // Normal transient: every edit passes through here. Grey, never red —
+      // a red flash on every save would be monitoring noise, not signal.
       return {
         state: 'stale-building',
-        loud: true,
-        label: `STALE — newer save building · ${base}`,
+        loud: false,
+        label: `newer save building · ${base}`,
         title: 'These pages lag the latest save; a build for it is running.',
       }
     }

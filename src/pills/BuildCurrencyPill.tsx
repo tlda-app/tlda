@@ -7,7 +7,7 @@
  * fetches (GET /api/projects/:name via fetchDocConfig). The verdict itself
  * is describeBuildCurrency() in ./build-currency.mjs. No writes, no queue
  * polling, no recovery: when the render lags the source the pill says so
- * loudly, which is the whole job.
+ * in the same tiny styling, red-little at most — never a banner.
  */
 import { useEffect, useState } from 'react'
 import { useEditor } from 'tldraw'

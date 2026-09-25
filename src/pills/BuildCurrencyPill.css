@@ -1,7 +1,9 @@
 /* BuildCurrencyPill — always-visible rendered-vs-saved state.
-   Quiet when current (small grey text like the progress pill); LOUD when
-   stale/failed/unbuilt (filled red banner — the point is that "old pages
-   shown as new" becomes impossible to miss). */
+   One tiny styling, always: small grey text like the progress pill. The
+   ceiling is red and little — stale/failed/unbuilt states render in the
+   same size and weight, red text only, never a banner, never bold. This
+   surface is for writing, not monitoring; information is embedded in the
+   same styling, not given salience. */
 
 .build-currency {
   font-size: 10px;
@@ -16,16 +18,10 @@
 }
 
 .build-currency.stale {
-  background: #d9342b;
-  color: #fff;
-  font-weight: 700;
+  color: #d9342b;
   opacity: 1;
-  padding: 3px 10px;
-  border-radius: 4px;
-  max-width: none;
-  white-space: normal;
 }
 
 html[data-theme="dark"] .build-currency.stale {
-  background: #e0483e;
+  color: #e0483e;
 }
