@@ -92,17 +92,22 @@ export function createDaemonMintCore({
 
   async function join(mintIdValue) {
     const facts = store.get(mintIdValue)
-    if (!facts?.fleetId || !facts?.processState || facts.joinedAt) return facts
+    if (!facts?.fleetId || !facts?.processState) return facts
     if (joins.has(mintIdValue)) return joins.get(mintIdValue)
     const joining = Promise.resolve()
       .then(async () => {
         const current = store.get(mintIdValue)
-        if (!current?.fleetId || !current?.processState || current.joinedAt) return current
+        if (!current?.fleetId || !current?.processState) return current
+        // Re-bind every time: late transcript discovery (claude) lands after
+        // the seat joined at mint, and the ledger must follow the latest
+        // session facts or the watcher never attaches. bindSeat upserts and
+        // its change hook only fires on actual differences, so repeats with
+        // identical facts are silent.
         await bindSeat(current)
         // The durable permission grant belongs to the launched seat, not to the
         // later transcript discovery. bindSeat records that grant immediately;
         // only the completed runtime identity marks the mint joined.
-        if (!current.sessionId) return store.get(mintIdValue)
+        if (!current.sessionId || current.joinedAt) return store.get(mintIdValue)
         return store.markJoined(mintIdValue)
       })
       .finally(() => joins.delete(mintIdValue))

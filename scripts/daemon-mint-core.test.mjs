@@ -54,7 +54,11 @@ releaseProcess()
 const facts = await pending
 assert.equal(facts.fleetId, 'fleet:test')
 assert.equal(facts.sessionId, 'session:test')
-assert.equal(events.filter(value => value.startsWith('bind:')).length, 1)
+// join re-binds every time (never a no-op on joined state) so late session
+// facts reach the ledger; the mint flow joins twice (session record, then the
+// binding loop), hence two binds. The ledger hook only fires on actual
+// differences, so the repeat with identical facts is silent downstream.
+assert.equal(events.filter(value => value.startsWith('bind:')).length, 2)
 
 const lifecycleEvents = []
 let lifecycleSeatAttempts = 0
@@ -256,7 +260,9 @@ const serverCore = createDaemonMintCore({
   bindSeat: async facts => serverEvents.push(`bind:${facts.fleetId}:${facts.sessionId}`),
 })
 await serverCore.mint({ mint_id: 'mint:server', fleet_id: 'fleet:server', name: 'server' })
-assert.deepEqual(serverEvents, ['launch:fleet:server', 'bind:fleet:server:session:server'])
+// join re-binds every time (see above): the mint flow joins twice, so the seat
+// binds twice with identical facts.
+assert.deepEqual(serverEvents, ['launch:fleet:server', 'bind:fleet:server:session:server', 'bind:fleet:server:session:server'])
 
 // A live runtime is durable before its transcript identity exists. The seat's
 // permission grant must be written at that boundary rather than waiting behind
@@ -389,6 +395,26 @@ assert.equal(launchNeedsIdentityDiscovery({}, resolver), true)
 assert.equal(launchNeedsIdentityDiscovery({ session_id: 's' }, null), false)
 assert.equal(launchNeedsIdentityDiscovery({}, null), false)
 assert.equal(launchNeedsIdentityDiscovery(), false)
+
+// A late session_path (claude deferred discovery lands after the seat joined
+// at mint) must re-bind the seat: the ledger follows the latest facts, while
+// only the joined mark is once.
+const rebindEvents = []
+const rebindCore = createDaemonMintCore({
+  store,
+  mintId: () => 'mint:rebind',
+  launchProcess: async () => ({ session_id: 'session:rebind', tmux_session: 'fleet-rebind' }),
+  requestSeat: async () => ({ fleet_id: 'fleet:rebind', friendly_name: 'rebind' }),
+  bindSeat: async facts => { rebindEvents.push(facts.sessionPath || null) },
+})
+await rebindCore.mint({ name: 'rebind', launch: { cwd: '/tmp' } })
+assert.deepEqual(rebindEvents, [null, null])
+const joinedAt = store.get('mint:rebind').joinedAt
+assert.ok(joinedAt)
+await rebindCore.recordSession('mint:rebind', { session_id: 'session:rebind', session_path: '/tmp/session.jsonl' })
+assert.deepEqual(rebindEvents, [null, null, '/tmp/session.jsonl'])
+assert.equal(store.get('mint:rebind').sessionPath, '/tmp/session.jsonl')
+assert.equal(store.get('mint:rebind').joinedAt, joinedAt)
 
 store.close()
 fs.rmSync(dir, { recursive: true, force: true })
