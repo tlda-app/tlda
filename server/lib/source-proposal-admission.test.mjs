@@ -129,6 +129,25 @@ test('per-connection enqueue reaches the handler through the production envelope
   assert.equal(f.sent[0].result.ok, true)
 })
 
+test('per-connection enqueue forwards queue wait to the envelope for dispatch diagnostics', async () => {
+  const f = fixture()
+  const envelopeCalls = []
+  let clock = 1000
+  const enqueue = createSourceProposalAdmissionConnectionDispatcher({
+    ws: f.ws,
+    handleEnvelope: async (ws, msg, handler, options) => {
+      envelopeCalls.push({ msg, options })
+      await handler(ws, msg)
+    },
+    handler: f.handler,
+    performanceNow: () => clock,
+  })
+  await enqueue({ id: 1, project: 'paper', ref: 'proposal', revision: 'r1' }, { receivedAt: 950 })
+  assert.equal(envelopeCalls.length, 1)
+  assert.equal(envelopeCalls[0].options.queueWaitMs, 50)
+  assert.equal(f.sent[0].result.ok, true)
+})
+
 test('identifies a deliberately slow stage as dominant', async () => {
   let clock = 0
   const f = fixture({

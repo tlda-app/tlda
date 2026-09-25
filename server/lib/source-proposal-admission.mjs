@@ -66,8 +66,8 @@ export function createSourceProposalAdmissionHandler({
 
 export function createSourceProposalAdmissionDispatcher(dispatch, onError = () => {}, performanceNow = () => performance.now()) {
   const chains = new Map()
-  return function enqueue(msg) {
-    const receivedAt = performanceNow()
+  return function enqueue(msg, context = {}) {
+    const receivedAt = context.receivedAt ?? performanceNow()
     const project = String(msg.project || '')
     const previous = chains.get(project) || Promise.resolve()
     const current = previous.then(() => dispatch(msg, { receivedAt })).catch(onError)
@@ -77,7 +77,13 @@ export function createSourceProposalAdmissionDispatcher(dispatch, onError = () =
   }
 }
 
-export function createSourceProposalAdmissionConnectionDispatcher({ ws, handleEnvelope, handler, onHandlerError, onDispatchError, performanceNow }) {
-  const dispatch = (msg, context = {}) => handleEnvelope(ws, msg, (handlerWs, handlerMsg) => handler(handlerWs, handlerMsg, context), { onHandlerError })
+export function createSourceProposalAdmissionConnectionDispatcher({ ws, handleEnvelope, handler, onHandlerError, onDispatchError, performanceNow = () => performance.now() }) {
+  // Queue wait for the shared per-envelope dispatch diagnostics: the inner
+  // dispatcher stamps context.receivedAt at enqueue time, so the gap to now
+  // is this frame's wait behind earlier frames on the same project chain.
+  const dispatch = (msg, context = {}) => handleEnvelope(ws, msg, (handlerWs, handlerMsg) => handler(handlerWs, handlerMsg, context), {
+    onHandlerError,
+    queueWaitMs: performanceNow() - (context.receivedAt ?? performanceNow()),
+  })
   return createSourceProposalAdmissionDispatcher(dispatch, onDispatchError, performanceNow)
 }

@@ -21,6 +21,16 @@ export function createDaemonWsControlPlane({
   classifyServerDaemonOutboxError = () => 'retry',
   onPermanentServerDaemonOutboxError = null,
   replayProcessedDaemonMessage = null,
+  // Per-envelope dispatch diagnostics. Called once per daemon frame with
+  // { type, outboxId, kind, queueWaitMs, handlerMs, markProcessedMs, error }.
+  // Null by default: no recording, no logging, dispatch behavior unchanged.
+  // The daemon frame dispatcher serializes every frame on one chain (see
+  // unified-server.mjs /ws/fleet-daemon), so one slow frame head-of-line
+  // blocks every later ACK — this hook exists so the next recurrence leaves
+  // the first slow frame identified. Ordering is untouched: diagnostics
+  // observe, they never reorder or parallelize.
+  onDispatchDiag = null,
+  performanceNow = () => performance.now(),
 } = {}) {
   // No store-missing guard on either of these. A null statement used to mean
   // "never processed" and "don't record", which would have replayed every
@@ -171,28 +181,42 @@ export function createDaemonWsControlPlane({
     }
   }
 
-  async function handleDaemonOutboxEnvelope(ws, msg, handleMessage, { onHandlerError = null } = {}) {
+  async function handleDaemonOutboxEnvelope(ws, msg, handleMessage, { onHandlerError = null, queueWaitMs = null } = {}) {
+    const type = msg?.type ?? null
+    const outboxId = daemonOutboxId(msg)
+    const diag = (kind, extra = {}) => {
+      onDispatchDiag?.({ type, outboxId, kind, queueWaitMs, handlerMs: 0, markProcessedMs: 0, ...extra })
+    }
     try {
       if (msg?.type === SERVER_DAEMON_OUTBOX_ACK_TYPE) {
         await ackServerDaemonOutboxMessage(msg)
+        diag('server-daemon-outbox-ack')
         return { handled: true, kind: 'server-daemon-outbox-ack' }
       }
       if (msg?.type === SERVER_DAEMON_OUTBOX_ERROR_TYPE) {
         await errorServerDaemonOutboxMessage(msg)
+        diag('server-daemon-outbox-error')
         return { handled: true, kind: 'server-daemon-outbox-error' }
       }
       if (await isProcessedDaemonOutboxMessage(msg)) {
         await replayProcessedDaemonMessage?.(ws, msg)
         ackDaemonOutboxMessage(ws, msg)
+        diag('duplicate-daemon-outbox')
         return { handled: true, kind: 'duplicate-daemon-outbox' }
       }
+      const handlerStartedAt = performanceNow()
       await handleMessage(ws, msg)
+      const handlerMs = performanceNow() - handlerStartedAt
+      const markStartedAt = performanceNow()
       await markDaemonOutboxMessageProcessed(msg)
+      const markProcessedMs = performanceNow() - markStartedAt
       ackDaemonOutboxMessage(ws, msg)
+      diag('processed', { handlerMs, markProcessedMs })
       return { handled: true, kind: 'processed' }
     } catch (e) {
       onHandlerError?.(e)
       errorDaemonOutboxMessage(ws, msg, e)
+      diag('error', { error: e?.message || String(e) })
       return { handled: false, kind: 'error', error: e }
     }
   }

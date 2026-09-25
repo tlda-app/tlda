@@ -6554,9 +6554,15 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('message', (raw) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
+        // Receipt timestamp for per-envelope dispatch diagnostics: the
+        // dispatcher serializes frames on one chain, so the gap between
+        // here and dispatch start is the queue wait — the head-of-line
+        // signal. performance.now, not Date.now: wall clock can jump.
+        const daemonMessageReceivedAt = performance.now()
         const dispatch = async () => {
           await handleDaemonOutboxEnvelope(ws, msg, handleDaemonWsMessage, {
             onHandlerError: e => console.error('[daemon-ws] handler error:', e?.message),
+            queueWaitMs: performance.now() - daemonMessageReceivedAt,
           })
         }
         if (msg.type === 'source-bindings-set') {
@@ -6565,7 +6571,7 @@ server.on('upgrade', async (req, socket, head) => {
           return
         }
         if (msg.type === 'source-proposal-admit') {
-          enqueueSourceProposal(msg)
+          enqueueSourceProposal(msg, { receivedAt: daemonMessageReceivedAt })
           return
         }
         daemonMessageChain = daemonMessageChain.then(dispatch)
@@ -10342,7 +10348,35 @@ const {
   fleetStore,
   socketCanAcceptMore,
   replayProcessedDaemonMessage: async () => {},
+  onDispatchDiag: recordDaemonDispatchDiag,
 })
+
+// Per-envelope daemon-frame dispatch diagnostics. The /ws/fleet-daemon
+// dispatcher serializes every frame on one chain and ACKs only after the
+// handler plus the processed-mark, so one slow frame head-of-line blocks
+// every later ACK (2026-09-24 23:12–23:52 EDT unanswered flood). Dispatch
+// stays serialized — this only observes. Fast frames stay silent; a slow
+// frame logs one line and records one perf event (queryable post-hoc via
+// /api/diagnostics/live-perf), so the next recurrence leaves the FIRST
+// slow frame identified instead of a flat unanswered count.
+const SLOW_DAEMON_DISPATCH_HANDLER_MS = 100
+const SLOW_DAEMON_DISPATCH_QUEUE_MS = 1000
+function recordDaemonDispatchDiag(diag) {
+  const queueWaitMs = diag.queueWaitMs ?? 0
+  const workMs = (diag.handlerMs || 0) + (diag.markProcessedMs || 0)
+  if (diag.kind !== 'error' && workMs < SLOW_DAEMON_DISPATCH_HANDLER_MS && queueWaitMs < SLOW_DAEMON_DISPATCH_QUEUE_MS) return
+  const detail = {
+    type: diag.type,
+    outboxId: diag.outboxId,
+    kind: diag.kind,
+    queueWaitMs: Math.round(queueWaitMs * 10) / 10,
+    handlerMs: Math.round((diag.handlerMs || 0) * 10) / 10,
+    markProcessedMs: Math.round((diag.markProcessedMs || 0) * 10) / 10,
+    ...(diag.error ? { error: diag.error } : {}),
+  }
+  console.error(`[daemon-ws-dispatch] slow frame ${JSON.stringify(detail)}`)
+  recordServerPerfEvent('daemon-ws-dispatch-slow', detail)
+}
 
 // Set (or clear, with syncError=null) the mirror/shadow sync-failure state on a
 // doc's version sentinel. Convergent Yjs state, so the SyncErrorPill shows it on
