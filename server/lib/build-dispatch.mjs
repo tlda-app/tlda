@@ -611,7 +611,15 @@ export function createDispatcherWithOptions(transport, options = {}) {
     transport,
     getProjectsDir,
     store: options.store || new BuildQueueStore(options.storePath || ':memory:'),
-    serializeProject: serializedPublication,
+    // Admission never waits on the publication chain. A publication op that
+    // never settles (hung copy, hung git check, unreaped worker) used to hold
+    // this project's lock and silence every later save: admissions chained
+    // behind it, the daemon ack never came, buildStatus stayed `building`.
+    // Stale-head races from decoupled admission already converge through
+    // killNeedingRebase/thinPending, duplicate admits are idempotent
+    // (BuildQueueStore.admit), and global queue ordering still holds through
+    // transition(). Publications keep serializedPublication directly.
+    serializeProject: async (_project, operation) => operation(),
     recordAdmission,
     recordDisposition,
     async getCurrentHead(name) {
