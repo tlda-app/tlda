@@ -12,6 +12,16 @@ function claudeProjectsBase(base) {
   return base || path.join(os.homedir(), '.claude', 'projects')
 }
 
+// Where a claude runtime launched under `config` writes its transcripts: the
+// project's agent config folder when one is configured (spawnEnv sets
+// CLAUDE_CONFIG_DIR to <agentConfigDir>/claude), else the default ~/.claude.
+// Session binding must look where the runtime wrote, not where the default is.
+export function claudeProjectsBaseForConfig(config = {}) {
+  const dir = typeof config?.agentConfigDir === 'string' ? config.agentConfigDir.trim() : ''
+  if (dir) return path.join(dir, 'claude', 'projects')
+  return claudeProjectsBase()
+}
+
 function codexSessionsBase(base) {
   return base || path.join(os.homedir(), '.codex', 'sessions')
 }

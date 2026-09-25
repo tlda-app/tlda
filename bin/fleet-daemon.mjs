@@ -136,6 +136,7 @@ import { compilePermissionGrant, normalizePermissionGrant, permissionClampLine, 
 import { bindAgentRoute } from '../agent-launch/route-binding.mjs'
 import { liveIdentityResolverMap } from '../agent-launch/live-identity-resolvers.mjs'
 import { resolveIdentityUntil } from '../agent-launch/resolve-identity-until.mjs'
+import { claudeProjectsBaseForConfig } from '../agent-launch/resume.mjs'
 import {
   applyDaemonGrants,
   createPermissionLedger,
@@ -146,7 +147,7 @@ import {
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs'
 import { acquireSingletonLock, daemonSingletonLockPath } from '../agent-runtime/singleton-lock.mjs'
-import { createDaemonMintCore, recordedMintIdentity } from '../daemon/mint-core.mjs'
+import { createDaemonMintCore, launchNeedsIdentityDiscovery, recordedMintIdentity } from '../daemon/mint-core.mjs'
 import { MintStore } from '../daemon/mint-store.mjs'
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 import { compileWakePermissionProfile } from '../daemon/wake-permission-profile.mjs'
@@ -1606,24 +1607,30 @@ daemonMintCore = createDaemonMintCore({
     // stayed null, and mint-core deferred the route forever. The same file
     // already derives this way a hundred lines up.
     const deferredIdentityResolver = liveIdentityResolverMap()[processFact.harness] || null
-    if (processFact.session_id || !deferredIdentityResolver) return recorded
-    // A fresh Codex or Muse process can be alive before it opens the file that
-    // names its session. Persist the process and grant now; discovery completes
-    // the join later. In particular, do not put the global session-tree
-    // fallback on the mint's commit path: under machine load that synchronous
-    // walk held process_state and the permission grant unwritten for minutes
-    // after the agent logged in.
+    if (!launchNeedsIdentityDiscovery(processFact, deferredIdentityResolver)) return recorded
+    // A fresh process can be alive before the file that names its session
+    // exists: Codex and Muse open it after launch, and claude writes its
+    // transcript -- under an isolated CLAUDE_CONFIG_DIR the ingestor never
+    // scans -- only on its first turn. Persist the process and grant now;
+    // discovery completes the join later. In particular, do not put the
+    // global session-tree fallback on the mint's commit path: under machine
+    // load that synchronous walk held process_state and the permission grant
+    // unwritten for minutes after the agent logged in.
     void resolveIdentityUntil({
       resolve: deferredIdentityResolver,
       agent: {
         id: processFact.fleet_id || params.fleet_id || null,
         friendly_name: processFact.name || params.name || null,
+        session_id: processFact.session_id || null,
         cwd: processFact.cwd,
         registered_at: launchStartedAt,
       },
       tmuxSession: processFact.tmux_session,
       tmuxArgs: TMUX_ARGS,
       tmuxSocket: TMUX_SOCKET,
+      // Read only by the claude adapter's exact session-file lookup; every other
+      // resolver ignores the extra argument, like processOwnedOnly below.
+      projectsBase: claudeProjectsBaseForConfig(params.config || {}),
       processOwnedOnly: true,
       deadlineMs: getMintRegistrationDeadlineMs(),
       isProcessAlive: () => mintProcessAlive({ processState: processFact }),
@@ -1634,7 +1641,7 @@ daemonMintCore = createDaemonMintCore({
         session_path: live.jsonlPath || null,
       })
     }).catch(error => {
-      log.warn(`mint ${processFact.name || params.name || params.mint_id}: deferred Codex session discovery failed: ${error.message}`)
+      log.warn(`mint ${processFact.name || params.name || params.mint_id}: deferred ${processFact.harness} session discovery failed: ${error.message}`)
     })
     return recorded
   },
@@ -1935,12 +1942,14 @@ async function rpcWake(params = {}) {
       agent: {
         id: facts.fleetId || null,
         friendly_name: facts.friendlyName || null,
+        session_id: facts.sessionId || null,
         cwd: facts.processState.cwd,
         registered_at: facts.createdAt,
       },
       tmuxSession: facts.processState.tmux_session,
       tmuxArgs: TMUX_ARGS,
       tmuxSocket: TMUX_SOCKET,
+      projectsBase: claudeProjectsBaseForConfig(facts.launchRecipe?.config || {}),
       processOwnedOnly: true,
       deadlineMs: getMintRegistrationDeadlineMs(),
       isProcessAlive: () => mintProcessAlive(facts),

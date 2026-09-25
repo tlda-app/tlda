@@ -9,6 +9,7 @@ import { resolveModelSpec } from './models.mjs'
 import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
 import { bindAgentRoute } from './route-binding.mjs'
 import { liveIdentityResolverMap } from './live-identity-resolvers.mjs'
+import { claudeProjectsBaseForConfig } from './resume.mjs'
 import { wsReserveShell } from './register.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 
@@ -526,6 +527,9 @@ export function createAgentLauncher({
           tmuxSession: args.tmuxSession,
           tmuxArgs,
           tmuxSocket,
+          // Read only by the claude adapter's exact session-file lookup; every
+          // other resolver ignores the extra argument.
+          projectsBase: claudeProjectsBaseForConfig(spawnConfig || {}),
         })
       }
       const effectiveResolvers = liveIdentityResolvers || wrappedDerived

@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { createDaemonMintCore, recordedMintIdentity } from '../daemon/mint-core.mjs'
+import { createDaemonMintCore, launchNeedsIdentityDiscovery, recordedMintIdentity } from '../daemon/mint-core.mjs'
 import { MintFactConflictError, MintStore, readMintFacts, resolveLoginFleetId } from '../daemon/mint-store.mjs'
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 
@@ -377,6 +377,18 @@ const rotated = await rotatedCore.mint({ name: 'rotated' })
 assert.equal(rotated.fleetId, 'fleet:rotated')
 assert.equal(rotated.friendlyName, 'qotated')
 assert.equal(store.resolve('qotated', { envName: 'stable' }).mintId, 'bot:stable:rotated')
+
+// Deferred discovery runs until the launch result names BOTH the session id
+// and its transcript path. A claude launch knows its id before it starts but
+// writes its transcript later, so gating on the id alone skipped discovery
+// with no session_path and the mint stayed unbound forever.
+const resolver = async () => null
+assert.equal(launchNeedsIdentityDiscovery({ session_id: 's', session_path: '/p' }, resolver), false)
+assert.equal(launchNeedsIdentityDiscovery({ session_id: 's' }, resolver), true)
+assert.equal(launchNeedsIdentityDiscovery({}, resolver), true)
+assert.equal(launchNeedsIdentityDiscovery({ session_id: 's' }, null), false)
+assert.equal(launchNeedsIdentityDiscovery({}, null), false)
+assert.equal(launchNeedsIdentityDiscovery(), false)
 
 store.close()
 fs.rmSync(dir, { recursive: true, force: true })

@@ -51,6 +51,18 @@ export function recordedMintIdentity(store, mintId) {
   return facts?.fleetId ? facts : null
 }
 
+// Whether a launch result still needs deferred session discovery. A result
+// that already names both the session id and its transcript path is bound;
+// anything less runs the harness resolver when one exists. This read
+// `session_id` alone, so a claude launch -- whose id is minted before it
+// starts but whose transcript appears only after its first write, under an
+// isolated CLAUDE_CONFIG_DIR the ingestor never scans -- skipped discovery
+// with no session_path and stayed unbound forever.
+export function launchNeedsIdentityDiscovery(processFact = {}, resolver = null) {
+  if (!resolver) return false
+  return !(processFact?.session_id && processFact?.session_path)
+}
+
 export function createDaemonMintCore({
   store,
   launchProcess,

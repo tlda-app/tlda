@@ -202,7 +202,7 @@ export function resumeId(handle) {
 // not evidence about which session belongs to this agent.
 const CLAUDE_RUNTIME = /(?:^|\s|[/\\])claude(?:\.exe)?(?:\s|$)/
 
-export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, _deps = {} } = {}) {
+export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, projectsBase = null, now = Date.now, _deps = {} } = {}) {
   const run = _deps.execFile || execFileP
   const resolve = _deps.resolveTranscript || resolveTranscript
   const read = _deps.readFileSync || fs.readFileSync
@@ -223,16 +223,24 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   const pid = owned.pid
   const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
   const expectedSessionId = agent?.session_id || null
-  const jsonlPath = await resolve({
-    pid,
-    kind: 'claude',
-    agent,
-    launchTs,
-    ...(expectedSessionId ? {
-      acceptTranscript: candidate => path.basename(candidate, '.jsonl') === expectedSessionId,
-      findFallbackTranscript: () => claudeJsonlPath(expectedSessionId),
-    } : {}),
-  })
+  const baseOptions = projectsBase ? { projectsBase } : {}
+  // A known session id names its transcript file exactly (the filename IS the
+  // id), so look that file up before searching: a lookup is not a guess, and
+  // it is the only claude path that works when the runtime holds no transcript
+  // descriptor open or writes under an isolated CLAUDE_CONFIG_DIR.
+  let jsonlPath = expectedSessionId ? claudeJsonlPath(expectedSessionId, baseOptions) : null
+  if (!jsonlPath) {
+    jsonlPath = await resolve({
+      pid,
+      kind: 'claude',
+      agent,
+      launchTs,
+      ...(expectedSessionId ? {
+        acceptTranscript: candidate => path.basename(candidate, '.jsonl') === expectedSessionId,
+        findFallbackTranscript: () => claudeJsonlPath(expectedSessionId, baseOptions),
+      } : {}),
+    })
+  }
   if (!jsonlPath) return null
   const sessionId = ledgerSessionId({ harness_kind: 'claude', jsonl_path: jsonlPath }) || path.basename(jsonlPath, '.jsonl')
   let model = null
