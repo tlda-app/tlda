@@ -4531,6 +4531,19 @@ body.phone-mode .fleet-chat-shape .fleet-composer-traffic-toggle { font-size: ca
 .fleet-docview .clip-panel-canvas {
   height: 100% !important;
 }
+/* One-finger touch drags must reach the native touch-drag-pan listeners in
+   CanvasClipPanel (which call setPointerCapture + preventDefault on the
+   .clip-panel node). With touch-action:auto Mobile Safari may claim the drag
+   as a scroll/zoom gesture and fire pointercancel before the JS pan commits.
+   touch-action:none on the panel chain commits the compositor to the JS path
+   (DocClipShape doc-clip-body precedent: touchAction none + stops). Scoped to
+   the docview panel chain only — the value intersects up the ancestor chain,
+   so it covers the .clip-panel-wheel-capture hit-target child too. */
+.fleet-docview .clip-panel,
+.fleet-docview .clip-panel-canvas,
+.fleet-docview .clip-panel-wheel-capture {
+  touch-action: none;
+}
 .fleet-docview .fleet-btn-group,
 .fleet-docview .fleet-btn-group.fleet-btn-group-topright {
   z-index: 100;
