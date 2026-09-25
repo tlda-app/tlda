@@ -3268,6 +3268,9 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     // channel is up but registered under a different id, register it now.
     if (!nativeBinding && _channelRWS?.connected && _channelLoginId !== loggedInAgentId) {
       sendChannelLogin();
+      // The open ran anonymous, so nothing above armed the backlog flush for
+      // this identity. Arm it now or the wake-triggering mail sits silent.
+      armOrFlushUnread();
     }
     await flushFleetTransport({ limit: 100 }).catch(e => {
       process.stderr.write(`[fleet-transport] login flush failed: ${e.message}\n`);
@@ -6469,6 +6472,32 @@ let _channelLoginId = null;
 // open is still waiting on that to announce its backlog. See `noteClientRequest`.
 let _clientHasRequested = false;
 let _flushPendingOnClient = false;
+// Backstop for a client that never calls in: a harness whose MCP handshake is
+// still settling (or detached) sends no requests, so pending would wait
+// forever and the wake-triggering message would sit silently -- the
+// message-twice shape (measured 2026-09-25: first message after a restart
+// never surfaced, second arrived live once everything was up). Firing anyway
+// is safe: muse delivery types into the pane, which is durable; claude
+// delivery notifies over MCP, which into an unlistening client is a no-op,
+// no worse than the silence it replaces.
+let _flushFallbackTimer = null;
+const FLUSH_FALLBACK_MS = 60000;
+function armOrFlushUnread() {
+  if (!activeAgentId() || !_channelRWS?.connected) return;
+  if (_clientHasRequested) {
+    void _flushUnread();
+    return;
+  }
+  _flushPendingOnClient = true;
+  if (_flushFallbackTimer) return;
+  _flushFallbackTimer = setTimeout(() => {
+    _flushFallbackTimer = null;
+    if (!_flushPendingOnClient) return;
+    _flushPendingOnClient = false;
+    void _flushUnread();
+  }, FLUSH_FALLBACK_MS);
+  _flushFallbackTimer.unref?.();
+}
 
 const _deliveredChannelIds = new Set();
 const CHANNEL_DEDUP_TTL_MS = 60_000;
@@ -6633,7 +6662,12 @@ async function _flushUnread() {
     const msgs = (data?.messages || []).filter(m => !m.read);
     if (msgs.length === 0) return;
     const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
-    await deliverChannelNotice(`📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}`, { event_type: 'flush' });
+    // The retry clause is for the boot this flush usually lands on: the MCP
+    // handshake can still be settling when the agent reads this, and a bare
+    // "call inbox()" tried once against missing tools ends the turn with the
+    // mail still unread (measured 2026-09-25 on fleet:b69428ee: detached at
+    // kickoff, healed ~2min later, first message never surfaced).
+    await deliverChannelNotice(`📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}; if the tlda tools are missing, wait a minute and retry a few times.`, { event_type: 'flush' });
   } catch (e) {
     process.stderr.write(`[fleet-channel] unread flush notification failed: ${e.message}\n`);
   }
@@ -6813,10 +6847,8 @@ function startChannelWS({ bootstrap = false } = {}) {
       // resolved into a client that was not subscribed yet. No error, no log, and
       // the notice was gone. The stdio connect alone took 6151ms, so no constant
       // is right here; the client's own first request is the fact we need.
-      if (activeAgentId()) {
-        if (_clientHasRequested) void _flushUnread();
-        else _flushPendingOnClient = true;
-      }
+      // (Plus a 60s backstop inside for the client that never calls in.)
+      armOrFlushUnread();
       if (!activeAgentId()) return;
       const loginPromise = sendChannelLogin();
       loginPromise
@@ -6888,5 +6920,9 @@ export function noteClientRequest() {
   _clientHasRequested = true;
   if (!_flushPendingOnClient) return;
   _flushPendingOnClient = false;
+  if (_flushFallbackTimer) {
+    clearTimeout(_flushFallbackTimer);
+    _flushFallbackTimer = null;
+  }
   void _flushUnread();
 }
