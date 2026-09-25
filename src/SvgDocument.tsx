@@ -114,6 +114,7 @@ import { BuildErrorPill } from './pills/BuildErrorPill'
 import { SyncErrorPill } from './pills/SyncErrorPill'
 import { RecorderErrorPill } from './pills/RecorderErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
+import { BuildCurrencyPill } from './pills/BuildCurrencyPill'
 import { BookLayersSlot } from './classroom/BookLayersSlot'
 import { FollowingBadge } from './pills/FollowingBadge'
 import { FleetIconPill } from './pills/FleetIconPill'
@@ -1350,6 +1351,7 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         <SyncErrorPill />
         <RecorderErrorPill />
         <BuildErrorPill />
+        <BuildCurrencyPill projectName={document.name} />
         <BuildWarningPill warnings={pillWarnings}>
           <BuildProgressPill document={document} />
         </BuildWarningPill>

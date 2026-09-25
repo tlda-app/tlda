@@ -29,6 +29,9 @@ export interface DocConfig {
   renderedFormat?: 'html' | 'slides'
   members?: string[]
   buildStatus?: string
+  buildPhase?: string | null
+  sourceRevision?: string | null
+  acceptSeq?: number | null
   starred?: boolean
   lastBuild?: string
   createdAt?: string
