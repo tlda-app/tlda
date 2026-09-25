@@ -139,6 +139,7 @@ const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
 let consumedShareTargetToken: string | null = null
 const ANCHORED_STATUS_ITEM_KEY = '__status__'
+const ANCHORED_EMPTY_ITEM_KEY = '__empty__'
 const ANCHORED_SENSOR_HEIGHT = 20_000_000
 const ANCHORED_SENSOR_MID = ANCHORED_SENSOR_HEIGHT / 2
 const ANCHORED_SENSOR_EDGE = 1_000_000
@@ -3534,7 +3535,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // render between the indicator and the queue (they "jump the line"). The
   // status row is a real measured item so the anchored list remains the scroll
   // authority when status/suggestions change height.
-  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean; _status?: boolean }
+  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean; _status?: boolean; _empty?: boolean }
   const msgLineCacheLimit = useMemo(
     () => Math.min(20_000, Math.max(1_000, chatMessages.length + 500)),
     [chatMessages.length],
@@ -3989,31 +3990,19 @@ function FleetChatInner({ shape }: { shape: any }) {
     return html
   }, [doc, labelRegions, theoremMap, imageSrcs, editor])
 
-  // Whether the trailing status row will render anything. The status item
-  // always mounts (anti-bounce floor) so it cannot gate the empty-state text —
-  // when it is empty AND there is no content, its bare floor is what the
-  // placeholder floats over. Pre-filtered to chat targets upstream.
-  const statusRowEmpty = useMemo(() => {
-    const isRelevant = (id: string) => !statusTargetIds || statusTargetIds.has(id)
-    for (const [id] of thinkingAgents) {
-      if (isRelevant(id)) return false
-    }
-    for (const [id] of compactingAgents) {
-      if (isRelevant(id)) return false
-    }
-    for (const id of hibernatingAgents) {
-      if (isRelevant(id)) return false
-    }
-    for (const s of suggestionsPending) {
-      if (suggestionOwnerId(s)) return false
-    }
-    return true
-  }, [thinkingAgents, compactingAgents, hibernatingAgents, statusTargetIds, suggestionsPending])
   // Mark the queue divider position inline — the last non-queued item before
   // the first queued item gets _divider: true. Status/suggestions stay in the
   // measured list as the trailing row instead of a flex footer below the scroller.
+  // The empty-state text is the leading row when there are no rendered items,
+  // gated on message state only: thinking/compacting/hibernating/suggestion
+  // sets are live and flap, so gating the text on them flashed it on every
+  // thinking burst (the flicker). As a row the text stacks with the status row
+  // in layout instead of painting over it — no overlap and no toggle.
   const allItems = useMemo(() => {
     const items = [...rawItems]
+    if (rawItems.length === 0) {
+      items.unshift({ key: ANCHORED_EMPTY_ITEM_KEY, html: '', _empty: true })
+    }
     let firstQueuedIdx = -1
     for (let i = 0; i < items.length; i++) {
       if (items[i]._queued) { firstQueuedIdx = i; break }
@@ -7178,7 +7167,22 @@ function FleetChatInner({ shape }: { shape: any }) {
                     ...detail,
                   })
                 }}
-                renderItem={(item) => item?._status ? (
+                renderItem={(item) => item?._empty ? (
+                  <div
+                    style={{
+                      padding: '20px 8px',
+                      pointerEvents: 'none',
+                      opacity: isImpossibleFilter ? 0.6 : 0.3,
+                      textAlign: 'center',
+                      fontSize: 'calc(var(--fleet-base-font, 11px) * 0.909091)',
+                      color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
+                    }}
+                  >
+                    {isImpossibleFilter
+                      ? '⚠ Filter matches no known agents'
+                      : filter.length > 0 ? 'No messages' : 'No filter set'}
+                  </div>
+                ) : item?._status ? (
                   <ThinkingStatus
                     thinkingAgents={thinkingAgents}
                     compactingAgents={compactingAgents}
@@ -7204,30 +7208,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                   />
                 )}
               />
-              {/* Empty-state text only when nothing will render — the status row
-                  always mounts its floor, so gating on message count alone
-                  painted this over live thinking lines. */}
-              {rawItems.length === 0 && statusRowEmpty && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    display: 'flex',
-                    justifyContent: 'center',
-                    alignItems: 'flex-start',
-                    padding: '20px 8px',
-                    pointerEvents: 'none',
-                    opacity: isImpossibleFilter ? 0.6 : 0.3,
-                    textAlign: 'center',
-                    fontSize: 'calc(var(--fleet-base-font, 11px) * 0.909091)',
-                    color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
-                  }}
-                >
-                  {isImpossibleFilter
-                    ? '⚠ Filter matches no known agents'
-                    : filter.length > 0 ? 'No messages' : 'No filter set'}
-                </div>
-              )}
             </>
         </div>
 

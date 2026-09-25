@@ -1,45 +1,30 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-// Regression test for the chat-overlay ghosting chase (2026-09-25):
-// the empty-state "No filter set" text is an absolute overlay painted as a
-// later sibling of AnchoredChatList. Gating it on chatMessages.length alone
-// painted it over live thinking lines whenever a panel had zero messages but
-// active status content. The gate must be: no rendered content AND no status
-// content. This mirrors the statusRowEmpty + rawItems.length gate in
-// FleetChatShape.tsx (empty-state block) without mounting React.
+// Regression test for the chat-overlay flicker (2026-09-25): the empty-state
+// text used to be an absolute overlay gated on live agent sets
+// (thinking/compacting/hibernating/suggestions). Every thinking burst in a
+// messageless panel toggled it — the flicker. Now the text is an in-flow
+// leading row gated on message state only: it stacks with the status row in
+// layout instead of painting over it. This mirrors the allItems unshift gate
+// in FleetChatShape.tsx without mounting React.
 
 // Extracted predicate — keep in sync with the component gate.
-function emptyStateVisible({ rawItemCount, thinking, compacting, hibernating, suggestions }) {
-  const statusRowEmpty =
-    thinking.length === 0 &&
-    compacting.length === 0 &&
-    hibernating.length === 0 &&
-    suggestions.length === 0
-  return rawItemCount === 0 && statusRowEmpty
+function emptyRowRendered({ rawItemCount }) {
+  return rawItemCount === 0
 }
 
-describe('chat empty-state overlay gate', () => {
-  const empty = { rawItemCount: 0, thinking: [], compacting: [], hibernating: [], suggestions: [] }
-
-  it('shows when the panel is truly empty', () => {
-    assert.equal(emptyStateVisible(empty), true)
+describe('chat empty-state row', () => {
+  it('renders when the panel has zero messages', () => {
+    assert.equal(emptyRowRendered({ rawItemCount: 0 }), true)
   })
 
-  it('hides while an agent is thinking with zero messages (the ghost)', () => {
-    assert.equal(emptyStateVisible({ ...empty, thinking: ['fleet:abc'] }), false)
+  it('does not consult live agent sets, so thinking bursts cannot toggle it', () => {
+    // The stability property: identical message state, thinking or not.
+    assert.equal(emptyRowRendered({ rawItemCount: 0 }), true)
   })
 
-  it('hides while compacting or hibernating with zero messages', () => {
-    assert.equal(emptyStateVisible({ ...empty, compacting: ['fleet:abc'] }), false)
-    assert.equal(emptyStateVisible({ ...empty, hibernating: ['fleet:abc'] }), false)
-  })
-
-  it('hides while a suggestion is pending with zero messages', () => {
-    assert.equal(emptyStateVisible({ ...empty, suggestions: [{ label: 'hand off' }] }), false)
-  })
-
-  it('hides whenever rendered content exists, even with empty status', () => {
-    assert.equal(emptyStateVisible({ ...empty, rawItemCount: 3 }), false)
+  it('is absent whenever rendered content exists', () => {
+    assert.equal(emptyRowRendered({ rawItemCount: 3 }), false)
   })
 })
