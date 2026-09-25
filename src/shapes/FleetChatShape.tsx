@@ -117,7 +117,7 @@ import { useFleetInteractionFrame } from '../wm/useFleetInteractionFrame'
 import { cancelWMDrop, finishWMDrop, registerWMDropTarget, updateWMDrop, type WMDropPayload } from '../wm/drop-targets'
 import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipFromTargetElement } from './fleet-chat-markdown-open'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
-import { peekClearedComposerDraft, stashClearedComposerDraft, takeClearedComposerDraft, dropClearedComposerDraft } from '../stores/composerDraftStore'
+import { clearComposerDraft, peekClearedComposerDraft, stashClearedComposerDraft, takeClearedComposerDraft, dropClearedComposerDraft } from '../stores/composerDraftStore'
 import { getPref, subscribePref } from '../preferences'
 import { beginUiIntent, hashUiIntentState } from '../uiIntentTelemetry'
 import { DATABASE_HTTP } from '../activeConfig'
@@ -5731,6 +5731,20 @@ function FleetChatInner({ shape }: { shape: any }) {
   // handler) so there's no memoization-induced staleness. Every submit trigger
   // uses this one path.
   const composerSend = (text: string, targets: string[]) => {
+    // The client roster is alive-only, so a send target with no roster match is
+    // dead, missing, or mistyped — and the server would reject it ("No
+    // recipients matched"); a rejected send resurrects its text in the composer
+    // via the failed-send restore (the ghost). Refuse it here instead: returning
+    // false keeps the field and its draft, honestly unsent. Only once the roster
+    // has loaded (non-empty): before the first agents-page arrives every label
+    // is unknown, and the server — which has the data — decides.
+    if (agents.length > 0) {
+      const sendTargetsLive = targets.some(label => {
+        const matches = resolveTargetAgents(label, agents)
+        return matches.length > 0 && matches.some(a => !a?.dead)
+      })
+      if (!sendTargetsLive) return false
+    }
     expireClearedComposerDraft()
     const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
     injectOptimisticEvent({
@@ -5824,6 +5838,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       setTermHoverPinned(true)
       ta.value = ''
       ta.style.height = ''
+      // Consumed like a send: the draft must go with the field, or the next
+      // remount or reload resurrects the command text in the composer (ghost).
+      clearComposerDraft(composerDraftKey)
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
     }
     return true
   }
