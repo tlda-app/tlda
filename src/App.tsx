@@ -26,7 +26,7 @@ import { StudentWork } from './classroom/StudentWork'
 import { HomeworkComparisonWorkspace } from './classroom/HomeworkComparisonWorkspace'
 import { MarkingLifecycle } from './classroom/MarkingLifecycle'
 import { STORE_HTTP } from './activeConfig'
-import { fetchDocConfig, fetchManifest, type DocConfig } from './pageSource'
+import { fetchDocConfig, fetchManifest, joinServedBase, type DocConfig } from './pageSource'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
@@ -432,7 +432,7 @@ function DocumentApp() {
       const isAbsolute = config.basePath.startsWith('http://') || config.basePath.startsWith('https://')
       const fullBasePath = isAbsolute
         ? config.basePath
-        : `${import.meta.env.BASE_URL || '/'}${config.basePath.startsWith('/') ? config.basePath.slice(1) : config.basePath}`
+        : joinServedBase(import.meta.env.BASE_URL, config.basePath)
 
       const manifest = await fetchDocumentManifest(fullBasePath, signal)
       const targets = config.targets?.map(t => ({

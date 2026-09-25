@@ -39,11 +39,23 @@ export interface DocConfig {
 // Doc assets come from the active config's STORE (http), injected by the server.
 const ASSET_BASE = STORE_HTTP
 
-// A published copy is flat: `book/chapter-x.html` sits at the root of the site,
-// because that is the URL a student's link points at and GitHub Pages serves it
-// from there. So there is no `/docs/<name>/` prefix to add — the document's
-// bytes, and the `page-info.json` that lists them, are simply at the root.
-const FILES_BASE = '/'
+// A published copy is flat: `book/chapter-x.html` sits beside the page asking
+// for it, so there is no `/docs/<name>/` prefix to add — the document's bytes,
+// and the `page-info.json` that lists them, sit under the served base. That
+// base is `/` on a domain root (file server, user site) and the project path
+// on a project-pages subpath; the build bakes it into BASE_URL.
+export function filesBasePath(servedBase: string | undefined): string {
+  if (!servedBase) return '/'
+  return servedBase.endsWith('/') ? servedBase : `${servedBase}/`
+}
+// Join a base with a same-origin path without doubling: a path that already
+// carries the base (documentBase output) passes through untouched.
+export function joinServedBase(servedBase: string | undefined, path: string): string {
+  const base = filesBasePath(servedBase)
+  if (path.startsWith(base)) return path
+  return `${base}${path.startsWith('/') ? path.slice(1) : path}`
+}
+const FILES_BASE = filesBasePath(import.meta.env?.BASE_URL)
 
 /**
  * Where one document's bytes live.
