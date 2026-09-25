@@ -2136,19 +2136,22 @@ function rememberThreadHtml(key: string, html: string) {
 //
 // It used to be `position: sticky`, and that stopped working when f34e43f77
 // replaced the chat scroller with the anchored list. In that list every
-// `.chat-row-wrap` lays out at the slice origin -- `offsetTop` is 0 for all of
-// them -- and is painted where it belongs by `transform: translateY(y)`, with
-// the slice itself translated by however far you have scrolled. Sticky takes
-// its constraint rectangle from the containing block's LAYOUT box, which knows
-// nothing about ancestor transforms, so it evaluates the card against a box
-// nowhere near the scroll position, pins the button at the card's edge, and the
-// button rides the card off screen. Skip: "the collapse button doesn't move
-// with you as you scroll through the fucking thread card."
+// `.chat-row-wrap` laid out at the slice origin and was painted where it
+// belonged by `transform: translateY(y)`. Sticky takes its constraint
+// rectangle from the containing block's LAYOUT box, which knew nothing about
+// ancestor transforms, so it evaluated the card against a box nowhere near
+// the scroll position, pinned the button at the card's edge, and the button
+// rode the card off screen. Skip: "the collapse button doesn't move with you
+// as you scroll through the fucking thread card."
 //
-// So it floats the way everything else in this log is positioned: by hand, from
-// the scroll handler, in painted coordinates, which transforms do not lie
-// about. `getBoundingClientRect()` is the whole reason this works where sticky
-// cannot.
+// Rows are back in flow now, so sticky's constraint rectangle is honest
+// again — but this control stays hand-positioned: it works, it is out of
+// flow, and replacing it is a separate change with its own verification.
+//
+
+// So it floats by hand, from the scroll handler, in painted coordinates,
+// which transforms do not lie about. `getBoundingClientRect()` is the whole
+// reason this works where sticky cannot.
 //
 // This is a new write on the scroll path, which docs/chat-rendering.md exists
 // because of, so: it writes nothing but `top` on an element that is
@@ -2442,7 +2445,7 @@ type AnchoredChatListProps<T extends AnchoredChatItem> = {
   setScroller?: (el: HTMLDivElement | null) => void
 }
 
-const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProps<AnchoredChatItem>>(function AnchoredChatList({
+export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProps<AnchoredChatItem>>(function AnchoredChatList({
   items,
   className,
   style,
@@ -2493,9 +2496,11 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   const tailTop = useCallback((nextViewportHeight = viewportHeight) => {
     const lastKey = itemKeys[itemKeys.length - 1]
     const lastRow = lastKey ? rowElsRef.current.get(lastKey) : null
-    const renderedTop = lastRow?.style.transform.match(/^translateY\((-?[\d.]+)px\)$/)?.[1]
+    // Rows lay out in flow inside the slice, so the last row's offsetTop IS
+    // its slice coordinate — honest by construction, no estimate in it. The
+    // slice is the offsetParent (position: absolute), so no chain to walk.
     return anchoredTailTop({
-      renderedLastRowTop: renderedTop === undefined ? Number.NaN : Number(renderedTop),
+      renderedLastRowTop: lastRow?.offsetTop ?? Number.NaN,
       renderedLastRowHeight: lastRow?.offsetHeight ?? Number.NaN,
       viewportHeight: nextViewportHeight,
       fallbackTotal: geometry.total,
@@ -2529,7 +2534,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       borderBottomWidth: style?.borderBottomWidth ?? null,
       overflowAnchor: style?.overflowAnchor ?? null,
       sliceTransform: slice ? getComputedStyle(slice).transform : null,
-      lastRowTop: lastRow?.style.transform || null,
+      lastRowTop: lastRow?.offsetTop ?? null,
       lastRowHeight: lastRow?.offsetHeight ?? null,
       wheelDeltaY: wheel?.deltaY ?? null,
       wheelDeltaMode: wheel?.deltaMode ?? null,
@@ -2851,6 +2856,23 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     return rowBottom >= visibleStart && rowTop <= visibleEnd
   })
 
+  // Rows render in flow at true heights; the model sums live ONLY in these
+  // two spacers. A wrong estimate then shifts the rendered window uniformly
+  // instead of warping rows against each other, and measuring a visible row
+  // moves a spacer rather than repainting its neighbors. An empty window
+  // means modelTop ran past the end (see the transient noted in
+  // reconcileRowHeights), so the whole model stacks above.
+  const firstVisibleKey = visibleItems.length ? String(visibleItems[0].key) : null
+  const lastVisibleKey = visibleItems.length ? String(visibleItems[visibleItems.length - 1].key) : null
+  const topSpacerHeight = firstVisibleKey
+    ? (geometry.starts.get(firstVisibleKey) ?? 0)
+    : (modelTopRef.current >= geometry.total ? geometry.total : 0)
+  const lastVisibleBottom = lastVisibleKey
+    ? (geometry.starts.get(lastVisibleKey) ?? 0)
+      + (heightByKeyRef.current.get(lastVisibleKey) ?? ANCHORED_ESTIMATED_ROW_HEIGHT)
+    : topSpacerHeight
+  const bottomSpacerHeight = Math.max(0, geometry.total - lastVisibleBottom)
+
   return (
     <div
       ref={setScrollerRef}
@@ -2867,9 +2889,9 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
           className="fleet-chat-anchored-slice"
           style={{ transform: `translateY(${sensorTopRef.current - modelTopRef.current}px)` }}
         >
+          <div className="fleet-chat-anchored-spacer" data-anchor-spacer="top" style={{ height: `${topSpacerHeight}px` }} />
           {visibleItems.map(item => {
             const key = String(item.key)
-            const y = geometry.starts.get(key) ?? 0
             return (
               <div
                 key={key}
@@ -2887,12 +2909,12 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
                 }}
                 className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}
                 data-chat-item-key={key}
-                style={{ transform: `translateY(${y}px)` }}
               >
                 {renderItem(item)}
               </div>
             )
           })}
+          <div className="fleet-chat-anchored-spacer" data-anchor-spacer="bottom" style={{ height: `${bottomSpacerHeight}px` }} />
         </div>
       </div>
     </div>
