@@ -307,6 +307,7 @@ type AnchoredChatItem = {
   html?: string
   _divider?: boolean
   _status?: boolean
+  _empty?: boolean
 }
 type AnchoredChatListHandle = {
   scrollToTail: () => void
