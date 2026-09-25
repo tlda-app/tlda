@@ -3989,6 +3989,26 @@ function FleetChatInner({ shape }: { shape: any }) {
     return html
   }, [doc, labelRegions, theoremMap, imageSrcs, editor])
 
+  // Whether the trailing status row will render anything. The status item
+  // always mounts (anti-bounce floor) so it cannot gate the empty-state text —
+  // when it is empty AND there is no content, its bare floor is what the
+  // placeholder floats over. Pre-filtered to chat targets upstream.
+  const statusRowEmpty = useMemo(() => {
+    const isRelevant = (id: string) => !statusTargetIds || statusTargetIds.has(id)
+    for (const [id] of thinkingAgents) {
+      if (isRelevant(id)) return false
+    }
+    for (const [id] of compactingAgents) {
+      if (isRelevant(id)) return false
+    }
+    for (const id of hibernatingAgents) {
+      if (isRelevant(id)) return false
+    }
+    for (const s of suggestionsPending) {
+      if (suggestionOwnerId(s)) return false
+    }
+    return true
+  }, [thinkingAgents, compactingAgents, hibernatingAgents, statusTargetIds, suggestionsPending])
   // Mark the queue divider position inline — the last non-queued item before
   // the first queued item gets _divider: true. Status/suggestions stay in the
   // measured list as the trailing row instead of a flex footer below the scroller.
@@ -7184,7 +7204,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                   />
                 )}
               />
-              {chatMessages.length === 0 && (
+              {/* Empty-state text only when nothing will render — the status row
+                  always mounts its floor, so gating on message count alone
+                  painted this over live thinking lines. */}
+              {rawItems.length === 0 && statusRowEmpty && (
                 <div
                   style={{
                     position: 'absolute',
