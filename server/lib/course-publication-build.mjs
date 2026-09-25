@@ -108,8 +108,8 @@ export async function buildCoursePublication({ courseDir, indexFile, outputDir, 
   mkdirSync(outputParent, { recursive: true })
   const renderedDir = mkdtempSync(join(outputParent, '.course-render-'))
   try {
-    await seedRender?.(renderedDir)
-    await render(renderedDir)
+    const seeded = seedRender ? await seedRender(renderedDir) : null
+    await render(renderedDir, { seeded })
     if (!existsSync(join(renderedDir, 'page-info.json'))) {
       throw new Error('the shared Quarto/TLDA render produced no page-info.json')
     }

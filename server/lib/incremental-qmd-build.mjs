@@ -767,6 +767,18 @@ export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
   return changed
 }
 
+/**
+ * An incremental scope is sound only on top of a seeded prior render: without
+ * carried outputs, every unrendered document would publish as a stub and every
+ * unrendered deck would drop. A render that asked for incremental files but
+ * received no seed renders everything instead. seeded is true (carried),
+ * false (asked, absent), or null (this render has no seed concept).
+ */
+export function changedFilesWithSeedFallback(changedFiles, seeded) {
+  if (seeded === false && (changedFiles || []).length > 0) return null
+  return changedFiles
+}
+
 export function clearQmdFreeze(outDir, root) {
   const normalized = String(root).replace(/\\/g, '/').replace(/^\.?\/+/, '').replace(/\.qmd$/i, '')
   rmSync(join(outDir, '_freeze', normalized), { recursive: true, force: true })
@@ -1367,6 +1379,7 @@ export async function buildIncrementalQmd({
   sourceDir: srcDir,
   outputDir: outDir,
   changedFiles = null,
+  seededPriorOutput = null,
   mainFiles,
   name = 'qmd',
   log: addLog = console.log,
@@ -1462,14 +1475,18 @@ export async function buildIncrementalQmd({
     && mainFiles.length === 1
     && bookRoots.includes(mainFile)
     && mainFile !== bookRoots[0]
+  const effectiveChangedFiles = changedFilesWithSeedFallback(changedFiles, seededPriorOutput)
+  if (effectiveChangedFiles !== changedFiles) {
+    addLog(`[qmd] no prior output to seed from; rendering the whole project instead of incremental ${JSON.stringify(changedFiles)}`)
+  }
   const directIncrementalRoots = nativeTldaProject && !scopedNativeProject
-    ? qmdIncrementalRenderRoots(outDir, changedFiles)
+    ? qmdIncrementalRenderRoots(outDir, effectiveChangedFiles)
     : null
   const incrementalRoots = directIncrementalRoots
-    || (nativeTldaProject && !scopedNativeProject && changedFiles?.length > 0 && staleByDependency.length > 0
+    || (nativeTldaProject && !scopedNativeProject && effectiveChangedFiles?.length > 0 && staleByDependency.length > 0
       ? staleByDependency
       : null)
-  addLog(`[qmd] render scope: changed=${JSON.stringify(changedFiles)} incremental=${JSON.stringify(incrementalRoots)}`)
+  addLog(`[qmd] render scope: changed=${JSON.stringify(effectiveChangedFiles)} incremental=${JSON.stringify(incrementalRoots)}`)
   const deckPairs = nativeTldaProject ? qmdDeckChapterPairs(outDir, addLog) : []
   const deckRoots = new Set(deckPairs.map(({ deck }) => deck))
   const chapterRoots = incrementalRoots?.filter((root) => !deckRoots.has(root)) || null

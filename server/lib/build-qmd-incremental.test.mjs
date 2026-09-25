@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { clearQmdFreeze, publishIncrementalQmdOutput, qmdIncrementalRenderRoots } from './build-qmd.mjs'
+import { changedFilesWithSeedFallback, clearQmdFreeze, publishIncrementalQmdOutput, qmdIncrementalRenderRoots } from './build-qmd.mjs'
 
 test('a direct book-component edit selects only that component', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-incremental-test-'))
@@ -74,4 +74,12 @@ test('a reveal component cannot replace the last good book chapter', () => {
     )
     assert.equal(readFileSync(join(root, '_book', 'lectures', 'chapter.html'), 'utf8'), 'last good chapter')
   } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('an incremental scope without a seed renders everything', () => {
+  assert.equal(changedFilesWithSeedFallback(['chapters/one.qmd'], false), null)
+  assert.deepEqual(changedFilesWithSeedFallback(['chapters/one.qmd'], true), ['chapters/one.qmd'])
+  assert.equal(changedFilesWithSeedFallback(null, false), null)
+  assert.deepEqual(changedFilesWithSeedFallback([], false), [])
+  assert.deepEqual(changedFilesWithSeedFallback(['chapters/one.qmd'], null), ['chapters/one.qmd'])
 })

@@ -121,10 +121,11 @@ export async function buildQmdDocument(name, addLog = console.log, { changedFile
         outputDir: outDir,
         appSpec: spec,
         seedRender: renderedDir => seedCoursePublicationRender(outDir, renderedDir),
-        render: renderedDir => buildIncrementalQmd({
+        render: (renderedDir, { seeded } = {}) => buildIncrementalQmd({
           sourceDir: srcDir,
           outputDir: renderedDir,
           changedFiles,
+          seededPriorOutput: seeded ?? null,
           mainFiles: [...membership.documents, ...membership.decks],
           name,
           log: addLog,
@@ -196,6 +197,7 @@ export {
   quartoBookToc,
   orderQuartoBookPages,
   qmdIncrementalRenderRoots,
+  changedFilesWithSeedFallback,
   clearQmdFreeze,
   qmdDocumentsStaleByDependency,
   publishIncrementalQmdOutput,

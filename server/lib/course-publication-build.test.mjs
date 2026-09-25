@@ -251,3 +251,20 @@ test('real qtm285 publication preserves app chrome and merges all current schedu
   assert.match(appIndexHtml, /\[solutions\]/)
   assert.doesNotMatch(appIndexHtml, /href=["']homework\/homework-calibration-solutions\.html["']/)
 })
+
+test('the render learns whether the prior output seeded it', async () => {
+  const { course, output } = fixture()
+  const seen = []
+  const render = async (renderedDir, seed) => {
+    seen.push(seed === undefined ? 'missing' : seed.seeded)
+    writeRender(renderedDir)
+  }
+  await buildCoursePublication({ courseDir: course, indexFile: 'index.md', outputDir: output, render, assembleStatic })
+  for (const outcome of [true, false]) {
+    await buildCoursePublication({
+      courseDir: course, indexFile: 'index.md', outputDir: output,
+      seedRender: async () => outcome, render, assembleStatic,
+    })
+  }
+  assert.deepEqual(seen, [null, true, false])
+})
