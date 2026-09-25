@@ -81,7 +81,9 @@ import { RibbonHighlightTool } from './tools/RibbonHighlightTool'
 import { RibbonLane } from './shapes/RibbonLane'
 import { ProvenancePanel } from './shapes/ProvenancePanel'
 import { ProvenanceInline } from './shapes/ProvenanceInline'
-import { initSignalConnection, teardownSignalConnection, dispatchSignalDirect, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, dispatchSignalDirect, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onBuildProgressSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { fetchDocConfig } from './pageSource'
+import { describeBuildCurrency, shortRevision } from './pills/build-currency.mjs'
 import { useRuntimeErrorProbe } from './runtimeErrorProbe'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
@@ -114,7 +116,6 @@ import { BuildErrorPill } from './pills/BuildErrorPill'
 import { SyncErrorPill } from './pills/SyncErrorPill'
 import { RecorderErrorPill } from './pills/RecorderErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
-import { BuildCurrencyPill } from './pills/BuildCurrencyPill'
 import { BookLayersSlot } from './classroom/BookLayersSlot'
 import { FollowingBadge } from './pills/FollowingBadge'
 import { FleetIconPill } from './pills/FleetIconPill'
@@ -442,10 +443,11 @@ function PresentationModeSwitch({ document }: { document: SvgDocument }) {
 function VersionStamp({ document }: { document: SvgDocument }) {
   const projectName = document.name
   const editor = useEditor()
-  const [sentinel, setSentinel] = useState<{ commitHash: string; buildReadyAt: number } | null>(null)
+  const [sentinel, setSentinel] = useState<{ commitHash: string; buildReadyAt: number; sourceRevision: string | null; acceptSeq: number | null } | null>(null)
   const [history, setHistory] = useState<Array<{ hash: string; timestamp: number }>>([])
   const [activeIdx, setActiveIdx] = useState(0)
   const [hovering, setHovering] = useState(false)
+  const [saved, setSaved] = useState<{ sourceRevision: string | null; acceptSeq: number | null; buildStatus: string | null } | null>(null)
   const prevHashRef = useRef<string | null>(null)
 
   // Watch the Yjs sentinel — updates exactly when the shadow git commit completes.
@@ -456,7 +458,12 @@ function VersionStamp({ document }: { document: SvgDocument }) {
       const s = editor.store.get('shape:doc-version--sentinel' as TLShapeId)
       const p = (s as any)?.props
       if (!p?.commitHash || p.commitHash === 'unknown') return null
-      return { commitHash: p.commitHash as string, buildReadyAt: (p.buildReadyAt || p.timestamp || 0) as number }
+      return {
+        commitHash: p.commitHash as string,
+        buildReadyAt: (p.buildReadyAt || p.timestamp || 0) as number,
+        sourceRevision: typeof p.sourceRevision === 'string' ? p.sourceRevision : null,
+        acceptSeq: typeof p.acceptSeq === 'number' ? p.acceptSeq : null,
+      }
     }
     const v = read()
     if (v) {
@@ -481,6 +488,30 @@ function VersionStamp({ document }: { document: SvgDocument }) {
       }).catch(e => console.warn('[viewer] shadow history fetch failed:', e.message))
   }, [sentinel?.commitHash, projectName])
 
+  // Saved side: the project record, re-read so a save with no following
+  // build shows up here within seconds rather than at the next reload.
+  useEffect(() => {
+    let cancelled = false
+    const read = async () => {
+      try {
+        const config = await fetchDocConfig(projectName)
+        if (cancelled || !config) return
+        setSaved({
+          sourceRevision: config.sourceRevision ?? null,
+          acceptSeq: typeof config.acceptSeq === 'number' ? config.acceptSeq : null,
+          buildStatus: config.buildStatus ?? null,
+        })
+      } catch {
+        // A failed refresh leaves the last reading rather than blanking:
+        // no reading is not "current".
+      }
+    }
+    void read()
+    const offProgress = onBuildProgressSignal(() => void read())
+    const timer = setInterval(() => void read(), 5000)
+    return () => { cancelled = true; offProgress(); clearInterval(timer) }
+  }, [projectName])
+
   const handleClick = useCallback((idx: number) => {
     if (idx === 0) return
     const v = history[idx]
@@ -489,7 +520,43 @@ function VersionStamp({ document }: { document: SvgDocument }) {
     setActiveIdx(idx)
   }, [history])
 
-  if (!sentinel) return null
+  const verdict = describeBuildCurrency({
+    renderedRevision: sentinel?.sourceRevision ?? null,
+    renderedSeq: sentinel?.acceptSeq ?? null,
+    savedRevision: saved?.sourceRevision ?? null,
+    savedSeq: saved?.acceptSeq ?? null,
+    status: saved?.buildStatus ?? null,
+  })
+  // The wheel gains one entry, red-little in the same styling, when the
+  // latest save is not what the wheel shows: the save has no build (or its
+  // build failed). Normal building transients stay grey — no red flash on
+  // every edit.
+  const savedHash = shortRevision(saved?.sourceRevision) ?? (Number.isInteger(saved?.acceptSeq) ? `·${saved?.acceptSeq}` : null)
+  const unbuiltEntry = (verdict.loud || verdict.state === 'stale-building') && savedHash
+    ? {
+        text: `${savedHash} · ${verdict.state === 'failed' ? 'build failed' : 'not built'}`,
+        title: verdict.label,
+        red: verdict.loud,
+      }
+    : null
+
+  if (!sentinel) {
+    // No build yet: if a save exists the wheel is just the red entry.
+    if (unbuiltEntry) {
+      return (
+        <div className="version-stamp" onPointerDown={e => e.stopPropagation()}>
+          <div
+            className={`version-stamp-entry${unbuiltEntry.red ? ' unbuilt' : ''}`}
+            style={{ opacity: 0.85 }}
+            title={unbuiltEntry.title}
+          >
+            {unbuiltEntry.text}
+          </div>
+        </div>
+      )
+    }
+    return null
+  }
 
   // Use history if loaded; fall back to a single synthetic entry from the sentinel.
   const display: Array<{ hash: string; timestamp: number }> = history.length > 0
@@ -503,6 +570,15 @@ function VersionStamp({ document }: { document: SvgDocument }) {
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
     >
+      {unbuiltEntry && (
+        <div
+          className={`version-stamp-entry${unbuiltEntry.red ? ' unbuilt' : ''}`}
+          style={{ opacity: 0.85 }}
+          title={unbuiltEntry.title}
+        >
+          {unbuiltEntry.text}
+        </div>
+      )}
       {display.map((v, i) => {
         // Most recent entry: use buildReadyAt (when SVGs were published) not git commit time
         const ts = i === 0 ? sentinel.buildReadyAt || v.timestamp : v.timestamp
@@ -1351,7 +1427,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
         <SyncErrorPill />
         <RecorderErrorPill />
         <BuildErrorPill />
-        <BuildCurrencyPill projectName={document.name} />
         <BuildWarningPill warnings={pillWarnings}>
           <BuildProgressPill document={document} />
         </BuildWarningPill>

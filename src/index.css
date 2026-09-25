@@ -76,6 +76,22 @@ body {
 .version-stamp-entry.active {
   font-weight: 600;
 }
+/* Latest save with no build (or a failed build): red-little in the same
+   styling — never a banner. Same red as the calm error pill. */
+.version-stamp-entry.unbuilt {
+  color: var(--build-error-pill-color, #d9342b);
+  cursor: default;
+}
+.version-stamp-entry.unbuilt:hover {
+  color: var(--build-error-pill-color, #d9342b);
+  opacity: 1 !important;
+}
+html[data-theme="dark"] .version-stamp-entry.unbuilt {
+  color: var(--build-error-pill-color, #ff6b61);
+}
+html[data-theme="dark"] .version-stamp-entry.unbuilt:hover {
+  color: var(--build-error-pill-color, #ff6b61);
+}
 html[data-theme="dark"] .version-stamp-entry {
   color: rgba(255, 255, 255, 0.85);
 }
