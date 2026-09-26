@@ -41,7 +41,6 @@ models:
         controls: true
       group: muse
       level: 1
-      description: Muse Spark via Meta harness
       options:
         effort:
           default: max
