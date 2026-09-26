@@ -19,6 +19,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { answerDocumentSrcdoc, answerStyleSources } from './answerDocument'
 import { ANSWER_DOCUMENT_CSS, ANSWER_HEADER_CLASS } from './solutionMarking'
+import './AnswerPane.css'
 
 export function AnswerPane({
   markup,

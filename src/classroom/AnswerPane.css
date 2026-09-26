@@ -1,0 +1,20 @@
+/* The student's answer pane beside the chapter.
+ *
+ * THE PANE OPTS BACK INTO POINTER EVENTS, and the container stays out. It is
+ * mounted inside `.bottom-panels`, which is `pointer-events: none` so clicks
+ * fall through the panel overlay to the canvas underneath — and `pointer-events`
+ * is inherited, so without this rule the iframe declines every pointer and the
+ * pair header inside it (Return, +, Send, Layers) is unpressable by mouse or
+ * touch. Measured: the header was reachable only by keyboard focus plus Enter.
+ *
+ * The opt-in is on the iframe, the smallest unit that can receive pointer input
+ * for a document: hit-testing reaches the frame element before anything inside
+ * it, so no rule in the answer's own document can substitute. The trade is the
+ * pane's own rectangle, which now takes pointer input instead of passing it to
+ * the canvas — the same trade the grading panes already make
+ * (`ClassroomWorkspace.css`), and the glass above this pane still owns the pen
+ * while a marking tool is selected.
+ */
+.tlda-marking-answer-pane {
+  pointer-events: auto;
+}
