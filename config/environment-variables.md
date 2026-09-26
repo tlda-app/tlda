@@ -59,7 +59,7 @@ variable names are gone — nothing reads them, and there is no alias.
 | `TLDA_DEPLOYMENT` | Names which directory under `config/deployments/` to install. A pointer cannot live inside the thing it points at. |
 | `TLDA_CONFIG_DIR` | Same bootstrap reason one level down: it says *where* `server.yaml`/`daemon.yaml` are. The only name — the old `TLDA_DAEMON_CONFIG_DIR` is gone and nothing reads it. |
 | `PORT`, `NODE_ENV`, `HOME`, `PATH`, `USER`, `TMUX`, `TMUX_PANE` | The platform sets these before the app runs. |
-| `TLDA_TOKEN`, `TLDA_TOKEN_RW`, `TLDA_TOKEN_READ` | Secrets (`fly secrets`). A token in an image layer is a token in the repository. |
+| `TLDA_TOKEN`, `TLDA_TOKEN_RW`, `TLDA_TOKEN_READ`, `TLDA_TOKEN_AGENT` | Secrets (`fly secrets`). A token in an image layer is a token in the repository. `TLDA_TOKEN_AGENT` is the agents' own credential: same operator admission as the other two, a separate value so it rotates and revokes without touching them. |
 | `DEEPGRAM_API_KEY` | Secret, and it belongs to the *bridge* process on the voice box, not to this server. |
 | `TS_AUTHKEY`, `CODEX_AUTH_JSON` | Secrets consumed by the entrypoint before any app code runs. |
 | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `MYSCRIPT_APP_KEY`, `MYSCRIPT_HMAC_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `OVERLEAF_TOKEN`, `TLDA_FRIEND_GIT_TOKEN`, `TLDA_FRIEND_GIT_REMOTE`, `GRAFANA_ADMIN_PASSWORD` | Secrets. |

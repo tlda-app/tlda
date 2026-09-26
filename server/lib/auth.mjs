@@ -16,6 +16,11 @@
  * decisions do not: `tokenGating` and `tokensFromEnvironmentOnly` are server.yaml
  * keys.
  *
+ * A third secret, `TLDA_TOKEN_AGENT`, is the agents' own credential: same
+ * operator admission as the other two, a separate value so it can be rotated
+ * and revoked without touching what the box already runs on. Env-only, always —
+ * it is never read from tokens.json.
+ *
  * The same defect used to sit one screen below this comment: a non-standard PORT
  * silently switched gating off, so "is gating on?" could not be answered from
  * configuration — the same config answered differently on a worktree port. It is
@@ -28,6 +33,7 @@ import { getReadToken, getRwToken, loadServerConfig } from '../../shared/config.
 
 let tokenRead = null
 let tokenRw = null
+let tokenAgent = null
 let gatingEnabled = false
 
 export function initAuth() {
@@ -35,6 +41,7 @@ export function initAuth() {
 
   tokenRead = null
   tokenRw = null
+  tokenAgent = null
   if (!serverConfig.tokenGating) {
     gatingEnabled = false
     return
@@ -43,13 +50,14 @@ export function initAuth() {
   const envTokensOnly = !!serverConfig.tokensFromEnvironmentOnly
   tokenRead = process.env.TLDA_TOKEN_READ || (envTokensOnly ? null : getReadToken())
   tokenRw = process.env.TLDA_TOKEN_RW || (envTokensOnly ? null : getRwToken())
+  tokenAgent = process.env.TLDA_TOKEN_AGENT || null
 
   // Gating on with nothing to check is the one state that must never be reached
   // quietly: it reads as protected and behaves as open. Fail loudly instead.
-  if (!tokenRead && !tokenRw) {
+  if (!tokenRead && !tokenRw && !tokenAgent) {
     throw new Error(envTokensOnly
-      ? '[tokens] server.yaml sets tokensFromEnvironmentOnly but no TLDA_TOKEN_READ/TLDA_TOKEN_RW secrets are configured'
-      : '[tokens] server.yaml sets tokenGating but no read or RW token is configured')
+      ? '[tokens] server.yaml sets tokensFromEnvironmentOnly but no TLDA_TOKEN_READ/TLDA_TOKEN_RW/TLDA_TOKEN_AGENT secrets are configured'
+      : '[tokens] server.yaml sets tokenGating but no read, RW, or agent token is configured')
   }
 
   gatingEnabled = true
@@ -64,7 +72,9 @@ export function isTokenGatingEnabled() { return gatingEnabled }
 /**
  * A shareable link token for handing to somebody else: one of the configured
  * tokens, suitable for writing into a URL. Which one is arbitrary now that
- * tokens carry no level — any admitted token admits the same.
+ * tokens carry no level — any admitted token admits the same. Never the agent
+ * token: it authenticates agents to the box, and a URL is how a secret stops
+ * being one.
  */
 export function configuredReadToken() { return tokenRead || tokenRw }
 
@@ -98,6 +108,9 @@ function rebuildIdentityTable() {
   identityTable = []
   if (tokenRw) identityTable.push({ token: tokenRw, identity: OPERATOR })
   if (tokenRead && tokenRead !== tokenRw) identityTable.push({ token: tokenRead, identity: OPERATOR })
+  if (tokenAgent && tokenAgent !== tokenRw && tokenAgent !== tokenRead) {
+    identityTable.push({ token: tokenAgent, identity: OPERATOR })
+  }
 }
 
 /**
