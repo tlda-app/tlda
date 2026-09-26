@@ -1355,9 +1355,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const offset = existingAtts.length
       if (offset > 0 && inlineAttachments?.length) {
         for (const att of inlineAttachments) att.id += offset
-        resolvedMessage = resolvedMessage.replace(
-          /\{\{att:(\d+)\}\}/g, (_, idx) => `{{att:${+idx + offset}}}`
-        )
+        resolvedMessage = resolvedMessage
+          .replace(/image#(\d+)/g, (_, idx) => `image#${+idx + offset}`)
+          .replace(/\{\{att:(\d+)\}\}/g, (_, idx) => `{{att:${+idx + offset}}}`)
       }
 
       // Splice out the backticks around the clicked block and substitute the
