@@ -660,3 +660,27 @@ when a config sits in the root.** Deleting `fly.toml` removed the unflagged
 version of it. It did not remove the motive, and no mechanism in this document
 does. If you are hand-writing a build artifact to get a deploy through, that is
 the signal to fix the build, not the deploy.
+
+## Agents authenticate to pic with their own token
+
+pic is gated: `config/deployments/pic/server.yaml` sets `tokenGating: true`
+with `tokensFromEnvironmentOnly: true`, so its server honors exactly the
+secrets in its environment. Three are admitted — `TLDA_TOKEN_READ`,
+`TLDA_TOKEN_RW`, `TLDA_TOKEN_AGENT` — and every one resolves to the same
+operator identity (`server/lib/auth.mjs`: `initAuth`, `rebuildIdentityTable`,
+`resolveIdentity`). Tokens carry no level; the agent token is a third
+*operator* credential, not a reduced-privilege one — "agent" must never be
+read later as "limited". The gain is independent rotation and revocation
+without touching the other two; least privilege, if wanted, is separate work.
+`configuredReadToken()` deliberately never returns it: it authenticates agents
+to the box, and a URL is how a secret stops being one.
+
+- Agent-side copy: `~/.config/tlda/credentials/pic-agent-token` on the Mini
+  (mode 0600). Never committed, never printed, never in chat or a log.
+- Present as `Authorization: Bearer $(cat
+  ~/.config/tlda/credentials/pic-agent-token)`. `GET /api/projects` answers
+  200; without it, 401 `{"error":"Unauthorized"}`.
+- Rotate: write the new value to the Mini file, then `fly secrets set
+  "TLDA_TOKEN_AGENT=$(cat ~/.config/tlda/credentials/pic-agent-token)" --app
+  tlda-pic`. Verify names only with `fly secrets list` (digests, never
+  values).
