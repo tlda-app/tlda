@@ -60,7 +60,64 @@ function escapedDollar(state, silent) {
   return true
 }
 
-// Extract \newcommand and \DeclareMathOperator from preamble $$ blocks.
+// Quarto include shortcode: {{< include path >}}. The path is relative to the
+// file that carries the directive, matching how the document closure in
+// shared/markdown-deps.mjs resolves the same refs.
+const MARKDOWN_INCLUDE_RE = /\{\{<\s*include\s+(?:"([^"]+)"|'([^']+)'|([^\s>]+))\s*>\}\}/g
+
+function includeTarget(raw) {
+  const ref = String(raw || '').split(/[#?]/)[0].trim().replace(/^<|>$/g, '')
+  if (!ref || /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(ref)) return null
+  if (ref.startsWith('/') || ref.startsWith('~/') || /^[A-Za-z]:/.test(ref)) return null
+  if (ref.split('/').includes('..')) return null
+  if (!/\.(md|markdown|qmd)$/i.test(ref)) return null
+  return ref
+}
+
+// Inline `{{< include >}}` references so macro extraction sees the definitions
+// a file imports. Recursion follows the same closure the build's
+// relevant-files.json records; the visited set keeps a circular pair from
+// looping, and an unresolvable reference contributes nothing — the directive
+// stays in the render source exactly as before.
+function expandMarkdownIncludes(source, { baseDir = null, visited = new Set() } = {}) {
+  const text = String(source ?? '')
+  if (!text.includes('{{<')) return text
+  // Expand against the prose only: a directive shown to the reader in code is
+  // displayed, not included. withoutCode preserves positions of nothing, so
+  // mask code spans in place and expand matches outside the mask.
+  const masked = text
+    .replace(/^[ \t]*(```+|~~~+)[^\n]*\n[\s\S]*?^[ \t]*\1[^\n]*$/gm, s => ' '.repeat(s.length))
+    .replace(/`[^`\n]*`/g, s => ' '.repeat(s.length))
+  let out = ''
+  let last = 0
+  MARKDOWN_INCLUDE_RE.lastIndex = 0
+  let m
+  while ((m = MARKDOWN_INCLUDE_RE.exec(masked)) !== null) {
+    const start = m.index
+    const raw = text.slice(start, start + m[0].length)
+    const ref = (m[1] || m[2] || m[3] || '').trim()
+    const target = baseDir ? includeTarget(ref) : null
+    const abs = target ? join(baseDir, target) : null
+    if (!abs || visited.has(abs) || !existsSync(abs)) {
+      out += text.slice(last, start + m[0].length)
+      last = start + m[0].length
+      continue
+    }
+    visited.add(abs)
+    let included
+    try { included = readFileSync(abs, 'utf8') } catch { included = null }
+    out += text.slice(last, start)
+    out += included === null ? raw : expandMarkdownIncludes(included, { baseDir: dirname(abs), visited })
+    last = start + m[0].length
+  }
+  MARKDOWN_INCLUDE_RE.lastIndex = 0
+  return out + text.slice(last)
+}
+
+// Extract \newcommand and \DeclareMathOperator from preamble $$ blocks,
+// following `{{< include >}}` references so an imported definitions file
+// contributes its macros. `baseDir` is the directory the source was read from;
+// without it only the given string is scanned, exactly as before.
 //
 // Exported because a part needs its PROJECT MAIN's preamble as well as its own.
 // The scope chain here is document → project main → fleet, the same one the rest
@@ -68,7 +125,8 @@ function escapedDollar(state, silent) {
 // middle scope for a markdown project — a `.tex` project gets it from the build's
 // macros.json instead. Without the middle scope a macro he defines once, in the
 // main document, renders as red error text in every part.
-export function extractMacros(source) {
+export function extractMacros(source, { baseDir = null } = {}) {
+  source = baseDir ? expandMarkdownIncludes(source, { baseDir }) : String(source ?? '')
   const macros = {}
   const preambleRe = /\$\$([\s\S]*?)\$\$/g
   let m
@@ -768,8 +826,12 @@ function markdownTocForSource(source, page) {
   return toc
 }
 
-export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames = [], projectName = null, sourceFile = null, mainFile = null, macros = {} }) {
-  _macros = { ...baseMacros, ...macros, ...extractMacros(source) }
+export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames = [], projectName = null, sourceFile = null, sourceRoot = null, mainFile = null, macros = {} }) {
+  // The document's own includes resolve against the directory its file lives
+  // in. Without the root (unit tests pass bare strings) only the given source
+  // is scanned, exactly as before.
+  const ownBaseDir = sourceRoot && sourceFile ? dirname(join(sourceRoot, sourceFile)) : null
+  _macros = { ...baseMacros, ...macros, ...extractMacros(source, { baseDir: ownBaseDir }) }
   const renderSource = normalizeChatDisplayMathDelimiters(stripMarkdownFrontmatter(source))
   const explicitHeadingIds = new Map()
   renderSource.split('\n').forEach((line, index) => {

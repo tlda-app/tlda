@@ -5661,7 +5661,9 @@ app.use('/docs', (req, res, next) => {
             const mainPath = join(PROJECTS_DIR, name, 'source', project.mainFile)
             if (existsSync(mainPath)) {
               const { extractMacros } = await import('./lib/build-markdown.mjs')
-              macros = extractMacros(await fs.promises.readFile(mainPath, 'utf8'))
+              // The main file's own includes resolve against its directory, so a
+              // definitions file it imports contributes its macros here.
+              macros = extractMacros(await fs.promises.readFile(mainPath, 'utf8'), { baseDir: dirname(mainPath) })
             }
           }
           const isTaskDoc = /(^|\n)tlda-kind:\s*task-doc\s*(\n|$)/.test(source)
@@ -5673,6 +5675,7 @@ app.use('/docs', (req, res, next) => {
             agentNames,
             projectName: name,
             sourceFile: column.sourceFile,
+            sourceRoot: column.sourceRoot,
             mainFile: project.mainFile || 'index.md',
             macros,
           })

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
-import { renderMarkdownColumnHtml } from './build-markdown.mjs'
+import { extractMacros, renderMarkdownColumnHtml } from './build-markdown.mjs'
 import { listDocumentColumns, listMarkdownProjectDocuments, markdownProjectRootColumn } from './document-columns.mjs'
 import { closeProjectStore, initProjectStore } from './project-store.mjs'
 
@@ -155,4 +155,46 @@ test('Markdown columns render with the parent project macros', () => {
   })
   assert.match(overridden, /<mi mathvariant="normal">LOCAL<\/mi>/)
   assert.doesNotMatch(overridden, /<mover accent="true">/)
+})
+
+test('extractMacros follows an imported definitions file', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-markdown-macro-include-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  writeFileSync(join(root, 'defs.md'), '$$\\newcommand{\\importedOp}{\\operatorname{Imported}}$$\n')
+  writeFileSync(join(root, 'main.md'), '{{< include defs.md >}}\n\nThe value is $\\importedOp$.\n')
+
+  // The worker's repro: main-only extraction sees nothing.
+  const mainSrc = '{{< include defs.md >}}\n\nThe value is $\\importedOp$.\n'
+  assert.deepEqual(extractMacros(mainSrc), {})
+
+  const macros = extractMacros(mainSrc, { baseDir: root })
+  assert.deepEqual(macros, { '\\importedOp': '\\operatorname{Imported}' })
+
+  // The middle-scope chain: a part carrying the main file's imported macros
+  // renders the operator instead of red undefined-macro text.
+  const html = renderMarkdownColumnHtml({
+    source: 'The value is $\\importedOp$.',
+    title: 'Part',
+    macros,
+  })
+  assert.match(html, /<mi mathvariant="normal">Imported<\/mi>/)
+  assert.doesNotMatch(html, /class="katex-error"/)
+})
+
+test('extractMacros include resolution nests, guards cycles, and tolerates missing files', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-markdown-macro-nest-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  writeFileSync(join(root, 'inner.md'), '$$\\newcommand{\\innerOp}{\\operatorname{Inner}}$$\n')
+  writeFileSync(join(root, 'mid.md'), '{{< include inner.md >}}\n\n$$\\newcommand{\\midOp}{\\operatorname{Mid}}$$\n')
+  writeFileSync(join(root, 'circ-a.md'), '{{< include circ-b.md >}}\n\n$$\\newcommand{\\circA}{\\operatorname{A}}$$\n')
+  writeFileSync(join(root, 'circ-b.md'), '{{< include circ-a.md >}}\n\n$$\\newcommand{\\circB}{\\operatorname{B}}$$\n')
+
+  const nested = extractMacros('{{< include mid.md >}}\n', { baseDir: root })
+  assert.deepEqual(nested, { '\\innerOp': '\\operatorname{Inner}', '\\midOp': '\\operatorname{Mid}' })
+
+  const circular = extractMacros('{{< include circ-a.md >}}\n', { baseDir: root })
+  assert.deepEqual(circular, { '\\circA': '\\operatorname{A}', '\\circB': '\\operatorname{B}' })
+
+  const missing = extractMacros('{{< include nope.md >}}\n\n$$\\newcommand{\\localOp}{\\operatorname{Local}}$$\n', { baseDir: root })
+  assert.deepEqual(missing, { '\\localOp': '\\operatorname{Local}' })
 })
