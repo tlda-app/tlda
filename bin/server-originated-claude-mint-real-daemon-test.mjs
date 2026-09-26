@@ -257,7 +257,6 @@ async function startMcpClient() {
     env: {
       ...process.env,
       TLDA_CONFIG_DIR: CONFIG_DIR,
-      TLDA_DAEMON_CONFIG_DIR: CONFIG_DIR,
       TLDA_ENV: ENV_NAME,
       TLDA_MACHINE_ID: MACHINE_ID,
       FLEET_DAEMON_KEY: `${MACHINE_ID}:${ENV_NAME}`,
@@ -353,7 +352,6 @@ jsonlTailIdleSeconds: 600
       PORT: String(PORT),
       TLDA_FLEET_DB: DB,
       TLDA_CONFIG_DIR: CONFIG_DIR,
-      TLDA_DAEMON_CONFIG_DIR: CONFIG_DIR,
       PROJECTS_DIR,
       TLDA_ENV: ENV_NAME,
       TLDA_DEV_SERVER: '1',
@@ -371,7 +369,6 @@ jsonlTailIdleSeconds: 600
     env: {
       ...process.env,
       TLDA_CONFIG_DIR: CONFIG_DIR,
-      TLDA_DAEMON_CONFIG_DIR: CONFIG_DIR,
       PROJECTS_DIR,
       TLDA_ENV: ENV_NAME,
       TLDA_MACHINE_ID: MACHINE_ID,

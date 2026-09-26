@@ -586,6 +586,20 @@ Local runtime configuration lives under `~/.config/tlda/`. The repository
 ships examples in `config/`; the operator-owned file is
 `~/.config/tlda/daemon.yaml`.
 
+The examples live in `config/examples/`: `daemon-starter.yaml` and
+`daemon-fenced.yaml` are starter variants to copy by hand, never merged
+automatically. `config/deployments/<name>/` holds the server.yaml and
+daemon.yaml each hosted deployment installs on boot. `tlda config init`
+writes its starters from templates in `shared/config.mjs`, not from these
+files.
+
+`~/.config/tlda/` is the app's side: configuration and state the code owns.
+`~/.tlda/` is the agents' side: per-bundle harness homes
+(`configs/<bundle>/<harness>`) plus agent-authored state. Similar names,
+different owners. No code path hard-codes `~/.tlda/` — agents land there
+through daemon.yaml's `agentConfigDir` and convention, and the fence rules
+list it as agent state.
+
 That file contains complete named environments under `environments:`. Select
 one for a process with `TLDA_ENV=<name>` or for a CLI run with `--env <name>`.
 `tlda daemon start --env <name>` carries the selection into agents it spawns.
@@ -634,14 +648,23 @@ than falling back to broader access. A project-local `.tlda-daemon.yaml` can
 change the default profile or define project-specific profiles and models
 without changing the selected server environment.
 
-`TLDA_DAEMON_CONFIG_DIR` selects an isolated configuration directory for tests
-and previews. It gives a sandbox daemon its own machine identity, pidfile,
-database, and configuration. It does not make it safe to run two daemons
-against the same environment.
+`TLDA_CONFIG_DIR` names the configuration directory for every module — server
+URLs, environments, tokens, models, profiles, and grants all resolve from the
+one directory it names. Set it to select an isolated configuration directory
+for tests and previews, giving a sandbox daemon its own machine identity,
+pidfile, database, and configuration. (The old second name,
+`TLDA_DAEMON_CONFIG_DIR`, is gone: nothing reads it.) That still does not make
+it safe to run two daemons against the same environment.
 
-`config/daemon-fenced.yaml` is the shipped constrained variant. It is not
-automatically merged with `daemon.yaml`. Choose the intended configuration and
+`config/examples/daemon-fenced.yaml` is the shipped constrained variant. It is
+not automatically merged with `daemon.yaml`. Choose the intended configuration and
 then inspect `tlda agent` help to confirm what the running CLI sees.
+
+Tool permissions inside a harness — what Claude Code or Codex allows an agent
+to run — are a separate layer from all of the above. They are generated from
+`settings-base.json` in the dot-claude repo, not from daemon.yaml: daemon.yaml
+is what the tlda daemon enforces (spawn, fence, environments), and the harness
+settings are what the harness enforces (tool gates).
 
 ### Bots and CLI preferences
 

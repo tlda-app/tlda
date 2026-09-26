@@ -49,13 +49,13 @@ export function resolveMainDaemonScript(scriptPath, resolveIdentity = resolveRep
 
 // Decide whether a daemon may start, and whether it is properly isolated.
 // Inputs are plain values so this is fully testable without process/env state.
-//   env:        { TLDA_DAEMON_CONFIG_DIR?, PROJECTS_DIR?, TLDA_DEV_DAEMON? }
+//   env:        { TLDA_CONFIG_DIR?, PROJECTS_DIR?, TLDA_DEV_DAEMON? }
 //   scriptPath: the daemon's own resolved script path (import.meta path)
 // Returns { usingCustomConfigDir, isolated, refuseReason }. refuseReason is a
 // string when the daemon must abort with a loud error, or null when it's safe.
 //
 // A daemon is "isolated" from the live fleet when EITHER signal is present:
-//   - TLDA_DAEMON_CONFIG_DIR + PROJECTS_DIR — its own config and JSONL roots.
+//   - TLDA_CONFIG_DIR + PROJECTS_DIR — its own config and JSONL roots.
 // The leak is a WORKTREE daemon with NEITHER: it falls through to live Fly with
 // the shared machine_id ("air") and evicts the real daemon. That one is refused.
 // The deploy hook materialises every release with `git worktree add --detach`,
@@ -79,7 +79,7 @@ function isDeclaredRuntimeTree(scriptPath, declaredRuntimeRoot) {
 }
 
 export function resolveDaemonIsolation({ env = {}, scriptPath = '', declaredRuntimeRoot = null, resolveIdentity = resolveRepoIdentity } = {}) {
-  const usingCustomConfigDir = !!env.TLDA_DAEMON_CONFIG_DIR
+  const usingCustomConfigDir = !!env.TLDA_CONFIG_DIR
   const usingCustomProjectsDir = !!env.PROJECTS_DIR
   const customDataIsolated = usingCustomConfigDir && usingCustomProjectsDir
   const inDeclaredRuntime = isDeclaredRuntimeTree(scriptPath, declaredRuntimeRoot)
@@ -92,7 +92,7 @@ export function resolveDaemonIsolation({ env = {}, scriptPath = '', declaredRunt
       usingCustomProjectsDir,
       isolated,
       refuseReason:
-        'This daemon has TLDA_DAEMON_CONFIG_DIR but no PROJECTS_DIR. A custom ' +
+        'This daemon has TLDA_CONFIG_DIR but no PROJECTS_DIR. A custom ' +
         'daemon config dir must also use an isolated JSONL projects directory; ' +
         'otherwise it can bypass the singleton lock while tailing the live ' +
         'agent sessions.',
@@ -108,7 +108,7 @@ export function resolveDaemonIsolation({ env = {}, scriptPath = '', declaredRunt
         'This daemon is running from a git worktree (' + scriptPath + ') with no ' +
         'isolation signal. A worktree/dev-rig daemon must not join the live fleet ' +
         'as the shared machine_id (it would evict the real daemon). Set ' +
-        'TLDA_DAEMON_CONFIG_DIR plus PROJECTS_DIR (own config + JSONLs) to isolate it.',
+        'TLDA_CONFIG_DIR plus PROJECTS_DIR (own config + JSONLs) to isolate it.',
     }
   }
 

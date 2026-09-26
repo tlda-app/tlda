@@ -3053,7 +3053,7 @@ function parentMintFacts() {
   if (_parentMintFacts) return _parentMintFacts;
   const mintId = process.env.FLEET_MINT_ID || process.env.FLEET_LOCAL_ID || PARENT_AGENT_ID;
   const mintStoreFile = path.join(
-    process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda'),
+    process.env.TLDA_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda'),
     'daemon-mints.sqlite',
   );
   _parentMintFacts = resolveMintFacts(mintStoreFile, mintId) || {};
@@ -3164,7 +3164,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     // daemon has recorded by now is worth having; not having it is a normal
     // state and this call does not depend on it.
     const { resolveLoginFleetId } = await import('../daemon/mint-store.mjs');
-    const mintStoreFile = path.join(process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda'), 'daemon-mints.sqlite');
+    const mintStoreFile = path.join(process.env.TLDA_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda'), 'daemon-mints.sqlite');
     const shellId = nativeBinding?.child_agent_id
       || process.env.FLEET_ID
       || resolveLoginFleetId({ mintId: localAgentId, storeFile: mintStoreFile })

@@ -78,7 +78,6 @@ try {
     env: {
       ...process.env,
       TLDA_CONFIG_DIR: configDir,
-      TLDA_DAEMON_CONFIG_DIR: configDir,
       TLDA_ENV: 'test',
       TLDA_TOKEN: 'test-token',
     },
@@ -112,7 +111,6 @@ try {
     env: {
       ...process.env,
       TLDA_CONFIG_DIR: configDir,
-      TLDA_DAEMON_CONFIG_DIR: configDir,
       TLDA_ENV: 'test',
       TLDA_TOKEN: 'test-token',
     },
@@ -144,7 +142,6 @@ try {
     env: {
       ...process.env,
       TLDA_CONFIG_DIR: configDir,
-      TLDA_DAEMON_CONFIG_DIR: configDir,
       TLDA_ENV: 'test',
       TLDA_TOKEN: 'test-token',
     },

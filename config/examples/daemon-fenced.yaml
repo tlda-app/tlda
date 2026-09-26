@@ -1,8 +1,12 @@
+# EXAMPLE ONLY — the shipped constrained variant. Nothing merges this
+# automatically; the operator copies what they want into the live file,
+# ~/.config/tlda/daemon.yaml (or $TLDA_CONFIG_DIR when set). See "Machine
+# configuration" in docs/using-tlda.md.
 models:
-  default: terra
+  default: sol
   values:
     opus:
-      id: opus
+      id: claude-opus-5
       harness:
         kind: claude
         # Strongly recommended default: enables first-class fleet channel

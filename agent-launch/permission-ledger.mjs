@@ -1020,15 +1020,15 @@ export function applyDaemonGrants(ledger, daemonConfig = {}) {
   return { written }
 }
 
-export function defaultPermissionLedgerPath(configDir = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')) {
+export function defaultPermissionLedgerPath(configDir = process.env.TLDA_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')) {
   return path.join(configDir, 'fleet-daemon.db')
 }
 
-export function defaultDaemonConfigPath(configDir = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')) {
+export function defaultDaemonConfigPath(configDir = process.env.TLDA_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')) {
   return path.join(configDir, 'daemon.yaml')
 }
 
-export function permissionLedgerPathFromDaemonConfig(daemonConfig = {}, configDir = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')) {
+export function permissionLedgerPathFromDaemonConfig(daemonConfig = {}, configDir = process.env.TLDA_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')) {
   return defaultPermissionLedgerPath(configDir)
 }
 

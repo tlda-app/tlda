@@ -11,7 +11,7 @@ function sqEnv(entry) {
 }
 
 function passthroughConfigEnv(env = {}) {
-  return ['TLDA_CONFIG_DIR', 'TLDA_DAEMON_CONFIG_DIR']
+  return ['TLDA_CONFIG_DIR']
     .filter(key => env[key])
     .map(key => [key, String(env[key])])
 }

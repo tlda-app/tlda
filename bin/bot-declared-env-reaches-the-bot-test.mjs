@@ -29,7 +29,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const configDir = mkdtempSync(join(tmpdir(), 'tlda-bot-declared-env-'))
-process.env.TLDA_DAEMON_CONFIG_DIR = configDir
 // Hop 3 below reads `bots.yaml` through `shared/config.mjs`, which resolves
 // CONFIG_DIR once at module load. Both must be set before the first import.
 process.env.TLDA_CONFIG_DIR = configDir

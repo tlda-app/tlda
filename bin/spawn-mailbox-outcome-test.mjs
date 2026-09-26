@@ -220,7 +220,6 @@ async function run() {
       PORT: String(PORT),
       TLDA_FLEET_DB: DB,
       TLDA_CONFIG_DIR: CONFIG_DIR,
-      TLDA_DAEMON_CONFIG_DIR: CONFIG_DIR,
       TLDA_ENV: 'test',
       TLDA_DEV_SERVER: '1',
       TLDA_SPAWN_LOGIN_DEADLINE_MS: '1200',

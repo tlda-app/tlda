@@ -1932,7 +1932,6 @@ function daemonEnvironmentEntries({ configDir = null, envName = DAEMON_WORLD_NAM
   entries.push(['TLDA_ENV', envName])
   if (configDir) {
     entries.push(['TLDA_CONFIG_DIR', configDir])
-    entries.push(['TLDA_DAEMON_CONFIG_DIR', configDir])
   }
   if (processTitle) entries.push(['TLDA_DAEMON_PROCESS_TITLE', processTitle])
   for (const [key, value] of extraEnv) entries.push([key, String(value)])

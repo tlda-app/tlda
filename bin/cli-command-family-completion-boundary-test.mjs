@@ -82,7 +82,7 @@ const spawnSupervisedServer = () => {
 const run = (args, extra = {}, timeout = 20_000) => new Promise((resolve, reject) => {
   const child = spawn(process.execPath, [join(repo, 'cli/tlda.mjs'), ...args], {
     cwd: repo,
-    env: { ...process.env, HOME: home, TLDA_CONFIG_DIR: config, TLDA_DAEMON_CONFIG_DIR: config, TLDA_SERVER: serverUrl, TLDA_ENV: 'stable', PATH: `${fakeBin}:${process.env.PATH}`, FLEET_ID: undefined, FLEET_HARNESS: undefined, FLEET_TMUX_SESSION: undefined, FLEET_NAME: undefined, TMUX: undefined, TMUX_PANE: undefined, ...extra },
+    env: { ...process.env, HOME: home, TLDA_CONFIG_DIR: config, TLDA_SERVER: serverUrl, TLDA_ENV: 'stable', PATH: `${fakeBin}:${process.env.PATH}`, FLEET_ID: undefined, FLEET_HARNESS: undefined, FLEET_TMUX_SESSION: undefined, FLEET_NAME: undefined, TMUX: undefined, TMUX_PANE: undefined, ...extra },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stdout = '', stderr = ''
@@ -173,7 +173,7 @@ exit 0
     })
   })
   await new Promise(resolve => daemon.listen(socketPath, resolve))
-  const wake = spawn(process.execPath, [join(repo, 'cli/tlda.mjs'), 'agent', 'wake', 'fleet:proof'], { cwd: repo, env: { ...process.env, HOME: home, TLDA_CONFIG_DIR: config, TLDA_DAEMON_CONFIG_DIR: config, TLDA_SERVER: serverUrl, TLDA_ENV: 'stable' }, stdio: ['ignore', 'pipe', 'pipe'] })
+  const wake = spawn(process.execPath, [join(repo, 'cli/tlda.mjs'), 'agent', 'wake', 'fleet:proof'], { cwd: repo, env: { ...process.env, HOME: home, TLDA_CONFIG_DIR: config, TLDA_SERVER: serverUrl, TLDA_ENV: 'stable' }, stdio: ['ignore', 'pipe', 'pipe'] })
   let wakeOut = '', wakeErr = ''
   wake.stdout.on('data', c => { wakeOut += c }); wake.stderr.on('data', c => { wakeErr += c })
   const wakeCode = await new Promise(resolve => wake.on('exit', resolve))

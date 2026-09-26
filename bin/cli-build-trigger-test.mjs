@@ -27,7 +27,7 @@ const server = createServer({ allowHalfOpen: true }, socket => {
 try {
   await new Promise(resolve => server.listen(socketPath, resolve))
   const child = spawn(process.execPath, [join(process.cwd(), 'cli/tlda.mjs'), '--env', 'test', 'build', 'disposable'], {
-    env: { ...process.env, TLDA_CONFIG_DIR: configDir, TLDA_DAEMON_CONFIG_DIR: configDir },
+    env: { ...process.env, TLDA_CONFIG_DIR: configDir },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stdout = ''

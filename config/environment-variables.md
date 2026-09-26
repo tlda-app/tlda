@@ -57,7 +57,7 @@ variable names are gone — nothing reads them, and there is no alias.
 | name | why it cannot move |
 |---|---|
 | `TLDA_DEPLOYMENT` | Names which directory under `config/deployments/` to install. A pointer cannot live inside the thing it points at. |
-| `TLDA_CONFIG_DIR`, `TLDA_DAEMON_CONFIG_DIR` | Same bootstrap reason one level down: they say *where* `server.yaml`/`daemon.yaml` are. |
+| `TLDA_CONFIG_DIR` | Same bootstrap reason one level down: it says *where* `server.yaml`/`daemon.yaml` are. The only name — the old `TLDA_DAEMON_CONFIG_DIR` is gone and nothing reads it. |
 | `PORT`, `NODE_ENV`, `HOME`, `PATH`, `USER`, `TMUX`, `TMUX_PANE` | The platform sets these before the app runs. |
 | `TLDA_TOKEN`, `TLDA_TOKEN_RW`, `TLDA_TOKEN_READ` | Secrets (`fly secrets`). A token in an image layer is a token in the repository. |
 | `DEEPGRAM_API_KEY` | Secret, and it belongs to the *bridge* process on the voice box, not to this server. |
@@ -136,7 +136,7 @@ are separate services with their own configuration: `GRAFANA_*` (10) ·
 
 **Test-only** — set by test harnesses to isolate a run: `TLDA_TEST_DEBUG` ·
 `TLDA_FLEET_DB` · `TLDA_QUALIFICATIONS_FILE` · `NODE_TLS_REJECT_UNAUTHORIZED`
-(13 test files) · `TLDA_CONFIG_DIR` / `TLDA_DAEMON_CONFIG_DIR` in fixtures
+(13 test files) · `TLDA_CONFIG_DIR` in fixtures
 
 ## 4. One thing worth knowing
 

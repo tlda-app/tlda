@@ -74,7 +74,6 @@ Object.assign(process.env, {
   FLEET_ID: parentId,
   HOME: configDir,
   TLDA_CONFIG_DIR: configDir,
-  TLDA_DAEMON_CONFIG_DIR: configDir,
   TLDA_ENV: 'test',
 })
 delete process.env.FLEET_LOCAL_ID

@@ -4,10 +4,10 @@
 # harness's own permissions and sandboxing enabled. It grants no filesystem
 # regions or permission profiles through tlda.
 models:
-  default: terra
+  default: sol
   values:
     opus:
-      id: opus
+      id: claude-opus-5
       harness:
         kind: claude
         required:

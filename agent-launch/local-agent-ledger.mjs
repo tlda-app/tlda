@@ -8,7 +8,7 @@ import Database from 'better-sqlite3'
 import { newLocalAgentId } from './identity.mjs'
 
 export function defaultLocalAgentLedgerPath() {
-  const configDir = process.env.TLDA_DAEMON_CONFIG_DIR
+  const configDir = process.env.TLDA_CONFIG_DIR
     || path.join(os.homedir(), '.config', 'tlda')
   return path.join(configDir, 'fleet-daemon.db')
 }

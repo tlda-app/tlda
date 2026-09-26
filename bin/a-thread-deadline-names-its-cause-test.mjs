@@ -68,7 +68,6 @@ Object.assign(process.env, {
   FLEET_TMUX_SESSION: 'fleet-thread-deadline',
   HOME: configDir,
   TLDA_CONFIG_DIR: configDir,
-  TLDA_DAEMON_CONFIG_DIR: configDir,
   TLDA_ENV: 'test',
   TLDA_MACHINE_ID: 'thread-deadline-test',
   // The production deadline is 45s. The message under test is the same one at

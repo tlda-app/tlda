@@ -800,7 +800,7 @@ async function spawnFresh(params) {
 }
 
 function defaultMintStorePath() {
-  const configDir = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')
+  const configDir = process.env.TLDA_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')
   return path.join(configDir, 'daemon-mints.sqlite')
 }
 

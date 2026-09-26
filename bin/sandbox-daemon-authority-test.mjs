@@ -59,7 +59,7 @@ try {
     ['sandbox has its own machine identity', resolved.machineId !== 'shared-live-machine' && resolved.machineId.includes('SANDBOXTEST')],
     ['sandbox selects its generated server name', resolved.name === 'sandbox'],
     ['plist selects shared config directory', plistText.includes('<key>TLDA_CONFIG_DIR</key>') && plistText.includes(configDir)],
-    ['plist selects daemon state directory', plistText.includes('<key>TLDA_DAEMON_CONFIG_DIR</key>') && plistText.includes(configDir)],
+    ['plist selects daemon state directory', plistText.includes('<key>TLDA_CONFIG_DIR</key>') && plistText.includes(configDir)],
     ['retired config file is not generated', !existsSync(join(configDir, 'config.json'))],
   ]
   const failed = checks.filter(([, ok]) => !ok)

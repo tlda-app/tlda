@@ -1,3 +1,6 @@
+# Test fixture owned by agent-launch/harness/*.test.mjs, which load it through
+# readDaemonConfig(path). Nothing in production reads this file; the live
+# daemon config is ~/.config/tlda/daemon.yaml (or $TLDA_CONFIG_DIR when set).
 models:
   default: muse
   values:
@@ -75,7 +78,7 @@ models:
             high: {}
             max: {}
     opus:
-      id: opus
+      id: claude-opus-5
       harness:
         kind: claude
         # Strongly recommended default: enables first-class fleet channel

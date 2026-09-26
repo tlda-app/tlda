@@ -66,7 +66,7 @@ test('a prefix that is not a path boundary does not count as inside', () => {
 
 test('config dir without projects dir is still refused, declared or not', () => {
   const { refuseReason } = resolveDaemonIsolation({
-    env: { TLDA_DAEMON_CONFIG_DIR: '/tmp/cfg' },
+    env: { TLDA_CONFIG_DIR: '/tmp/cfg' },
     scriptPath: RELEASE,
     declaredRuntimeRoot: RELEASE_ROOT,
     resolveIdentity: asWorktree,

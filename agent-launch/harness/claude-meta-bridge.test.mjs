@@ -69,7 +69,7 @@ test('anthropic-routed launches behave exactly as before', () => {
 })
 
 test('muse alias resolves to Claude through OpenRouter', () => {
-  const config = withDaemonModelAliases({}, readDaemonConfig(new URL('../../config/daemon.yaml', import.meta.url).pathname))
+  const config = withDaemonModelAliases({}, readDaemonConfig(new URL('./fixtures/daemon-models.yaml', import.meta.url).pathname))
   const { spec } = resolveModelSelection('muse', { config })
   assert.equal(spec.harness, 'claude')
   assert.equal(spec.id, 'meta/muse-spark-1.3-contributor')
@@ -91,7 +91,7 @@ test('muse alias resolves to Claude through OpenRouter', () => {
 })
 
 test('fleet muse launch requires the OpenRouter deployment key', () => {
-  const config = withDaemonModelAliases({}, readDaemonConfig(new URL('../../config/daemon.yaml', import.meta.url).pathname))
+  const config = withDaemonModelAliases({}, readDaemonConfig(new URL('./fixtures/daemon-models.yaml', import.meta.url).pathname))
   const { spec } = resolveModelSelection('muse', { config })
   assert.throws(
     () => buildCmd({ model: spec.id, tmuxSession: 'fleet-test-session', fleetId: 'fleet:example', harnessOptions: spec.harnessOptions, env: { META_API_KEY: 'wrong-provider-key' } }),
@@ -100,7 +100,7 @@ test('fleet muse launch requires the OpenRouter deployment key', () => {
 })
 
 test('deepseek alias routes through Claude with the deployment key and max effort', () => {
-  const config = withDaemonModelAliases({}, readDaemonConfig(new URL('../../config/daemon.yaml', import.meta.url).pathname))
+  const config = withDaemonModelAliases({}, readDaemonConfig(new URL('./fixtures/daemon-models.yaml', import.meta.url).pathname))
   const { spec } = resolveModelSelection('deepseek', { config })
   assert.equal(spec.harness, 'claude')
   assert.equal(spec.id, 'deepseek-flash[1m]')

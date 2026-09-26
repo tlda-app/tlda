@@ -160,7 +160,6 @@ function runCli(argv, cwd = authorRepo) {
         ...process.env,
         HOME: home,
         TLDA_CONFIG_DIR: config,
-        TLDA_DAEMON_CONFIG_DIR: config,
         TLDA_ENV: ENV_NAME,
         TLDA_TOKEN: 'test-token',
       },

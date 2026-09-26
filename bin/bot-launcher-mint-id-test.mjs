@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 const configDir = mkdtempSync(join(tmpdir(), 'tlda-bot-launcher-mint-id-'))
-process.env.TLDA_DAEMON_CONFIG_DIR = configDir
+process.env.TLDA_CONFIG_DIR = configDir
 process.env.TLDA_ENV = 'stable'
 
 writeFileSync(join(configDir, 'server.yaml'), '')

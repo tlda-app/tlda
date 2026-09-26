@@ -57,7 +57,6 @@ Object.assign(process.env, {
   FLEET_TMUX_SESSION: 'fleet-initial-channel-login',
   HOME: configDir,
   TLDA_CONFIG_DIR: configDir,
-  TLDA_DAEMON_CONFIG_DIR: configDir,
   TLDA_ENV: 'test',
   TLDA_MACHINE_ID: 'initial-channel-login-test',
 })

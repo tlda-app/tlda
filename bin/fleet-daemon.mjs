@@ -188,10 +188,10 @@ async function requireLaunchSlot(operation, launch = {}) {
   }
 }
 // CONFIG_DIR holds daemon configuration, cursors, PID and log files. Defaults to
-// ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR plus PROJECTS_DIR lets tests/dev rigs
+// ~/.config/tlda. TLDA_CONFIG_DIR plus PROJECTS_DIR lets tests/dev rigs
 // start a second daemon without clobbering the live daemon's PID file or JSONL
 // tails.
-const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
+const CONFIG_DIR = _SHARED_CONFIG_DIR
 const PROJECT_WORLDS_FILE = projectWorldsPath(_SHARED_CONFIG_DIR)
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
@@ -283,8 +283,6 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(os.homedir(), '.claud
 
 // ---------- config / machine identity ----------
 
-// When using a custom config dir (E2E tests), read from there instead of shared.
-const _usingCustomConfigDir = !!process.env.TLDA_DAEMON_CONFIG_DIR
 
 // This daemon's own install path — distinguishes a main-tree daemon from a
 // worktree/dev-rig one, both at startup (the isolation guard below) and on the

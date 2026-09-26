@@ -172,7 +172,7 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
     CLAUDE_SESSION: '',
     TLDA_ENV: activeEnvName(null, sourceEnv),
   }
-  for (const key of ['TLDA_CONFIG_DIR', 'TLDA_DAEMON_CONFIG_DIR', 'TLDA_MACHINE_ID']) {
+  for (const key of ['TLDA_CONFIG_DIR', 'TLDA_MACHINE_ID']) {
     if (sourceEnv[key]) mcpEnv[key] = sourceEnv[key]
   }
   if (sourceEnv.TLDA_MACHINE_ID) mcpEnv.FLEET_DAEMON_KEY = `${sourceEnv.TLDA_MACHINE_ID}:${mcpEnv.TLDA_ENV}`

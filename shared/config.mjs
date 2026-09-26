@@ -309,7 +309,7 @@ const STARTER_SERVER_YAML = `# tlda server settings. The file itself is required
 # in a file: secrets (TLDA_TOKEN_READ, TLDA_TOKEN_RW, DEEPGRAM_API_KEY,
 # TS_AUTHKEY), values the platform sets before the app can read anything
 # (PORT, NODE_ENV), and the two that say WHERE the config is — TLDA_ENV picks
-# the environment, TLDA_CONFIG_DIR/TLDA_DAEMON_CONFIG_DIR pick the directory
+# the environment, TLDA_CONFIG_DIR picks the directory
 # these files live in.
 #
 # The complete list of every environment variable the system reads, with a

@@ -149,7 +149,6 @@ test('lecture proposal crosses authenticated fleet wire; admitted HTTP can edit 
       PROJECTS_DIR: projectsDir,
       TLDA_FLEET_DB: dbPath,
       TLDA_CONFIG_DIR: configDir,
-      TLDA_DAEMON_CONFIG_DIR: configDir,
       TLDA_ENV: 'testing',
       TLDA_TOKEN_RW: rwToken,
       TLDA_TOKEN_READ: secondToken,

@@ -40,7 +40,7 @@ try {
   await new Promise(resolve => daemon.listen(socketPath, resolve))
   const child = spawn(process.execPath, [join(repo, 'cli/tlda.mjs'), '--env', 'test', 'project', 'remote', 'push', 'origin', '--project', 'paper'], {
     cwd: outsideCheckout,
-    env: { ...process.env, TLDA_CONFIG_DIR: configDir, TLDA_DAEMON_CONFIG_DIR: configDir, TLDA_ENV: 'test' },
+    env: { ...process.env, TLDA_CONFIG_DIR: configDir, TLDA_ENV: 'test' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stdout = ''

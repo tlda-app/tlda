@@ -55,7 +55,6 @@ Object.assign(process.env, {
   FLEET_TMUX_SESSION: 'fleet-top-level-login',
   HOME: configDir,
   TLDA_CONFIG_DIR: configDir,
-  TLDA_DAEMON_CONFIG_DIR: configDir,
   TLDA_ENV: 'test',
 })
 delete process.env.CODEX_THREAD_ID
