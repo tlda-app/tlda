@@ -11,13 +11,19 @@
 // (or null to skip), in the exact { type, timestamp, blocks, usage } shape that
 // extractActivityEvents() already consumes.
 //
-// Codex rollout record types (verified against real rollouts, Codex v0.140.0):
+// Codex rollout record types (verified against real rollouts, Codex v0.140.0,
+// plus the current PascalCase stream shape it now emits):
 //   { type:'session_meta', payload:{ id, cwd, ... } }          — session header (skip)
 //   { type:'turn_context', ... }                               — (skip)
 //   { type:'event_msg', payload:{ type:'user_message'|'agent_message'|
 //        'token_count'|'task_started'|'task_complete', ... } }
 //   { type:'response_item', payload:{ type:'message'|'function_call'|
 //        'function_call_output', ... } }
+//   { type:'event_msg', payload:{ type:'item_completed',
+//        item:{ type:'McpToolCall', server, tool, arguments, status,
+//               result:{ content:[{ type:'text', text }] }, duration, id } } }
+//        — the authoritative MCP call record the current CLI emits; the older
+//        snake_case 'mcp_tool_call_end' form is still handled below.
 //
 // Tool-call shape: Codex emits fleet MCP tools as
 //   { type:'function_call', name:'register', namespace:'mcp__tlda', arguments:'{...}', call_id }
@@ -258,6 +264,38 @@ function applyPatchEvent(patchBody, callId, ts) {
   return { type: 'assistant', timestamp: ts, blocks }
 }
 
+// Project a current-schema McpToolCall item into the same assistant-event
+// shape as the legacy mcp_tool_call_end payload: one tool_use carrying the
+// flat 'mcp__<server>__<tool>' name plus the real args/status/duration, and one
+// tool_result carrying the unwrapped text. Downstream (noise filter, arg
+// summary, ingest gate) sees the identical shape either way.
+export function mcpItemCompletedEvent(item, timestamp) {
+  const server = item?.server
+  const tool = item?.tool
+  if (!server || !tool) return null
+  const result = item.result || {}
+  const content = Array.isArray(result.content) ? result.content : []
+  const text = content.map(part => part?.text || '').join('')
+  const failed = item.status === 'failed' || result.isError === true
+  const id = item.id
+  return {
+    type: 'assistant',
+    timestamp,
+    blocks: [
+      {
+        type: 'tool_use',
+        name: `mcp__${server}__${tool}`,
+        input: item.arguments || {},
+        id,
+        status: item.status || (failed ? 'error' : 'completed'),
+        duration: item.duration || null,
+        correlationId: id,
+      },
+      { type: 'tool_result', id, text, is_error: failed },
+    ],
+  }
+}
+
 // Parse one Codex rollout line into the daemon's internal event shape, or null
 // to skip. Mirrors parseSessionLine() in fleet-daemon.mjs:
 //   assistant tool call → { type:'assistant', blocks:[{type:'tool_use', name, input, id}] }
@@ -360,6 +398,9 @@ export function parseCodexRecord(o) {
 
   if (o.type === 'event_msg') {
     if (p.type === 'mcp_tool_call_end') return mcpEndEvent(p, ts)
+    if (p.type === 'item_completed' && p.item?.type === 'McpToolCall') {
+      return mcpItemCompletedEvent(p.item, ts)
+    }
     if (p.type === 'user_message') {
       return { type: 'user', timestamp: ts, blocks: [{ type: 'text', text: p.message || '' }] }
     }

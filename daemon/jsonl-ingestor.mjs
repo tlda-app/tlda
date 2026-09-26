@@ -822,9 +822,24 @@ export function createJsonlIngestor({
     if (Array.isArray(jsonlTranscriptRoots) && jsonlTranscriptRoots.length) {
       return [...new Set(jsonlTranscriptRoots.filter(Boolean).map(p => path.resolve(p)))]
     }
+    // Lanes launch codex with CODEX_HOME=<agentConfigDir>/codex
+    // (agent-launch/index.mjs), so each lane's sessions live under
+    // ~/.tlda/configs/<lane>/codex/sessions — outside the default root.
+    // Scan the existing lane roots, not just the default ~/.codex/sessions.
+    const laneCodexRoots = []
+    try {
+      const lanesBase = path.join(os.homedir(), '.tlda', 'configs')
+      for (const lane of fs.readdirSync(lanesBase)) {
+        const sessionsDir = path.join(lanesBase, lane, 'codex', 'sessions')
+        try {
+          if (fs.statSync(sessionsDir).isDirectory()) laneCodexRoots.push(sessionsDir)
+        } catch { /* lane without codex sessions — skip */ }
+      }
+    } catch { /* no lanes dir — default roots only */ }
     return [...new Set([
       projectsDir,
       process.env.CODEX_SESSIONS_DIR || path.join(os.homedir(), '.codex', 'sessions'),
+      ...laneCodexRoots,
     ].filter(Boolean).map(p => path.resolve(p)))]
   }
 
