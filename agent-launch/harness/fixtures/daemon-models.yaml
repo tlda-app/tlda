@@ -4,7 +4,7 @@
 models:
   default: muse
   values:
-    muse:
+    muse-claude:
       id: meta/muse-spark-1.3-contributor
       harness:
         kind: claude
@@ -31,7 +31,7 @@ models:
             medium: {}
             high: {}
             max: {}
-    muse-meta:
+    muse:
       id: muse-spark-1.3-contributor
       harness:
         kind: muse
@@ -41,6 +41,7 @@ models:
         controls: true
       group: muse
       level: 1
+      description: Muse Spark via Meta harness
       options:
         effort:
           default: max

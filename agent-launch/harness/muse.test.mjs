@@ -32,7 +32,7 @@ test('native headless invocation preserves workspace, prompt, and configured per
 
 test('the configured fleet TUI launch uses unattended mode without exec-only flags', () => {
   const config = withDaemonModelAliases({}, readDaemonConfig(new URL('./fixtures/daemon-models.yaml', import.meta.url).pathname))
-  const { spec } = resolveModelSelection('muse-meta', { config })
+  const { spec } = resolveModelSelection('muse', { config })
   assert.deepEqual(spec.harnessOptions.required, ['--yolo'])
   assert.equal(spec.options.effort.default, 'max')
   assert.ok(Object.hasOwn(spec.options.effort.values, 'max'))
