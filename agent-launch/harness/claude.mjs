@@ -8,6 +8,7 @@ import { ledgerSessionId } from '../../agent-runtime/ledger-session-tail.mjs'
 import { activeEnvName, gitAuthorEnv } from '../identity.mjs'
 import { repoRoot } from '../identity.mjs'
 import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
+import { playwrightMcpBrowserArgs } from '../playwright-mcp-browser.mjs'
 import { resolveHarnessLaunchOptions } from '../permissions.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 import { claudeJsonlPath } from '../resume.mjs'
@@ -39,7 +40,7 @@ function passthroughConfigEnv(env = {}) {
     .map(key => [key, String(env[key])])
 }
 
-function mcpConfig() {
+function mcpConfig({ env = process.env } = {}) {
   return {
     mcpServers: {
       tlda: {
@@ -47,10 +48,13 @@ function mcpConfig() {
         command: process.execPath,
         args: [path.join(repoRoot(), 'mcp-server', 'index.mjs')],
       },
+      // Browser flags from the shared resolver (same list muse spawns
+      // with): bare the server defaults to the `chrome` channel and
+      // every tool call fails on machines without installed Chrome.
       playwright: {
         type: 'stdio',
         command: process.execPath,
-        args: [path.join(repoRoot(), 'node_modules', '@playwright', 'mcp', 'cli.js')],
+        args: [path.join(repoRoot(), 'node_modules', '@playwright', 'mcp', 'cli.js'), ...playwrightMcpBrowserArgs({ env })],
       },
     },
   }
@@ -176,7 +180,7 @@ export function buildCmd({
     },
   }))}`)
   appendLaunchFlags(parts, effectiveHarnessOptions)
-  parts.push(`--mcp-config ${sq(JSON.stringify(mcpConfig()))}`)
+  parts.push(`--mcp-config ${sq(JSON.stringify(mcpConfig({ env: { ...env, ...launchEnv } })))}`)
   if (resumeId) parts.push(`--resume ${sq(resumeId)}`)
   else if (freshSessionId) parts.push(`--session-id ${sq(freshSessionId)}`)
   parts.push(`--model ${sq(model)}`)

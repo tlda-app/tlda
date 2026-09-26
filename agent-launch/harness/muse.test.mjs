@@ -93,7 +93,11 @@ test('fleet MCP configuration isolates identity and references native auth witho
   mkdirSync(source, { recursive: true })
   writeFileSync(path.join(source, 'auth.json'), '{"test":"not-a-real-credential"}')
   writeFileSync(path.join(source, 'settings.json'), JSON.stringify({ schema_version: 1, endpoint_transport: { base_url: 'https://example.com' }, model_catalog: [], tui: { theme: 'dark' } }))
-  const env = { XDG_CONFIG_HOME: path.dirname(source), TMPDIR: dir, TLDA_ENV: 'testing', TLDA_MACHINE_ID: 'test-machine' }
+  const browsers = path.join(dir, 'browsers')
+  const stubBin = path.join(browsers, 'chromium-1234', 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing')
+  mkdirSync(path.dirname(stubBin), { recursive: true })
+  writeFileSync(stubBin, '#!/bin/sh\n')
+  const env = { XDG_CONFIG_HOME: path.dirname(source), TMPDIR: dir, TLDA_ENV: 'testing', TLDA_MACHINE_ID: 'test-machine', PLAYWRIGHT_BROWSERS_PATH: browsers }
   const a = prepareFleetConfig({ localAgentId: 'local:first', name: 'first', tmuxSession: 'first', env })
   const b = prepareFleetConfig({ localAgentId: 'local:second', name: 'second', tmuxSession: 'second', env })
   assert.notEqual(a.XDG_CONFIG_HOME, b.XDG_CONFIG_HOME)
@@ -103,7 +107,7 @@ test('fleet MCP configuration isolates identity and references native auth witho
   assert.equal(settings.mcpServers.tlda.env.FLEET_HARNESS, 'muse')
   assert.equal(settings.mcpServers.tlda.env.FLEET_DAEMON_KEY, 'test-machine:testing')
   assert.equal(settings.mcpServers.tlda.framing, 'line_delimited_json')
-  assert.deepEqual(settings.mcpServers.playwright, { transport: 'stdio', command: process.execPath, args: [path.join(repoRoot(), 'node_modules', '@playwright', 'mcp', 'cli.js')] })
+  assert.deepEqual(settings.mcpServers.playwright, { transport: 'stdio', command: process.execPath, args: [path.join(repoRoot(), 'node_modules', '@playwright', 'mcp', 'cli.js'), '--browser', 'chromium', '--isolated', '--no-sandbox', '--executable-path', stubBin] })
   assert.equal(settings.endpoint_transport, undefined)
   assert.equal(settings.model_catalog, undefined)
   assert.equal(settings.tui.theme, 'dark')
@@ -116,6 +120,22 @@ test('fleet MCP configuration isolates identity and references native auth witho
     assert.ok(cmd.includes('local:first'))
     assert.ok(!cmd.includes('not-a-real-credential'))
   }
+})
+
+test('fleet MCP configuration without an installed browser keeps the channel and omits the executable', t => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'muse-fleet-no-browser-test-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const source = path.join(dir, 'source', 'muse')
+  mkdirSync(source, { recursive: true })
+  writeFileSync(path.join(source, 'auth.json'), '{"test":"not-a-real-credential"}')
+  const emptyBrowsers = path.join(dir, 'empty-browsers')
+  mkdirSync(emptyBrowsers, { recursive: true })
+  const env = { XDG_CONFIG_HOME: path.dirname(source), TMPDIR: dir, PLAYWRIGHT_BROWSERS_PATH: emptyBrowsers }
+  const prepared = prepareFleetConfig({ localAgentId: 'local:nobrowser', env })
+  const settings = JSON.parse(readFileSync(path.join(prepared.XDG_CONFIG_HOME, 'muse', 'settings.json'), 'utf8'))
+  const args = settings.mcpServers.playwright.args
+  assert.ok(args.includes('--browser') && args.includes('chromium'))
+  assert.ok(!args.includes('--executable-path'))
 })
 
 test('fleet MCP configuration uses deployment API auth without requiring or linking account auth', t => {

@@ -5,6 +5,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { activeEnvName, repoRoot } from '../identity.mjs'
+import { playwrightMcpBrowserArgs } from '../playwright-mcp-browser.mjs'
 import { exactTmuxWindowTarget } from '../../shared/tmux-target.mjs'
 import { SYSTEM_MARKER } from '../../shared/terminal-system-markers.mjs'
 import { museSessionIdFromPath, museTranscriptPathForSession, resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
@@ -191,10 +192,15 @@ export function prepareFleetConfig({ fleetId, localAgentId, tmuxSession, name, e
       // check (measured 38s warm), which exceeds the harness MCP startup
       // timeout and the server is skipped at mint time. Direct node
       // answers in ~1s.
+      //
+      // The browser flags come from the shared resolver, not from here:
+      // bare the server defaults to the `chrome` channel (installed
+      // Google Chrome, absent on fleet machines) and every tool call
+      // fails. Same list the claude harness spawns with.
       playwright: {
         transport: 'stdio',
         command: process.execPath,
-        args: [path.join(repoRoot(), 'node_modules', '@playwright', 'mcp', 'cli.js')],
+        args: [path.join(repoRoot(), 'node_modules', '@playwright', 'mcp', 'cli.js'), ...playwrightMcpBrowserArgs({ env: sourceEnv })],
       },
     }),
   }

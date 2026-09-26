@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { buildCmd, resolveModelSelection } from './claude.mjs'
 import { readDaemonConfig, withDaemonModelAliases } from '../permission-ledger.mjs'
 
@@ -37,6 +40,27 @@ test('fleet launches carry the Playwright MCP server alongside tlda', () => {
   assert.ok(cmd.includes('playwright'))
   assert.ok(cmd.includes('node_modules/@playwright/mcp/cli.js'))
   assert.ok(!cmd.includes('npx'))
+})
+
+test('fleet launches point the Playwright MCP at the installed bundled browser', t => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'claude-pw-browser-test-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const browsers = path.join(dir, 'browsers')
+  const stubBin = path.join(browsers, 'chromium-1234', 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing')
+  mkdirSync(path.dirname(stubBin), { recursive: true })
+  writeFileSync(stubBin, '#!/bin/sh\n')
+  const cmd = buildCmd({
+    ...base,
+    fleetId: 'fleet:example',
+    env: { META_API_KEY: 'deployment-secret', PLAYWRIGHT_BROWSERS_PATH: browsers },
+  })
+  assert.ok(cmd.includes('--browser'))
+  assert.ok(cmd.includes('chromium'))
+  assert.ok(cmd.includes('--isolated'))
+  assert.ok(cmd.includes('--no-sandbox'))
+  assert.ok(cmd.includes('--executable-path'))
+  assert.ok(cmd.includes(stubBin))
+  assert.ok(!cmd.includes('--headless'))
 })
 
 test('fleet meta-routed launch without a deployment key fails loudly instead of falling back', () => {
