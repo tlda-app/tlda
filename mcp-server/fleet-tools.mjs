@@ -64,6 +64,7 @@ import { PSEUDO_LABELS, parseFilter, evalExpr } from '../shared/fleet-labels.mjs
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import { harnessFromEnv, harnessKindFromEnv } from './lib/harness-adapters.mjs';
+import { acquirePaneInputLock, readParkedWake, writeParkedWake, clearParkedWake } from '../shared/pane-input-lock.mjs';
 import { timerSetEventIdFromAck, timerSetMessage } from './lib/timer-protocol.mjs';
 import WebSocket from 'ws';
 import {
@@ -1460,35 +1461,30 @@ function tmuxSendText(sessionName, text, settleMs = 0) {
   }
 }
 
-// Muse loses an Enter issued before the typed text has landed: measured
-// 2026-09-13, 1/1 lost with no wait, 5/5 accepted once the text was confirmed
-// visible, landing observed between 0.4s and 0.8s. Sleeping past the slowest
-// landing anyone has sampled is a guess about a distribution from five points,
-// and it blocks the MCP thread while it guesses. So this waits for the text to
-// appear, then waits for it to leave -- two facts read off the pane instead of
-// one number.
+// Muse channel notices type the wake into the agent's own composer and press
+// Enter exactly once -- and nothing else. The composer is shared with a live
+// human, so every other write is forbidden: no second Enter, no C-u erase,
+// no requeue, no watcher. Any doubt parks the text for a manual Enter (the
+// long-standing fallback) instead of fighting for the submit:
 //
-// Muse and agy need it. Codex was measured on a live idle pane the same night --
-// text visible at 991ms, Enter accepted at BOTH 400ms and 1200ms -- so codex
-// queues input rather than dropping it, and claude consumes slowly but in
-// order. Neither has the failure this exists to catch; both keep their settle.
-// agy is the worse muse: pasted text digests at ~20 chars/sec (measured),
-// so an Enter at a fixed settle always lands mid-digestion and is lost.
+// - foreign text in the composer (the human's draft) or our own stale
+//   pointer already parked: decline without touching the pane. No piling,
+//   no replacing -- replacing erases the whole line, and the human may
+//   have typed after the park.
+// - no composer yet (pane booting, mid-turn, mid-dialog): decline. The mail
+//   waits in inbox(); the next notice tries again.
+// - a second notice while one is mid-submit: decline. The in-flight one
+//   is the wake.
+// - typed text never visible, the composer changing under us (the human is
+//   typing now), or our one Enter not landing: throw loud and leave the
+//   text parked. A parked line is a manual Enter away from sent; an erased
+//   line is somebody's work destroyed.
 //
-// Both waits are bounded and both failures throw. `deliverChannelNotice`'s
-// caller renders a throw as `channel-error: <message>` and a false as a bare
-// `channel-declined`, so throwing is what carries the reason off this machine.
-// A dropped notification has to be loud -- the silent version IS the defect.
-const MUSE_TYPE_TIMEOUT_MS = 5000;
-const MUSE_SUBMIT_TIMEOUT_MS = 5000;
-const MUSE_POLL_INTERVAL_MS = 150;
-// How many Enters to press while our own text is still sitting on the prompt.
-// The TUI drops an Enter that lands while it is busy (or just loses one on
-// an idle prompt, as measured); each press is verified, and pressing stops
-// the moment the text leaves the prompt -- never into an empty or foreign
-// prompt, so a retry can delay but never mis-submit.
-const MUSE_SUBMIT_ATTEMPTS = 3;
-
+// The pressure toward more machinery here is measured and must be resisted:
+// the Sep-24 erase/withdraw/requeue/watcher stack collided its Enters with
+// the human's and wedged muse's run projection ("duplicate terminal event")
+// until the process restarted. Ghost-hint reads below are read-only and
+// stay: idle muse renders a dim hint a plain capture mistakes for a draft.
 function tmuxCapturePane(sessionName) {
   return new Promise((resolve, reject) => {
     execFile('tmux', ['capture-pane', '-t', sessionName, '-p', '-S', '-100'], { timeout: 5000 }, (err, stdout) => {
@@ -1528,8 +1524,8 @@ export function stripAnsi(s) {
 // not (measured 2026-09-24 on live 1.3.0 panes: both renders, both send-keys
 // forms). Reading only the glyph line misses the virgin render -- the
 // type-wait then throws "never reached the prompt" about text sitting right
-// there, and the parked text is never withdrawn. The rule line bounds the
-// region so transcript above and footer below can never satisfy a probe.
+// there. The rule line bounds the region so transcript above and footer
+// below can never satisfy a probe.
 export function museComposerRegion(paneText) {
   const lines = String(paneText || '').split('\n');
   // Detection reads through the styles (a styled rule line starts with SGR,
@@ -1559,10 +1555,12 @@ export function museComposerText(region) {
 
 // Our notices are always 📬-led (handleChannelMessage and the unread flush
 // build them so). An agent composing its own 📬-led turn is absurd, so a
-// 📬-led squatter is our own stale pointer and safe to replace -- inbox()
-// holds the mail it pointed at. Anything else in the composer is the agent's
-// own unfinished thought: clearing it would destroy work and appending to it
-// would submit a franken-turn, so delivery declines and the mail waits.
+// 📬-led squatter is our own stale pointer -- and it still stays parked:
+// replacing it erases the whole line, and the human may have typed after
+// the park. inbox() holds the mail it pointed at. Anything else in the
+// composer is the agent's own unfinished thought: clearing it would destroy
+// work and appending to it would submit a franken-turn, so delivery declines
+// and the mail waits.
 export function museSquatterKind(text) {
   if (!text) return 'empty';
   if (text.startsWith('📬')) return 'stale-notice';
@@ -1571,18 +1569,17 @@ export function museSquatterKind(text) {
 
 // Muse 1.3.0 renders a rotating hint INSIDE an empty composer
 // (`❯ /tasks shows workflows...`), which a plain capture cannot tell from a
-// real draft -- so an idle pane read as 'foreign', every notice queued behind
-// a watcher that re-checks the same foreign text forever, and the daemon
-// recorded `channel-queued` refusals while the agent sat idle (measured
-// 2026-09-24 on fleet:bdcb6292: seven refusals in twenty minutes against an
-// idle prompt; a fleet-wide pane scan showed the hint on every idle muse
-// composer). The styles discriminate: hint text is dim grey 38;2;103;108;116,
-// typed input is bright 38;2;204;211;219, dialog options are 256-palette.
-// Ghost is ALL-non-whitespace-dim; any bright run (a real draft, an
-// autocomplete suffix after typed text) stays foreign, and unstyled input is
-// never ghost, so plain captures keep today's behavior exactly. Parse
-// confusion fails toward foreign (queue, today's behavior), never toward an
-// 'empty' that would type into a real draft.
+// real draft -- so an idle pane read as 'foreign' and every notice declined
+// against an idle prompt (measured 2026-09-24 on fleet:bdcb6292: seven
+// refusals in twenty minutes against an idle prompt; a fleet-wide pane scan
+// showed the hint on every idle muse composer). The styles discriminate:
+// hint text is dim grey 38;2;103;108;116, typed input is bright
+// 38;2;204;211;219, dialog options are 256-palette. Ghost is
+// ALL-non-whitespace-dim; any bright run (a real draft, an autocomplete
+// suffix after typed text) stays foreign, and unstyled input is never ghost,
+// so plain captures keep their behavior exactly. Parse confusion fails
+// toward foreign (decline), never toward an 'empty' that would type into a
+// real draft.
 const MUSE_GHOST_FG = '38;2;103;108;116';
 export function museComposerGhost(region) {
   if (!region || !region.length) return false;
@@ -1633,18 +1630,6 @@ function museProbe(line) {
   return line.slice(0, 32);
 }
 
-// First sighting of a composer, or null after the wait. Split from
-// waitForMuseComposer because hygiene needs the region itself, not a boolean.
-async function museFirstComposer(sessionName, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const region = museComposerRegion(await tmuxCapturePaneStyled(sessionName));
-    if (region !== null) return region;
-    if (Date.now() >= deadline) return null;
-    await new Promise(resolve => setTimeout(resolve, MUSE_POLL_INTERVAL_MS));
-  }
-}
-
 async function waitForMuseComposer(sessionName, timeoutMs, predicate) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -1655,155 +1640,268 @@ async function waitForMuseComposer(sessionName, timeoutMs, predicate) {
   }
 }
 
-// Queued-for-idle notices, one pending wake per pane. A notice that arrives
-// while the agent is mid-turn, still booting, or composing its own draft is
-// HELD, never dropped: the watcher below delivers it when the composer
-// frees. Latest content wins -- the notice is a wake pointing at inbox(),
-// which holds every message, so an older pointer carries nothing a newer
-// one lacks. Dropping here used to be silent (`return false`, mail waits),
-// which reads from the outside as the agent never getting its text.
-const MUSE_IDLE_POLL_MS = 2000;
-const musePendingNotice = new Map();
-const museIdleWatchers = new Set();
+// Both waits are bounded and both failures throw. `deliverChannelNotice`'s
+// caller renders a throw as `channel-error: <message>` and a false as a bare
+// `channel-declined`, so throwing is what carries the reason off this machine.
+// A dropped notification has to be loud -- the silent version IS the defect.
+const MUSE_TYPE_TIMEOUT_MS = 5000;
+const MUSE_SUBMIT_TIMEOUT_MS = 5000;
+const MUSE_POLL_INTERVAL_MS = 150;
+// Stillness window before the one Enter: the composer must read identical
+// twice, this far apart, with our text present in both. A human typing
+// changes bytes between the reads; render churn aborts the Enter the same
+// way. Either way the text parks for a manual Enter.
+const MUSE_STILL_MS = 300;
 
-function museNoticeQueuedError(sessionName, detail = 'busy') {
-  const err = new Error(`agent busy in ${sessionName}; notice queued for idle delivery (${detail})`);
-  err.code = 'MUSE_NOTICE_QUEUED';
-  err.queueDetail = detail;
-  return err;
-}
+// ---- Level-triggered muse inbox wakes ----
+//
+// A wake is owned, not delivered. Each notice is accepted into this
+// sidecar's wake loop, which keeps trying while TLDA shows unread work,
+// and the notice is acknowledged on acceptance. Coalescing is structural:
+// five rapid notices set one pending doorbell and ensure one loop. There is
+// no queue of five, no watcher, no retry counter on any single event.
+//
+// The level signal is the server's canonical unread count: cheap,
+// side-effect-free, and correct across sidecars, because whichever process
+// serves the agent's inbox() flips the rows this reads. `museWakeRequested`
+// covers mail the count cannot see (a wiretap with no delivery rows): any
+// explicit request is honored once by a successful submit.
+//
+// Every transaction runs inside the pane input lock, so no other synthetic
+// writer -- neither this sidecar's own loop nor the daemon -- can interleave
+// between injection and submission. The human can still type at any moment;
+// the preflight and stillness checks below are what keep the transaction
+// from fighting them.
+let museWakeLoopRunning = false;
+let museWakeLoopWaiters = [];
+let museWakeRequested = false;
+let museWakePendingContent = null;
+let museWakeRetryDelaysMs = [5000, 10000, 20000, 30000];
+let museWakePostSuccessDelayMs = 30000;
 
-async function runMuseIdleWatcher(sessionName) {
-  try {
-    for (;;) {
-      let region = null;
-      try {
-        region = museComposerRegion(await tmuxCapturePaneStyled(sessionName));
-      } catch (e) {
-        // Pane gone: the agent's process went with it, and the queued
-        // pointer dies in this sidecar -- but the reconnect flush on the
-        // next process says how much is waiting, so the wake survives.
-        // Said out loud: this catch also eats transient tmux failures, and
-        // a dropped wake must never be silent about which it was.
-        process.stderr.write(`[fleet-channel] idle watcher for ${sessionName} lost its pane read (${e?.message || e}); dropping queued notice\n`);
-        musePendingNotice.delete(sessionName);
-        return;
-      }
-      if (region !== null && museSquatterKindStyled(region) !== 'foreign') {
-        const pending = musePendingNotice.get(sessionName);
-        musePendingNotice.delete(sessionName);
-        if (pending !== undefined) {
-          try {
-            await submitMuseNoticeChained(sessionName, pending);
-          } catch (e) {
-            // Raced a new turn after the poll saw idle: the submitter
-            // re-queued, so keep watching rather than exiting.
-            if (e?.code === 'MUSE_NOTICE_QUEUED') continue;
-            process.stderr.write(`[fleet-channel] queued notice for ${sessionName} failed: ${e.message}\n`);
-            return;
-          }
-        }
-        return;
-      }
-      await new Promise(resolve => { const t = setTimeout(resolve, MUSE_IDLE_POLL_MS); t.unref?.(); });
-    }
-  } finally {
-    museIdleWatchers.delete(sessionName);
-    // A notice that landed while the watcher was submitting re-arms it.
-    if (musePendingNotice.has(sessionName)) queueMuseNoticeForIdle(sessionName, musePendingNotice.get(sessionName));
-  }
-}
-
-function queueMuseNoticeForIdle(sessionName, content) {
-  musePendingNotice.set(sessionName, content);
-  if (museIdleWatchers.has(sessionName)) return;
-  museIdleWatchers.add(sessionName);
-  void runMuseIdleWatcher(sessionName).catch(e => {
-    process.stderr.write(`[fleet-channel] idle watcher for ${sessionName} died: ${e?.message || e}\n`);
+function museWakeSleep(ms) {
+  return new Promise(resolve => {
+    const t = setTimeout(resolve, Math.max(0, ms));
+    t.unref?.();
   });
 }
 
-// One submit flow per pane at a time. Notices arrive concurrently (the
-// channel handler is detached), and two flows typing at once would fuse
-// into one franken-turn. The chain serializes whole submit flows.
-const museDeliveryChains = new Map();
-function submitMuseNoticeChained(sessionName, content) {
-  const prev = museDeliveryChains.get(sessionName) || Promise.resolve();
-  const next = prev.catch(() => {}).then(() => tmuxSubmitTextVerified(sessionName, content));
-  museDeliveryChains.set(sessionName, next);
-  const release = () => { if (museDeliveryChains.get(sessionName) === next) museDeliveryChains.delete(sessionName); };
-  // A submitted wake subsumes any queued pointer: the agent is about to read
-  // its whole inbox, so a second turn would be pure noise.
-  next.then(ok => { if (ok === true) musePendingNotice.delete(sessionName); release(); }, release);
-  return next;
+async function museUnreadCount() {
+  const data = await mcpFleetTransport.ephemeral('unread-count', { agent: activeAgentId() }, { deadlineMs: 5000 });
+  const count = Number(data?.count);
+  if (!Number.isFinite(count) || count < 0) throw new Error(`unread-count answered ${JSON.stringify(data?.count)}`);
+  return count;
 }
 
-async function tmuxSubmitTextVerified(sessionName, text) {
-  const line = String(text || '').replace(/\s*\n\s*/g, ' · ').trim();
-  if (!line) return false;
-  const probe = museProbe(line);
-  // Hygiene BEFORE typing: never pile onto a squatter, never type blind.
-  // The composer is WAITED for, not snapshotted: a pane still booting (trust
-  // dialog, MCP startup, slow runtime -- node took 1-3s to first output on a
-  // loaded box, measured 2026-09-24) has no prompt line YET. No composer at
-  // all after the wait (a mid-turn render with no prompt line), or a foreign
-  // squatter (the agent's own unfinished draft), QUEUES rather than declines
-  // -- typing now would land inside the turn or destroy work, and declining
-  // would silently drop the wake. The watcher above delivers on idle.
-  const before = await museFirstComposer(sessionName, MUSE_TYPE_TIMEOUT_MS);
-  if (before === null) {
-    queueMuseNoticeForIdle(sessionName, text);
-    throw museNoticeQueuedError(sessionName, 'no-composer');
-  }
-  const squatter = museSquatterKindStyled(before);
-  if (squatter === 'foreign') {
-    queueMuseNoticeForIdle(sessionName, text);
-    throw museNoticeQueuedError(sessionName, `foreign:${JSON.stringify(museComposerText(before).slice(0, 48))}`);
-  }
-  if (squatter === 'stale-notice') {
-    execFileSync('tmux', ['send-keys', '-t', sessionName, 'C-u'], { timeout: 5000 });
-    const replaced = await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS,
-      region => museSquatterKindStyled(region) === 'empty');
-    if (!replaced) {
-      // Same persistence as a lost submit below: the TUI is not consuming
-      // keys right now, so hold the wake for idle rather than dropping it.
-      queueMuseNoticeForIdle(sessionName, text);
-      throw museNoticeQueuedError(sessionName, 'stale-unreplaceable');
+function museWakeLoopDrained() {
+  if (!museWakeLoopRunning) return Promise.resolve();
+  return new Promise(resolve => museWakeLoopWaiters.push(resolve));
+}
+
+function ensureMuseWakeLoop() {
+  if (museWakeLoopRunning) return;
+  museWakeLoopRunning = true;
+  void runMuseWakeLoop().finally(() => {
+    museWakeLoopRunning = false;
+    const waiters = museWakeLoopWaiters;
+    museWakeLoopWaiters = [];
+    for (const w of waiters) w();
+  });
+}
+
+async function runMuseWakeLoop() {
+  let deferStreak = 0;
+  let captureFailures = 0;
+  for (;;) {
+    const session = process.env.FLEET_TMUX_SESSION;
+    if (!session) {
+      process.stderr.write('[fleet-channel] muse wake loop: no FLEET_TMUX_SESSION; stopping until the next notice\n');
+      return;
     }
+    let unread = null;
+    try {
+      unread = await museUnreadCount();
+    } catch (e) {
+      process.stderr.write(`[fleet-channel] muse wake loop: unread-count failed (${e.message}); retrying\n`);
+      await museWakeSleep(museWakeRetryDelaysMs[Math.min(deferStreak++, museWakeRetryDelaysMs.length - 1)]);
+      continue;
+    }
+    if (unread === 0 && !museWakeRequested) return;
+    let outcome = 'deferred';
+    try {
+      outcome = await museWakeTransaction(session);
+    } catch (e) {
+      process.stderr.write(`[fleet-channel] muse wake transaction failed: ${e.message}\n`);
+    }
+    if (outcome === 'caught-up') return;
+    if (outcome === 'submitted') {
+      deferStreak = 0;
+      captureFailures = 0;
+      museWakeRequested = false;
+      await museWakeSleep(museWakePostSuccessDelayMs);
+      continue;
+    }
+    if (outcome === 'pane-gone') {
+      captureFailures += 1;
+      if (captureFailures >= 3) {
+        process.stderr.write('[fleet-channel] muse wake loop: pane unreadable three times running; stopping until the next notice\n');
+        return;
+      }
+    } else {
+      captureFailures = 0;
+    }
+    await museWakeSleep(museWakeRetryDelaysMs[Math.min(deferStreak++, museWakeRetryDelaysMs.length - 1)]);
   }
-  execFileSync('tmux', ['send-keys', '-t', sessionName, '--', line], { timeout: 5000 });
-  if (!await waitForMuseComposer(sessionName, MUSE_TYPE_TIMEOUT_MS, region => region.some(l => stripAnsi(l).includes(probe)))) {
-    throw new Error(`typed text never reached the prompt in ${sessionName}; not sending Enter blindly`);
-  }
-  for (let attempt = 1; ; attempt++) {
-    execFileSync('tmux', ['send-keys', '-t', sessionName, 'Enter'], { timeout: 5000 });
-    if (await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS, region => !region.some(l => stripAnsi(l).includes(probe)))) return true;
-    if (attempt >= MUSE_SUBMIT_ATTEMPTS) break;
-  }
-  // Withdraw, then QUEUE. A lost Enter is a busy TUI, not a dead one -- boot,
-  // turn transitions, and heavy renders all eat keys for longer than three
-  // attempts span, at exactly the moments a wake matters. Withdrawing keeps
-  // the composer clean (a parked draft turns every later notice into a
-  // pile-up), and queueing retries at idle instead of dropping the wake: the
-  // watcher re-fires on the empty (or stale, if the withdraw also lost its
-  // C-u) composer, and the retry loop only ever runs against an empty or
-  // stale prompt, so an agent composing its own draft pauses it. Loud either
-  // way: the queue reason names the loss, and a parked remainder names that.
-  execFileSync('tmux', ['send-keys', '-t', sessionName, 'C-u'], { timeout: 5000 });
-  const withdrew = await waitForMuseComposer(sessionName, MUSE_SUBMIT_TIMEOUT_MS, region => !region.some(l => stripAnsi(l).includes(probe)));
-  queueMuseNoticeForIdle(sessionName, text);
-  throw museNoticeQueuedError(sessionName, withdrew
-    ? `submit-lost-${MUSE_SUBMIT_ATTEMPTS}x-withdrew`
-    : `submit-lost-${MUSE_SUBMIT_ATTEMPTS}x-parked`);
 }
 
-function submitNotificationIntoMusePane(content) {
-  const sess = process.env.FLEET_TMUX_SESSION;
-  if (!sess) {
-    process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for terminal notification\n');
+async function museWakeTransaction(session) {
+  const line = museWakePendingContent;
+  if (!line) return 'deferred';
+  let lock = null;
+  try {
+    lock = await acquirePaneInputLock(session, { timeoutMs: 30000, op: 'muse-wake' });
+  } catch (e) {
+    if (e?.code === 'PANE_INPUT_LOCK_TIMEOUT') {
+      process.stderr.write(`[fleet-channel] muse wake: pane lock busy for ${session}; retrying later\n`);
+      return 'deferred';
+    }
+    throw e;
+  }
+  try {
+    // Double-checked level: re-read unread inside the lock, so a wake that
+    // became unnecessary while we waited does not type.
+    let unread = null;
+    try {
+      unread = await museUnreadCount();
+    } catch (e) {
+      process.stderr.write(`[fleet-channel] muse wake: unread re-check failed (${e.message})\n`);
+    }
+    if (unread === 0 && !museWakeRequested) return 'caught-up';
+    let region = null;
+    try {
+      region = museComposerRegion(await tmuxCapturePaneStyled(session));
+    } catch (e) {
+      return 'pane-gone';
+    }
+    if (region === null) return 'deferred';
+    const kind = museSquatterKindStyled(region);
+    if (kind === 'empty') return await museWakeSubmitFresh(session, line);
+    if (kind === 'stale-notice') return await museWakeSubmitParked(session);
+    return await museWakeDeferHuman(session, region);
+  } finally {
+    lock.release();
+  }
+}
+
+async function museWakeSubmitFresh(session, line) {
+  const probe = museProbe(line);
+  execFileSync('tmux', ['send-keys', '-t', session, '--', line], { timeout: 5000 });
+  if (!await waitForMuseComposer(session, MUSE_TYPE_TIMEOUT_MS, region => region.some(l => stripAnsi(l).includes(probe)))) {
+    process.stderr.write(`[fleet-channel] muse wake: typed text never reached the prompt in ${session}; not sending Enter blindly\n`);
+    return 'deferred';
+  }
+  // Stillness: identical composer text twice with our probe present. Any
+  // change -- the human typing, a turn starting under us, a re-render --
+  // aborts the Enter and parks the text, which stays a manual Enter away
+  // from sent.
+  const first = museComposerText(museComposerRegion(await tmuxCapturePaneStyled(session)) || []);
+  await museWakeSleep(MUSE_STILL_MS);
+  const second = museComposerText(museComposerRegion(await tmuxCapturePaneStyled(session)) || []);
+  if (!second.includes(probe)) {
+    process.stderr.write(`[fleet-channel] muse wake: typed text left the prompt in ${session} before our Enter; not chasing it\n`);
+    return 'deferred';
+  }
+  if (first !== second) {
+    process.stderr.write(`[fleet-channel] muse wake: composer changed during send in ${session}; parked for a manual Enter\n`);
+    writeParkedWake(session, line);
+    return 'parked';
+  }
+  // Exactly one Enter. It is logged because it is the one write this path
+  // makes into a shared composer, and its count is the audit trail.
+  execFileSync('tmux', ['send-keys', '-t', session, 'Enter'], { timeout: 5000 });
+  process.stderr.write(`[fleet-channel] muse Enter sent in ${session}\n`);
+  if (await waitForMuseComposer(session, MUSE_SUBMIT_TIMEOUT_MS, region => !region.some(l => stripAnsi(l).includes(probe)))) {
+    clearParkedWake(session);
+    return 'submitted';
+  }
+  process.stderr.write(`[fleet-channel] muse wake: notification still sitting in the prompt in ${session} after our one Enter; parked for a manual Enter\n`);
+  writeParkedWake(session, line);
+  return 'parked';
+}
+
+async function museWakeSubmitParked(session) {
+  // Automation-owned text (our 📬 prefix) sitting unsent. Adopt it when it is
+  // verifiably ours and still: our own park record matching byte-for-byte, or
+  // no conflicting record at all (another sidecar's park, or a park from
+  // before records existed). Text longer than our record means the human
+  // typed after the park -- that is theirs now, hands off.
+  const current = museComposerText(museComposerRegion(await tmuxCapturePaneStyled(session)) || []);
+  const park = readParkedWake(session);
+  if (park && current.length > park.line.length && current.startsWith(park.line)) {
+    process.stderr.write(`[fleet-channel] muse wake: parked pointer in ${session} has human text after it; leaving it alone\n`);
+    return 'deferred';
+  }
+  const first = current;
+  await museWakeSleep(MUSE_STILL_MS);
+  let second = '';
+  try {
+    second = museComposerText(museComposerRegion(await tmuxCapturePaneStyled(session)) || []);
+  } catch (e) {
+    return 'pane-gone';
+  }
+  if (first !== second) return 'deferred';
+  execFileSync('tmux', ['send-keys', '-t', session, 'Enter'], { timeout: 5000 });
+  process.stderr.write(`[fleet-channel] muse Enter sent for parked pointer in ${session}\n`);
+  const probe = museProbe(first);
+  if (await waitForMuseComposer(session, MUSE_SUBMIT_TIMEOUT_MS, region => !region.some(l => stripAnsi(l).includes(probe)))) {
+    clearParkedWake(session);
+    return 'submitted';
+  }
+  writeParkedWake(session, first);
+  return 'parked';
+}
+
+async function museWakeDeferHuman(session, region) {
+  // Real non-prefixed text: potentially the human's composition. Changing
+  // like active typing defers; stationary (a paused draft) also defers --
+  // appending our wake would submit their half-thought early, and the wake
+  // is free to wait for the level loop's next pass.
+  const first = museComposerText(region);
+  await museWakeSleep(MUSE_STILL_MS);
+  let second = '';
+  try {
+    second = museComposerText(museComposerRegion(await tmuxCapturePaneStyled(session)) || []);
+  } catch (e) {
+    return 'pane-gone';
+  }
+  process.stderr.write(second !== first
+    ? `[fleet-channel] muse wake: human actively typing in ${session}; holding off\n`
+    : `[fleet-channel] muse wake: human draft sitting in ${session}; holding off\n`);
+  return 'deferred';
+}
+
+function requestMuseWake(content) {
+  const line = String(content || '').replace(/\s*\n\s*/g, ' · ').trim();
+  if (!line) return false;
+  if (!process.env.FLEET_TMUX_SESSION) {
+    process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for muse wake\n');
     return false;
   }
-  return submitMuseNoticeChained(sess, content);
+  // Newest wins: the doorbell points at inbox(), which holds every message,
+  // so an older pointer carries nothing a newer one lacks.
+  museWakePendingContent = line;
+  museWakeRequested = true;
+  ensureMuseWakeLoop();
+  return true;
+}
+
+export function __setMuseWakeLoopForTest({ retryDelaysMs, postSuccessDelayMs } = {}) {
+  if (retryDelaysMs) museWakeRetryDelaysMs = retryDelaysMs;
+  if (postSuccessDelayMs != null) museWakePostSuccessDelayMs = postSuccessDelayMs;
+}
+
+export function __museWakeLoopDrainedForTest() {
+  return museWakeLoopDrained();
 }
 
 const AGY_NOTIFY_TYPE_TIMEOUT_MS = 30000;
@@ -6574,10 +6672,11 @@ export async function deliverChannelNotice(content, meta = {}) {
       return notifyOverClaudeChannel(content, meta);
     case 'codex':
       return typeNotificationIntoPane(content, 400);
-    // Muse is the one harness that drops an Enter sent before its text lands,
-    // so it confirms instead of sleeping. See `tmuxSubmitTextVerified`.
+    // Muse owns the wake into its level-triggered loop: the notice is
+    // accepted (and acknowledged) here, and the loop submits while TLDA
+    // shows unread work. See `requestMuseWake`.
     case 'muse':
-      return submitNotificationIntoMusePane(content);
+      return requestMuseWake(content);
     case 'goose':
       return typeNotificationIntoPane(content, 0);
     case 'agy':
@@ -6768,22 +6867,13 @@ async function handleChannelMessage(msg) {
   if (delivered && wakeAckId && isDirectTarget) {
     await acknowledgeWakeChannelNotice(agentId, wakeAckId);
   } else if (!delivered && wakeAckId && isDirectTarget) {
-    // Queued is a refusal with a future: the wake is held for idle, not
-    // dropped, and the reason says so. A refusal provokes no remedy.
-    const queued = deliveryError?.code === 'MUSE_NOTICE_QUEUED';
-    // The queue detail rides the refusal reason into the server trace and the
-    // daemon log, which is the telemetry that names the loss: squatter kind
-    // and composer preview for a held wake, submit-loss counts for a TUI
-    // eating keys. A bare `channel-queued` cannot be diagnosed from the log.
-    const queueDetail = queued && deliveryError?.queueDetail ? `:${deliveryError.queueDetail}` : '';
-    if (queued) process.stderr.write(`[fleet-channel] notice for ${agentId} queued for idle delivery${queueDetail}\n`);
     await refuseWakeChannelNotice(
       agentId,
       wakeAckId,
-      queued ? `channel-queued${queueDetail}` : (deliveryError ? `channel-error: ${deliveryError.message}` : 'channel-declined'),
+      deliveryError ? `channel-error: ${deliveryError.message}` : 'channel-declined',
     );
   }
-  if (deliveryError && deliveryError.code !== 'MUSE_NOTICE_QUEUED') throw deliveryError;
+  if (deliveryError) throw deliveryError;
   if (delivered && eventId) {
     _deliveredChannelIds.add(eventId);
     setTimeout(() => _deliveredChannelIds.delete(eventId), CHANNEL_DEDUP_TTL_MS).unref?.();

@@ -10,6 +10,7 @@ import {
   terminalVisibleCaptureArgs,
   trimTerminalSeedBlankRows,
 } from '../shared/terminal-seed.mjs'
+import { acquirePaneInputLock } from '../shared/pane-input-lock.mjs'
 import { assertTerminalTextInputAllowed } from '../shared/terminal-input-policy.mjs'
 import { systemMessage } from '../shared/terminal-system-markers.mjs'
 import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
@@ -137,7 +138,25 @@ export function createTerminalRpc({
     })
   }
 
-  async function autoAcceptPrompt(tmuxSession, reason, acceptKey = '1') {
+  async function autoAcceptPrompt(tmuxSession, reason, acceptKey = '1', opts = {}) {
+    // Serialized with every other synthetic writer to this pane. A busy lock
+    // skips this accept rather than waiting it out: accepts retry naturally
+    // (cooldowns, capture polling, the prompt sweep), so waiting would only
+    // stall those loops behind an unrelated transaction. Callers already
+    // inside a transaction pass lockHeld to avoid self-deadlock.
+    const lockHeld = opts.lockHeld === true
+    let lock = null
+    if (!lockHeld) {
+      try {
+        lock = await acquirePaneInputLock(tmuxSession, { timeoutMs: 5000, op: 'daemon-auto-accept', log })
+      } catch (e) {
+        if (e?.code === 'PANE_INPUT_LOCK_TIMEOUT') {
+          log.info(`auto-accept skipped in ${tmuxSession}: pane input lock busy`)
+          return false
+        }
+        throw e
+      }
+    }
     try {
       const input = promptAcceptanceInput(acceptKey)
       const ptyState = terminalWatchPtys.get(tmuxSession)
@@ -154,6 +173,8 @@ export function createTerminalRpc({
     } catch (e) {
       log.error(`auto-accept failed in ${tmuxSession}: ${e.message}`)
       return false
+    } finally {
+      lock?.release()
     }
   }
 
@@ -181,14 +202,14 @@ export function createTerminalRpc({
     return true
   }
 
-  async function waitForTerminalInputReady(tmuxSession, timeoutMs = 0, { requireEmpty = false } = {}) {
+  async function waitForTerminalInputReady(tmuxSession, timeoutMs = 0, { requireEmpty = false, lockHeld = false } = {}) {
     const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0)
     while (Date.now() < deadline) {
       try {
         const pane = await capturePaneTail(tmuxSession)
         const prompt = detectPrompt(pane)
         if (prompt.type === 'auto-accept') {
-          await autoAcceptPrompt(tmuxSession, prompt.reason, prompt.acceptKey)
+          await autoAcceptPrompt(tmuxSession, prompt.reason, prompt.acceptKey, { lockHeld })
         } else if (terminalInputReady(pane, { requireEmpty })) {
           return true
         }
@@ -215,7 +236,12 @@ export function createTerminalRpc({
     assertTerminalTextInputAllowed(terminalInputAllowed, 'send-key', { key })
     onArmBySession(tmuxSession)
     const tmuxKey = key.replace(/^ctrl\+(.)/i, (_, c) => `C-${c}`)
-    await tmux('send-keys', '-t', tmuxSession, tmuxKey)
+    const lock = await acquirePaneInputLock(tmuxSession, { timeoutMs: 30000, op: 'daemon-send-key', log })
+    try {
+      await tmux('send-keys', '-t', tmuxSession, tmuxKey)
+    } finally {
+      lock.release()
+    }
     return { ok: true }
   }
 
@@ -241,6 +267,8 @@ export function createTerminalRpc({
       ready_timeout_ms: 1,
       require_ready: true,
       require_empty_prompt: true,
+      // Recovery nudge for a silent agent: may steal a stuck input lock.
+      break_glass: true,
     })
   }
 
@@ -254,54 +282,78 @@ export function createTerminalRpc({
     const { text, enter, enter_delay_ms, literal_text, ready_timeout_ms, clear_before_text, use_pty = true, require_ready = false, require_empty_prompt = false } = args
     checkSession(tmuxSession)
     onArmBySession(tmuxSession)
-    const readyTimeoutMs = Math.max(0, Number(ready_timeout_ms) || 0)
-    if (readyTimeoutMs > 0) {
-      const ready = await waitForTerminalInputReady(tmuxSession, readyTimeoutMs, { requireEmpty: require_empty_prompt })
-      if (!ready && require_ready) return { ok: false, reason: 'terminal-not-ready', via: 'none' }
-    }
-    // A live tmux can still be unable to consume task text. Clear only prompts
-    // already classified as safe auto-accepts before injecting the queued text;
-    // unknown, permission, and choice prompts remain untouched.
+    // Serialized with every other synthetic writer to this pane -- agent
+    // sidecars waking their own agent included. Recovery callers (disconnect
+    // nudges) pass break_glass to steal a stuck lock sooner.
+    let paneLock = null
     try {
-      const pane = await capturePaneTail(tmuxSession)
-      const prompt = detectPrompt(pane)
-      if (prompt.type === 'auto-accept') {
-        await autoAcceptPrompt(tmuxSession, prompt.reason, prompt.acceptKey)
-      }
-    } catch {
-      // Capture is advisory. Preserve the existing send path when unavailable.
+      paneLock = await acquirePaneInputLock(tmuxSession, {
+        timeoutMs: 30000,
+        op: 'daemon-send-text',
+        breakGlass: args.break_glass === true,
+        log,
+      })
+    } catch (e) {
+      if (e?.code === 'PANE_INPUT_LOCK_TIMEOUT') return { ok: false, reason: 'pane-input-lock-busy', via: 'none' }
+      throw e
     }
-    const pty = use_pty && terminalWatchPtys.get(tmuxSession)?.alive
-      ? terminalWatchPtys.get(tmuxSession).pty
-      : null
-    if (pty) {
-      if (clear_before_text) pty.write('\x15')
-      if (text) pty.write(text)
+    try {
+      const readyTimeoutMs = Math.max(0, Number(ready_timeout_ms) || 0)
+      if (readyTimeoutMs > 0) {
+        const ready = await waitForTerminalInputReady(tmuxSession, readyTimeoutMs, { requireEmpty: require_empty_prompt, lockHeld: true })
+        if (!ready && require_ready) return { ok: false, reason: 'terminal-not-ready', via: 'none' }
+      }
+      // A live tmux can still be unable to consume task text. Clear only prompts
+      // already classified as safe auto-accepts before injecting the queued text;
+      // unknown, permission, and choice prompts remain untouched.
+      try {
+        const pane = await capturePaneTail(tmuxSession)
+        const prompt = detectPrompt(pane)
+        if (prompt.type === 'auto-accept') {
+          await autoAcceptPrompt(tmuxSession, prompt.reason, prompt.acceptKey, { lockHeld: true })
+        }
+      } catch {
+        // Capture is advisory. Preserve the existing send path when unavailable.
+      }
+      const pty = use_pty && terminalWatchPtys.get(tmuxSession)?.alive
+        ? terminalWatchPtys.get(tmuxSession).pty
+        : null
+      if (pty) {
+        if (clear_before_text) pty.write('\x15')
+        if (text) pty.write(text)
+        if (enter !== false) {
+          const delay = Number(enter_delay_ms ?? 120)
+          if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
+          await tmux('send-keys', '-t', tmuxSession, 'Enter')
+        }
+        return { ok: true, via: 'pty' }
+      }
+      if (clear_before_text) await tmux('send-keys', '-t', tmuxSession, 'C-u')
+      if (text) {
+        if (literal_text) await pasteLiteralText(tmuxSession, text)
+        else await tmux('send-keys', '-t', tmuxSession, '--', text)
+      }
       if (enter !== false) {
         const delay = Number(enter_delay_ms ?? 120)
         if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
         await tmux('send-keys', '-t', tmuxSession, 'Enter')
       }
-      return { ok: true, via: 'pty' }
+      return { ok: true, via: 'tmux' }
+    } finally {
+      paneLock.release()
     }
-    if (clear_before_text) await tmux('send-keys', '-t', tmuxSession, 'C-u')
-    if (text) {
-      if (literal_text) await pasteLiteralText(tmuxSession, text)
-      else await tmux('send-keys', '-t', tmuxSession, '--', text)
-    }
-    if (enter !== false) {
-      const delay = Number(enter_delay_ms ?? 120)
-      if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
-      await tmux('send-keys', '-t', tmuxSession, 'Enter')
-    }
-    return { ok: true, via: 'tmux' }
   }
 
   async function gooseKickSend({ tmux_session, text }) {
     checkSession(tmux_session)
-    if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
-    await new Promise(r => setTimeout(r, 300))
-    await tmux('send-keys', '-t', tmux_session, 'Enter')
+    const lock = await acquirePaneInputLock(tmux_session, { timeoutMs: 30000, op: 'daemon-goose-kick', log })
+    try {
+      if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
+      await new Promise(r => setTimeout(r, 300))
+      await tmux('send-keys', '-t', tmux_session, 'Enter')
+    } finally {
+      lock.release()
+    }
     return { ok: true, via: 'tmux-sendkeys' }
   }
 
