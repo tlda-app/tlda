@@ -191,7 +191,6 @@ import {
   ACTIVITY_HEALTH_BOUNDARIES,
   ACTIVITY_HEALTH_OK,
   ACTIVITY_HEALTH_UNAVAILABLE,
-  activityHealthIncidentPayload,
   activityHealthKey,
   activityHealthIncidentDecision,
   isActivityHealthOk,
@@ -3198,34 +3197,6 @@ async function reportFleetIncident({ severity = 'warning', component, operation,
   return event
 }
 
-async function reportFleetIncidentClear({ key, agent, health, incident }) {
-  if (!fleetStore || !key) return null
-  const text = [
-    `**Fleet incident cleared: activity-health/${incident?.boundary || health?.boundary || 'unknown'}**`,
-    '',
-    `Agent: \`${agent?.friendly_name || agent?.id || 'unknown'}\``,
-    `Recovered at: \`${formatDisplayTimestamp(health?.ts || Date.now())}\``,
-    '',
-    '```json',
-    JSON.stringify(compactObject({
-      key,
-      previous: incident || null,
-      recovery: health || null,
-    }), null, 2).slice(0, 3000),
-    '```',
-  ].join('\n')
-  const event = await fleetStore.chat('fleet:tlda', SERVER_OWNER_ID, text, {
-    type: 'fleet_incident_clear',
-    component: 'activity-health',
-    operation: incident?.boundary || health?.boundary || 'unknown',
-    key,
-    agent_id: agent?.id || null,
-    cleared_at: health?.ts || new Date().toISOString(),
-    previous_event_id: incident?.eventId || null,
-  })
-  return event
-}
-
 async function reconcileActivityHealthIncident(agent, health) {
   if (!fleetStore || !agent || !health) return agent
   const fresh = await fleetStore.getAgent?.(agent.id) || agent
@@ -3240,12 +3211,13 @@ async function reconcileActivityHealthIncident(agent, health) {
       const incident = incidents[key]
       incidents[key] = { ...incident, clearedAt: health.ts || now.toISOString(), clearBoundary: health.boundary || null }
       updatedAgent = await fleetStore.updateAgentActivityHealthIncidents?.(agent.id, incidents) || updatedAgent
-      await reportFleetIncidentClear({ key, agent, health, incident })
     }
     return updatedAgent
   } else {
     const key = activityHealthKey(agent.id, health.boundary)
     if (decision.raise) {
+      // No human chat: transition reports are telemetry, not pages. The
+      // metadata record below is the incident state operators read.
       incidents[key] = {
         key,
         eventId: null,
@@ -3253,21 +3225,9 @@ async function reconcileActivityHealthIncident(agent, health) {
         state: health.state || null,
         raisedAt: health.ts || now.toISOString(),
         clearedAt: null,
-        pending: true,
+        pending: false,
       }
-      let updatedAgent = await fleetStore.updateAgentActivityHealthIncidents?.(agent.id, incidents) || fresh
-      const payload = activityHealthIncidentPayload(agent, health, now)
-      const event = await reportFleetIncident(payload)
-      const latest = await fleetStore.getAgent?.(agent.id) || updatedAgent
-      const latestIncidents = { ...(latest.metadata?.activityHealthIncidents || {}) }
-      if (latestIncidents[key] && !latestIncidents[key].clearedAt) {
-        latestIncidents[key] = {
-          ...latestIncidents[key],
-          eventId: event?.id || null,
-          pending: false,
-        }
-        updatedAgent = await fleetStore.updateAgentActivityHealthIncidents?.(agent.id, latestIncidents) || updatedAgent
-      }
+      const updatedAgent = await fleetStore.updateAgentActivityHealthIncidents?.(agent.id, incidents) || fresh
       return updatedAgent
     }
   }
