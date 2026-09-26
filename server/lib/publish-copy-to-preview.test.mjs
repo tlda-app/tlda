@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -69,6 +69,17 @@ test('no build output is refused, and the copy that is serving is left alone', a
     /no build output/,
   )
   assert.ok(existsSync(join(staticDir, 'book', 'index.html')), 'the previous copy must keep serving')
+})
+
+test('a canvas page with no static twin fails the copy instead of dropping its switch link', async () => {
+  const outputDir = anOutputDir()
+  rmSync(join(outputDir, 'static', 'book', 'index.html'))
+  const staticDir = join(mkdtempSync(join(tmpdir(), 'preview-served-')), 'site')
+  const document = { name: 'a-book', record: { name: 'a-book', pages: 1, format: 'qmd' } }
+  await assert.rejects(
+    () => copyBuildOutputToPreview({ outputDir, staticDir, distDir: join(TLDA, 'dist'), configDir: CONFIG, document }),
+    /static\/book\/index\.html is missing from the staged copy/,
+  )
 })
 
 test('a failed second rename restores the previous complete tree', async () => {

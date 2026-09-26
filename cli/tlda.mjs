@@ -899,12 +899,14 @@ async function cmdPublish() {
     files: inventory.files,
     // Both-halves paths already name their half; a single half is the prefix.
     half: previewApp ? '' : 'static',
-    // WHERE EACH HALF LANDS IN THE COPY. The static half is the site, so it is
-    // the root -- `/book/chapter-x.html` is the address a student's link
-    // carries and GitHub Pages serves it from there. The canvas half keeps its
-    // `app/` prefix, which is already how the document manifest names its
-    // pages, so nothing has to be rewritten to find them.
-    layout: previewApp ? path => path.replace(/^static\//, '') : undefined,
+    // WHERE EACH HALF LANDS IN THE COPY. `static/` and `app/` are peers by
+    // design (Skip, 2026-09-26), so both halves keep the prefix the build gave
+    // them: the static half at `static/`, the canvas half at `app/` exactly as
+    // the document manifest names its pages. Stripping `static/` to the root
+    // breaks three consumers at once -- the shell's `/static/...` switch links
+    // 404 against the file server, the copy patcher finds no static twin to
+    // inject the App link into, and the preview-content hook refuses the tree.
+    layout: undefined,
     headers: getReadToken() ? { authorization: `Bearer ${getReadToken()}` } : {},
   })
   try {

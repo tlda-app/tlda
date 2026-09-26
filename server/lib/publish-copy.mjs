@@ -96,7 +96,12 @@ export async function patchStagedTreeForDestination({ staging, distDir, configDi
 
         const staticFile = file.replace(/^app\//, 'static/')
         const staticPath = join(staging, ...staticFile.split('/'))
-        if (!existsSync(staticPath)) continue
+        if (!existsSync(staticPath)) {
+          throw new Error(
+            `${staticFile} is missing from the staged copy, so the App switch link for ${file} has nowhere to go. ` +
+            `A publish that silently dropped it would report success while shipping static pages with no way back to the app. Nothing was pushed.`,
+          )
+        }
         const staticHtml = await readFile(staticPath, 'utf8')
         const href = `/${file.split('/').map(encodeURIComponent).join('/')}`
         await writeFile(staticPath, injectPresentationSwitch(staticHtml, href, 'App'))
