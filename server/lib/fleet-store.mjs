@@ -6977,19 +6977,22 @@ export class FleetStore {
     if (untilTs) { tail.push('events.timestamp <= ?'); tailParams.push(untilTs); }
     const tailSql = tail.length ? ' AND ' + tail.join(' AND ') : '';
     const ph = (n) => n.map(() => '?').join(',');
-    // Newest-first inside each direction, then merged and cut once. Same reason
-    // the rest of this file reads DESC: the caller wants the recent page.
+    // A time-bounded read pages forward from its oldest matching row. The LIMIT
+    // must therefore run in ascending order: sorting after this query cannot
+    // recover older rows that a descending LIMIT already discarded. An
+    // unbounded read still returns the most recent page.
+    const order = sinceTs || untilTs ? 'ASC' : 'DESC';
     const sentBranch = (from, to) => `SELECT * FROM (SELECT ${cols} FROM events
       WHERE events.from_id IN (${ph(from)})
         AND EXISTS (SELECT 1 FROM recipients rc
           WHERE rc.event_id = events.id AND rc.agent_id IN (${ph(to)}))${tailSql}
-      ORDER BY events.timestamp DESC, events.id DESC LIMIT ?)`;
+      ORDER BY events.timestamp ${order}, events.id ${order} LIMIT ?)`;
     const receivedBranch = (to, from) => `SELECT * FROM (SELECT ${cols} FROM events
       JOIN recipients r ON r.event_id = events.id
       WHERE r.agent_id IN (${ph(to)}) AND events.from_id IN (${ph(from)})${tailSql}
-      ORDER BY r.timestamp DESC, r.event_id DESC LIMIT ?)`;
+      ORDER BY r.timestamp ${order}, r.event_id ${order} LIMIT ?)`;
     const sql = `SELECT * FROM (${sentBranch(a, b)} UNION ${receivedBranch(a, b)})
-      ORDER BY timestamp DESC, id DESC LIMIT ?`;
+      ORDER BY timestamp ${order}, id ${order} LIMIT ?`;
     const rows = this.db.prepare(sql).all(
       ...a, ...b, ...tailParams, limit,
       ...a, ...b, ...tailParams, limit,
