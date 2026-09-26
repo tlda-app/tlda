@@ -684,3 +684,17 @@ to the box, and a URL is how a secret stops being one.
   "TLDA_TOKEN_AGENT=$(cat ~/.config/tlda/credentials/pic-agent-token)" --app
   tlda-pic`. Verify names only with `fly secrets list` (digests, never
   values).
+
+## The pic hook deploys whatever sha it is pushed
+
+`check_ref` in `hooks/pre-receive-common.sh` gates `testing` pushes on
+equality with canonical main, and `stable` pushes on a prior testing
+deployment — but `pic` gets neither check: validate the tree,
+`deploy_commit`, move the ref. Observed 2026-09-26: a branch tip pushed to
+the pic deploy remote's `refs/heads/main` built, verified, and served with
+a green result while canonical main sat elsewhere. So pic can be put into
+a divergent state — running code no main contains — by any push, silently
+and successfully. That is the condition the one-version rule exists to
+forbid, reachable through the guarded path itself. Whether pic should get
+testing's gate is a product decision; this records the mechanism so the
+next divergence is recognised instead of theorised.
