@@ -14,7 +14,9 @@ import { useContext, useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken, canPresent, isPresentPermissionKnown, subscribeCanPresent } from '../authToken'
 import { isClassroomDocumentWorkspace } from '../classroom/classroomDocumentWorkspace'
 import { createMeasuredGeometryWriter } from '../measuredGeometryWrite'
-import { htmlPageUrlMatchesTargetFile } from '../html-page-navigation-helpers'
+import { createLinkPeekTracker, docviewInLayoutExtent, findNavigateTargetShape } from '../html-page-navigation-helpers'
+import { isMyFleetShape } from './fleet-ownership'
+import { isDocumentPageShape } from './document-pages'
 import { htmlIframeElements, noteHtmlIframeLoaded, disposeHtmlIframeLoadWaiters } from '../htmlIframeRegistry'
 import { recordPlaceDeparture } from '../placeStack'
 import {
@@ -42,6 +44,10 @@ const PREFETCH_PAGES = 3
 
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
+
+// Last link peek, for the second-click-commits rule: a repeated click on the
+// same link, with no docview interaction in between, navigates the main view.
+const linkPeekTracker = createLinkPeekTracker()
 
 /** Get the Y offset of a heading anchor within an HTML page shape, or undefined if not found. */
 export function getHtmlHeadingY(shapeId: string, anchor: string): number | undefined {
@@ -195,6 +201,52 @@ function activeFleetDocview(editor: Editor) {
     isFleetDocviewShapeRecord(value) && String(value.id).endsWith('-app-local')
   )) as FleetDocviewShapeRecord | undefined
     ?? shapes.find(isFleetDocviewShapeRecord)
+}
+
+/**
+ * The reader's layout docview on this page, if they have one: owned by this
+ * reader and placed within the visible layout around the document. Another
+ * reader's panel is never a target, and neither is a shape marooned thousands
+ * of units from the document. Without one, link clicks navigate the main view.
+ */
+function memberLayoutDocview(editor: Editor): FleetDocviewShapeRecord | undefined {
+  let mine: FleetDocviewShapeRecord[] = []
+  try {
+    mine = (editor.getCurrentPageShapes() as unknown[]).filter(
+      (s): s is FleetDocviewShapeRecord => isFleetDocviewShapeRecord(s) && isMyFleetShape(s),
+    )
+  } catch {
+    return undefined
+  }
+  if (mine.length === 0) return undefined
+  let doc: { x: number; y: number; w: number; h: number } | null = null
+  try {
+    let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity, maxBottom = -Infinity
+    for (const s of editor.getCurrentPageShapes()) {
+      if (!isDocumentPageShape(s)) continue
+      const b = editor.getShapePageBounds(s.id)
+      if (!b) continue
+      if (b.x < minLeft) minLeft = b.x
+      if (b.y < minTop) minTop = b.y
+      if (b.x + b.w > maxRight) maxRight = b.x + b.w
+      if (b.y + b.h > maxBottom) maxBottom = b.y + b.h
+    }
+    if (isFinite(minLeft) && isFinite(minTop) && isFinite(maxRight) && isFinite(maxBottom)) {
+      doc = { x: minLeft, y: minTop, w: maxRight - minLeft, h: maxBottom - minTop }
+    }
+  } catch {
+    doc = null
+  }
+  if (!doc) return undefined
+  const placed = mine.filter(s => {
+    try {
+      const b = editor.getShapePageBounds(s.id)
+      return !!b && docviewInLayoutExtent(doc!, b)
+    } catch {
+      return false
+    }
+  })
+  return placed.find(s => String(s.id).endsWith('-app-local')) ?? placed[0]
 }
 
 type MermaidDiagramPayload = {
@@ -932,27 +984,12 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         const candidateHtmlShapes = isTemporaryMarkdownNavigation
           ? allHtmlShapes.filter((s: any) => s.parentId === sourceShape?.parentId)
           : allHtmlShapes
-        let targetShape: any = null
         const anchor = e.data.anchor || null
-        if (e.data.targetFile) {
-          targetShape = candidateHtmlShapes.find((s: any) => {
-            const url = s.props.url || ''
-            return htmlPageUrlMatchesTargetFile(url, e.data.targetFile)
-          })
-        } else {
-          targetShape = candidateHtmlShapes.find((s: any) => s.id === e.data.shapeId)
-        }
-        // Fall back to searching heading positions if anchor not in target
-        if (targetShape && anchor) {
-          const positions = htmlHeadingPositions.get(targetShape.id)
-          if (!positions?.[anchor]) {
-            const altShape = candidateHtmlShapes.find((s: any) => {
-              const pos = htmlHeadingPositions.get(s.id)
-              return pos?.[anchor] != null
-            })
-            if (altShape) targetShape = altShape
-          }
-        }
+        const targetShape: any = findNavigateTargetShape(
+          candidateHtmlShapes,
+          e.data.targetFile ?? null,
+          e.data.shapeId ?? null,
+        )
         if (!targetShape) {
           // A document of this project that has no shape on the canvas yet —
           // which, now that a linked document is not a page of this one, is the
@@ -965,10 +1002,29 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           // chat. That would create a document somewhere on the fucking canvas
           // far away from where I fucking am, and it would go in the fucking
           // project tab. Why the fuck is this any different?"
-          if (e.data.__tldaOpened) return
+          if (e.data.__tldaOpened) {
+            // The document was created and the target still matches nothing.
+            // Say so: a navigation that dies here used to be silent, which is
+            // how broken links stayed invisible for days.
+            console.warn('[tlda-navigate] target still unresolved after open', {
+              targetFile: e.data.targetFile ?? null,
+              targetPath: e.data.targetPath ?? null,
+              anchor: e.data.anchor ?? null,
+              shapeId: e.data.shapeId ?? null,
+            })
+            return
+          }
           const targetPath = typeof e.data.targetPath === 'string' ? e.data.targetPath : ''
           const projectDoc = targetPath.match(/^\/docs\/([^/]+)\/(.+\.html)$/)
-          if (!projectDoc) return
+          if (!projectDoc) {
+            console.warn('[tlda-navigate] no shape matches link target', {
+              targetFile: e.data.targetFile ?? null,
+              targetPath: e.data.targetPath ?? null,
+              anchor: e.data.anchor ?? null,
+              shapeId: e.data.shapeId ?? null,
+            })
+            return
+          }
           const [, encodedProject, encodedFile] = projectDoc
           const outputFile = decodeURIComponent(encodedFile)
           const title = (typeof e.data.targetTitle === 'string' && e.data.targetTitle)
@@ -990,8 +1046,16 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           })
           return
         }
-        const dvShape = activeFleetDocview(editor)
-        if (dvShape && !isTemporaryMarkdownNavigation) {
+        // The reader's layout docview takes the click (peek); without one the
+        // main view navigates instead (go). A second click on the same link,
+        // with no docview interaction in between, commits and goes too.
+        const dvShape = memberLayoutDocview(editor)
+        const peekKey = `${targetShape.id}::${anchor ?? ''}`
+        const commitPeek = !!dvShape
+          && !isTemporaryMarkdownNavigation
+          && linkPeekTracker.shouldCommit(String(editor.getCurrentPageId()), peekKey)
+        if (commitPeek) linkPeekTracker.clear()
+        if (dvShape && !isTemporaryMarkdownNavigation && !commitPeek) {
           const showTarget = (anchorY: number | null) => updateFleetDocview(editor, dvShape, {
             mode: 'manual',
             targetShapeId: targetShape.id,
@@ -1014,6 +1078,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             }, 200)
             setTimeout(() => clearInterval(poll), 8000)
           }
+          linkPeekTracker.recordPeek(String(editor.getCurrentPageId()), peekKey)
           return
         }
         // The place stack records where the reader was, on the path where a
@@ -1369,9 +1434,21 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         }
       }
     }
+    // Second-click-commits needs to know whether the reader did anything in the
+    // docview since the peek: any pointer press or wheel gesture inside it.
+    const noteDocviewTouch = (e: Event) => {
+      const el = e.target as unknown as { closest?: (sel: string) => unknown } | null
+      if (el && typeof el.closest === 'function' && el.closest('.fleet-docview')) {
+        linkPeekTracker.noteTouch()
+      }
+    }
+    window.addEventListener('pointerdown', noteDocviewTouch, true)
+    window.addEventListener('wheel', noteDocviewTouch, { capture: true, passive: true })
     window.addEventListener('message', handler)
     return () => {
       window.removeEventListener('message', handler)
+      window.removeEventListener('pointerdown', noteDocviewTouch, true)
+      window.removeEventListener('wheel', noteDocviewTouch, true)
       if (docLinkHoverTimerRef.current) clearTimeout(docLinkHoverTimerRef.current)
     }
   }, [shape.id, editor])
