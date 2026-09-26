@@ -101,8 +101,8 @@ import { ProjectContext, PanelContext, BottomPanelsContext, AgentPillContext } f
 import { NoteDropHandler } from './NoteDropHandler'
 import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { presentationDocumentForRoutedDeck, setCurrentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
-import { presentationLocationMatchesPage, presentationPath, presentationRoute } from './presentationRoute'
-import { STORE_HTTP } from './activeConfig'
+import { presentationLocationMatchesPage, presentationPath, presentationPathWithCourse, presentationRoute } from './presentationRoute'
+import { PAGES_FROM, STORE_HTTP } from './activeConfig'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD } from './overlays/FleetHUD'
@@ -172,8 +172,13 @@ const IS_CLASSROOM = isClassroomSurface()
 const IS_APP_DOCUMENT_ROUTE = presentationRoute(window.location.pathname)?.mode === 'app'
 // Classroom-only chrome stays classroom-keyed. A testing/dev `/app` route keeps
 // the workshop chrome (Fleet + version stamp); it never mounts the classroom
-// playback/docview substitutes.
-const USES_DOCUMENT_ROUTE_CONTROLS = IS_CLASSROOM
+// playback/docview substitutes. A published or previewed copy is a class
+// surface by nature — there is no workshop use of one — so files mode mounts
+// the classroom controls whatever the URL carries. Skip, 2026-09-21: the fleet
+// layout selector and fleet onboarding toasts on the class surface "will
+// confuse my students"; gating on `?course=` alone lets any bookmark, bare URL
+// or mode switch defeat it.
+const USES_DOCUMENT_ROUTE_CONTROLS = IS_CLASSROOM || PAGES_FROM === 'files'
 
 // Agent attention overlay wrapper (needs useEditor context)
 function AgentAttentionCanvas() {
@@ -420,7 +425,7 @@ function PresentationModeSwitch({ document }: { document: SvgDocument }) {
   return (
     <div style={{ position: 'fixed', top: 12, left: 12, zIndex: 10000, display: 'flex', alignItems: 'center', gap: 8 }}>
       <a
-        href={presentationPath('static', route.project, location, route.prefix)}
+        href={presentationPathWithCourse(presentationPath('static', route.project, location, route.prefix), window.location.search)}
         className="presentation-mode-switch"
       >
         Static

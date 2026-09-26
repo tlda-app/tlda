@@ -30,6 +30,20 @@ export function presentationPath(mode: PresentationRoute['mode'], project: strin
   return `/${parts.map(encodeURIComponent).join('/')}`
 }
 
+/**
+ * Keep the classroom marker across a mode switch.
+ *
+ * The switch changes how a page is presented, not which course it belongs
+ * to, so a reader arriving with `?course=` keeps it; without one the path is
+ * unchanged. Course only — never a classroom token, which is a capability
+ * and must not ride a link (see deviceTransferUrl's note on the same rule).
+ */
+export function presentationPathWithCourse(path: string, search: string): string {
+  const course = new URLSearchParams(search).get('course')
+  if (!course) return path
+  return `${path}?course=${encodeURIComponent(course)}`
+}
+
 export function presentationLocationMatchesPage(routeOrLocation: PresentationRoute | string, sourceFile: string | undefined, pageUrl: string): boolean {
   if (typeof routeOrLocation === 'string') {
     if (sourceFile === routeOrLocation) return true

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { presentationLocationMatchesPage, presentationPath, presentationRoute } from '../src/presentationRoute.ts'
+import { presentationLocationMatchesPage, presentationPath, presentationPathWithCourse, presentationRoute } from '../src/presentationRoute.ts'
 
 test('flat presentation paths switch the app/static segment in place', () => {
   const route = presentationRoute('/app/book/chapters/chapter-bootstrap.html')
@@ -123,6 +123,21 @@ test('the deck pairing derives from live page-info when toc.json predates it', a
   // Order and pages are untouched — only pairing fields are added.
   assert.deepEqual(enriched.map(row => row.page), toc.map((row: { page: number }) => row.page))
   assert.deepEqual(enriched.map(row => row.level), toc.map((row: { level: string }) => row.level))
+})
+
+test('a mode switch keeps the classroom marker and nothing else', () => {
+  assert.equal(
+    presentationPathWithCourse('/docs/qtm285-book/static/book/index.html', '?course=qtm285&pw=1'),
+    '/docs/qtm285-book/static/book/index.html?course=qtm285',
+  )
+  assert.equal(presentationPathWithCourse('/app/book/index.html', ''), '/app/book/index.html')
+  // A classroom token is a capability: it authenticates headers and cookies,
+  // and must never be written into a link the switch renders.
+  assert.equal(presentationPathWithCourse('/app/book/index.html', '?classroomToken=secret'), '/app/book/index.html')
+  assert.equal(
+    presentationPathWithCourse('/static/book/index.html', '?course=course+one'),
+    '/static/book/index.html?course=course%20one',
+  )
 })
 
 test('both TocTab load branches derive pairing from page-info, not just the single-doc one', async () => {

@@ -5240,7 +5240,11 @@ app.get('/static/:project{/*sourcePath}', requireRead, async (req, res) => {
   // mirrored at `static/book/…`, so the door rewrites there — otherwise the
   // fallback for the app being broken lands on the app.
   const servedFile = String(entry.file).replace(/^app\//, 'static/')
-  res.redirect(302, `/docs/${encodeURIComponent(name)}/${servedFile.split('/').map(encodeURIComponent).join('/')}`)
+  // The door changes which path serves the page, not which course it belongs
+  // to: carry `?course=` so a classroom reader who enters here keeps the
+  // classroom chrome when the page's App switch reads it back.
+  const doorCourse = typeof req.query?.course === 'string' ? req.query.course : ''
+  res.redirect(302, `/docs/${encodeURIComponent(name)}/${servedFile.split('/').map(encodeURIComponent).join('/')}${doorCourse ? `?course=${encodeURIComponent(doorCourse)}` : ''}`)
 })
 
 // On preview/live Fly hosts, a published course's `/app/...` address is the
@@ -5289,7 +5293,13 @@ const isPublishedStaticPage = (servedFilePath) => servedFilePath.startsWith('sta
 async function sendPublishedStaticPage(req, res, projectPath, project, servedFilePath) {
   if (req.query?._tldaPublishRaw === '1') return res.sendFile(resolve(projectPath))
   const location = servedFilePath.slice('static/'.length)
-  const href = `/docs/${encodeURIComponent(project)}/app/${location.split('/').map(encodeURIComponent).join('/')}`
+  // A serve-time switch knows the request it answers: carry `?course=` so a
+  // classroom reader who flips to the app keeps the classroom chrome. Course
+  // only — never a classroom token, which is a capability and must not ride
+  // a link. (Baked preview/published links cannot know it; their files-mode
+  // target mounts the classroom chrome unconditionally.)
+  const switchCourse = typeof req.query?.course === 'string' ? req.query.course : ''
+  const href = `/docs/${encodeURIComponent(project)}/app/${location.split('/').map(encodeURIComponent).join('/')}${switchCourse ? `?course=${encodeURIComponent(switchCourse)}` : ''}`
   const html = await fs.promises.readFile(projectPath, 'utf8')
   return res.type('html').send(injectPresentationSwitch(html, href, 'App'))
 }

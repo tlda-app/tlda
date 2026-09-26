@@ -129,6 +129,17 @@ test('no source path gives the front door', async () => {
   )
 })
 
+test('the front door carries the classroom marker to the real path', async () => {
+  await withServer(
+    projectsDir => seedProject(projectsDir, PROJECT, PAGE_INFO),
+    async port => {
+      const res = await get(port, `/static/${PROJECT}?course=qtm285`)
+      assert.equal(res.status, 302, `got ${res.status}: ${res.body.slice(0, 200)}`)
+      assert.equal(res.location, `/docs/${PROJECT}/_book/index.html?course=qtm285`)
+    },
+  )
+})
+
 test('the published app path opens the TLDA shell, not the copied course HTML', async () => {
   await withServer(
     projectsDir => {
@@ -175,6 +186,32 @@ test('the static published page stays a direct page and offers its App route', a
       assert.match(res.body, /<main>static course page<\/main>/)
       assert.match(res.body, new RegExp(`class="presentation-mode-switch" href="/docs/${PROJECT}/app/book/chapters/chapter-sampling-with-replacement\\.html"[^>]*>App</a>`))
       assert.doesNotMatch(res.body, /_tldaShape|tlda-navigate/, 'the direct page must not receive the canvas bridge')
+    },
+  )
+})
+
+test('the serve-time App switch keeps the classroom marker', async () => {
+  const staticPageInfo = [{
+    file: 'static/book/chapters/chapter-sampling-with-replacement.html',
+    title: 'Sampling with Replacement',
+    format: 'qmd',
+    source: { type: 'project-source', format: 'qmd', file: CHAPTER_SOURCE },
+  }]
+  const built = '<html><head><title>Sampling</title></head><body><main>static course page</main></body></html>'
+  await withServer(
+    projectsDir => {
+      const output = seedProject(projectsDir, PROJECT, staticPageInfo)
+      writeFileSync(join(projectsDir, PROJECT, 'project.json'), JSON.stringify({
+        name: PROJECT, title: PROJECT, mainFile: 'index.qmd', format: 'qmd', pages: 1, buildStatus: 'success',
+      }))
+      const page = join(output, staticPageInfo[0].file)
+      mkdirSync(join(page, '..'), { recursive: true })
+      writeFileSync(page, built)
+    },
+    async port => {
+      const res = await get(port, `/docs/${PROJECT}/static/book/chapters/chapter-sampling-with-replacement.html?course=qtm285`)
+      assert.equal(res.status, 200)
+      assert.match(res.body, new RegExp(`class="presentation-mode-switch" href="/docs/${PROJECT}/app/book/chapters/chapter-sampling-with-replacement\\.html\\?course=qtm285"[^>]*>App</a>`))
     },
   )
 })
