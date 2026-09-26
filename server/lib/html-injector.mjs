@@ -695,6 +695,46 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
       postDocLinkClick(e, docLink);
     }, true);
 
+    // Open the tab pane holding an anchor, through its tab, so a link to a
+    // figure in a closed pane lands on the figure and not on whichever pane
+    // happens to be open (measured: the book keeps one letter-figure per pane
+    // with only the first open; clicks landed on the slot showing Figure 3.1
+    // whatever the link named). Manipulates Bootstrap tab classes directly
+    // rather than clicking the tab, so no second navigation is posted.
+    function activateTabPaneForAnchor(anchorId) {
+      if (!anchorId || !document.getElementById) return false;
+      var el = document.getElementById(anchorId);
+      var pane = el && el.closest ? el.closest('.tab-pane:not(.active)') : null;
+      if (!pane) return false;
+      var tab = null;
+      if (pane.id) {
+        tab = document.querySelector('[role="tab"][aria-controls="' + pane.id + '"]');
+        if (!tab) {
+          tab = document.querySelector(
+            'a[data-bs-toggle="tab"][href="#' + pane.id + '"],' +
+            'button[data-bs-toggle="tab"][data-bs-target="#' + pane.id + '"]'
+          );
+        }
+      }
+      var tabset = pane.closest('.panel-tabset, .tab-content') || pane.parentElement;
+      if (tabset) {
+        tabset.querySelectorAll('.tab-pane.active').forEach(function(p) {
+          p.classList.remove('active');
+          p.classList.remove('show');
+        });
+        tabset.querySelectorAll('[role="tab"][aria-selected="true"]').forEach(function(t) {
+          t.setAttribute('aria-selected', 'false');
+          t.classList.remove('active');
+        });
+      }
+      pane.classList.add('active');
+      pane.classList.add('show');
+      if (tab) {
+        tab.classList.add('active');
+        tab.setAttribute('aria-selected', 'true');
+      }
+      return true;
+    }
     // Intercept link clicks — route navigation through parent canvas
     document.addEventListener('click', function(e) {
       var docLink = e.target.closest && e.target.closest('.doc-link');
@@ -748,6 +788,14 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
       // targetTitle is what the link called it.
       var targetPath = parts[0] || null;
       var targetTitle = ((a.textContent || '').trim()) || null;
+      // Same-document anchors only: a cross-chapter anchor lives in an iframe
+      // this document cannot reach. Re-measure after opening so the parent
+      // navigates with the pane open; same-channel ordering delivers the fresh
+      // positions before the navigation.
+      if (anchor && !targetFile && activateTabPaneForAnchor(anchor)) {
+        reportHeadings();
+        reportHeight();
+      }
       if (window.parent !== window) {
         window.parent.postMessage({
           type: 'tlda-navigate',
