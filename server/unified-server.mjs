@@ -10761,6 +10761,29 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
     return
   }
 
+  // ---- process-liveness ----
+  // The daemon decides; the server writes down. `alive` means the daemon
+  // confirmed a process for this binding; `false` means it confirmed none.
+  // The daemon never sends what it could not tell, and only sends verdicts
+  // that change what the roster shows, so every message here is applied.
+  // Named apart from the internal `agent-liveness` objects: those carry a
+  // `state`, this wire verdict carries a boolean, and the two must never be
+  // mistaken for each other.
+  if (type === 'process-liveness') {
+    if (!fleetStore) return
+    const { agent_id, alive } = msg
+    if (!agent_id || typeof alive !== 'boolean') return
+    try {
+      if (alive) markAgentAlive(agent_id, Date.now(), { source: msg.source || 'daemon-liveness' })
+      else await markAgentNotAlive(agent_id, { source: msg.source || 'daemon-liveness', reason: 'daemon reports no process' })
+      broadcastState([agent_id])
+    } catch (e) {
+      await reportDaemonEventFailure(msg, 'process-liveness-write', e)
+      throw e
+    }
+    return
+  }
+
   if (type === 'spawn-startup-failed') {
     if (!fleetStore) return
     const { agent_id, agent_name, harness, model, respawn, code, reason, snippet } = msg

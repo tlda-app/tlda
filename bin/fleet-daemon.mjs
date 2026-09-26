@@ -115,6 +115,7 @@ import { createAgentRouteResolver } from '../daemon/agent-route.mjs'
 import { createLocalArtifacts } from '../daemon/local-artifacts.mjs'
 import { createPromptPlan } from '../daemon/prompt-plan.mjs'
 import { createAgentStatus } from '../daemon/agent-status.mjs'
+import { createAgentLiveness, PROCESS as LIVENESS_PROCESS } from '../daemon/agent-liveness.mjs'
 import { createAgySupervisor } from '../daemon/agy-supervisor.mjs'
 import { createGooseSupervisor } from '../daemon/goose-supervisor.mjs'
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
@@ -1197,6 +1198,31 @@ const agentStatus = createAgentStatus({
   harnessForAgent: harnessRuntime.harnessForAgent,
   isConnected: () => _serverReady && _rws?.connected,
   statusScanMs: getStatusScanMs(),
+})
+
+// Process liveness: the daemon decides, the server writes down. Every bound
+// session is checked, armed or not — bots included — against one tmux probe
+// per sweep. Transitions emit `process-liveness`; steady state is silent.
+const agentLiveness = createAgentLiveness({
+  log,
+  sendMsg,
+  getBindings: () => permissionLedger.listProcessBindings()
+    .filter(row => row.daemonKey === `${MACHINE_ID}:${ACTIVE_ENV}`)
+    .map(row => ({ id: row.id, tmuxSession: row.tmuxSession })),
+  checkProcesses: async bindings => {
+    const observed = new Map()
+    const { probed, names } = await listRunningSessionNames({ tmuxSocket: TMUX_SOCKET })
+    if (!probed) return observed
+    const running = new Set(names || [])
+    for (const binding of bindings) {
+      if (!binding.tmuxSession) {
+        observed.set(binding.id, LIVENESS_PROCESS.UNKNOWN)
+        continue
+      }
+      observed.set(binding.id, running.has(binding.tmuxSession) ? LIVENESS_PROCESS.ALIVE : LIVENESS_PROCESS.DEAD)
+    }
+    return observed
+  },
 })
 
 const promptPlan = createPromptPlan({
@@ -2444,6 +2470,8 @@ async function handleServerMessage(msg, wsAttemptId) {
     daemonDelivery.noteReady()
     sendActivityDeliveryMetrics('daemon-welcome')
     await reconcileJsonlProcessBindings('daemon-welcome')
+    agentLiveness.declareAll()
+    await agentLiveness.checkAll()
     jsonlIngestor.resumeAfterServerReady()
     jsonlIngestor.startMuseHistoricalBackfill()
     jsonlIngestor.retryPendingNativeSubagents()
@@ -2637,4 +2665,7 @@ startHeartbeat()
 // Bots are independent, launchd-owned services (bots.yaml) — the daemon no
 // longer starts a bot-supervisor.
 agentStatus.start()
+setInterval(() => {
+  agentLiveness.checkAll().catch(error => log.warn(`liveness sweep failed: ${error?.message || error}`))
+}, getStatusScanMs()).unref?.()
 connect()
