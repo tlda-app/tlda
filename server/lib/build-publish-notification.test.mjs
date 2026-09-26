@@ -97,3 +97,87 @@ test('a genuine publication failure still fails the dispatcher job and build sta
   assert.equal(result.status.status, 'error')
   assert.equal(result.status.build.state, 'build_failed')
 })
+
+// A build that rendered fine but publishes second is STALE, not failed: the
+// publication is refused as superseded, with its reason, and that refusal is
+// a result the worker acts on -- not an error it reports. Throwing here used
+// to route the loser into the worker's failure catch, which announced a build
+// failure (card, signals, build_failed lifecycle) for a build that rendered
+// fine, while its sentinel write was skipped as stale-seq -- a failure
+// notification with nothing behind it.
+async function runStaleLoser() {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-dispatch-stale-'))
+  const newRoot = mkdtempSync(join(tmpdir(), 'tlda-dispatch-stale-new-'))
+  const oldRoot = mkdtempSync(join(tmpdir(), 'tlda-dispatch-stale-old-'))
+  const name = 'paper'
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'main.md', format: 'markdown' })
+    const lifecycle = await sourceLifecycleStore(name)
+    const git = await lifecycle.gitRepository()
+    const older = await git.acceptRevision({
+      project: name, files: [{ path: 'main.md', content: 'old' }], message: 'base',
+    })
+    await git.advanceHead(name, older, null)
+    const newer = await git.acceptRevision({
+      project: name, parent: older, files: [{ path: 'main.md', content: 'new' }], message: 'next',
+    })
+
+    const captured = {}
+    const transport = {
+      start(job, nextHandlers) {
+        captured[job.sourceRevision] = nextHandlers
+        return { cancel() {} }
+      },
+    }
+    const queue = createDispatcherWithOptions(transport, {})
+    await queue.admitBuild(name, { revision: older, daemonId: 'mini:testing', branch: 'main' })
+    await queue.admitBuild(name, { revision: newer, daemonId: 'mini:testing', branch: 'main' })
+
+    const rpc = (handlers, id, method, args) => new Promise(resolve => {
+      handlers.onMessage({ t: 'rpc', id, m: method, a: args }, {
+        send(message) {
+          if (message.t === 'rpc-result') resolve(message)
+        },
+      })
+    })
+    // The winner publishes first, through the real relay.
+    const winReply = await rpc(captured[newer], 'publish-new', 'publishBuildInstance', [
+      name, newer, 2, instance(newRoot, name), [], null,
+    ])
+    assert.equal(winReply.ok, true)
+    // The loser publishes second: refused as stale, returned -- not thrown.
+    const staleReply = await rpc(captured[older], 'publish-old', 'publishBuildInstance', [
+      name, older, 1, instance(oldRoot, name), [], null,
+    ])
+
+    // The fixed worker on a stale result: no recordBuildResult (the
+    // 'superseded' record stands), no failure report -- a quiet done.
+    captured[older].onMessage({ t: 'done', ok: true })
+    await captured[older].onExit(0)
+    captured[newer].onMessage({ t: 'done', ok: true })
+    await captured[newer].onExit(0)
+
+    const loserRow = lifecycle.listRevisionLifecycles(name).find(r => r.sourceRevision === older)
+    return {
+      staleReply,
+      loserBuild: loserRow.build,
+      loserQueueState: queue.store.get(name, older).state,
+      status: projectRevisionStatus(lifecycle.listRevisionLifecycles(name)),
+    }
+  } finally {
+    await closeProjectStore()
+    for (const dir of [root, newRoot, oldRoot]) rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('a stale publication resolves as superseded, never as a failure', async () => {
+  const result = await runStaleLoser()
+
+  assert.equal(result.staleReply.ok, true, 'stale is a result, not an RPC error')
+  assert.equal(result.staleReply.result?.published, false)
+  assert.equal(result.staleReply.result?.stale, true)
+  assert.equal(result.loserBuild.state, 'superseded', 'the refusal record stands; nothing clobbers it to build_failed')
+  assert.notEqual(result.loserQueueState, 'failed', 'a superseded attempt never settles failed')
+  assert.equal(result.status.status, 'success', 'the winner is the latest revision and it built')
+})

@@ -277,7 +277,19 @@ process.on('message', async (msg) => {
       }
     }
     const replacedItems = relevance?.skip ? ['source'] : null
-    await callParent('publishBuildInstance', [msg.name, msg.sourceRevision, msg.acceptSeq, instanceProject, stagedReports, replacedItems])
+    const publication = await callParent('publishBuildInstance', [msg.name, msg.sourceRevision, msg.acceptSeq, instanceProject, stagedReports, replacedItems])
+    if (!publication.published) {
+      // Superseded, not failed: a newer revision published first, and the
+      // refusal is already recorded as superseded, with its reason. No
+      // disposition (a 'built' would clobber it, a 'build_failed' would
+      // announce a failure for a build that rendered fine), no failure
+      // report, no card -- a quiet done. The winner's records describe the
+      // project; the staged reports were already dropped with the refusal.
+      console.log(`[build-worker] ${msg.name}: ${msg.sourceRevision.slice(0, 12)} superseded, not publishing`)
+      process.send?.({ t: 'done', ok: true })
+      setImmediate(() => process.exit(0))
+      return
+    }
     await callParent('recordBuildResult', [msg.name, msg.sourceRevision, msg.acceptSeq, relevance?.skip ? 'not_required' : 'built', { ok: true }])
     process.send?.({ t: 'done', ok: true })
     setImmediate(() => process.exit(0))

@@ -663,7 +663,17 @@ export function createDispatcherWithOptions(transport, options = {}) {
         // `undefined` and would never reach the signature's default.
         const result = await publishBuildInstance(
           pName, pRevision, pAcceptSeq, pInstance, pReports, pReplaced || PUBLISH_REPLACED_ITEMS, sinks)
-        if (!result.published) throw new Error(`stale build ${job.sourceRevision} cannot publish over ${result.currentHead || 'no head'}`)
+        // A refused publication is a RESULT, not an error. The publisher
+        // already recorded it as superseded, with its reason -- and staleness
+        // is not failure: this build rendered fine, a newer revision simply
+        // published first. Throwing here used to route the loser into the
+        // worker's failure catch, which announced a build failure (card,
+        // signals, build_failed clobbering the superseded record) for a
+        // build that rendered fine -- while its sentinel write was skipped
+        // as stale-seq, leaving a failure notification with nothing behind
+        // it. Return the refusal; the worker exits quietly on it. The head
+        // did not move, so there is nobody to notify and nothing to refresh.
+        if (!result.published) return result
         await queue.publishedHeadChanged(name, job.sourceRevision)
         // `job.acceptSeq`, not the wire's `pAcceptSeq`, for the same reason this
         // line already prefers `job.sourceRevision`: the server's own record is
