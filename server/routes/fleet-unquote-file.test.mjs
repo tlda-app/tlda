@@ -21,8 +21,8 @@ test('unquote-file routes rechat through the durable daemon route', async () => 
     sendDaemonEphemeral: async () => {
       throw new Error('unexpected ephemeral RPC')
     },
-    sendDaemonDurable: async (daemonKey, op, params) => {
-      calls.push({ daemonKey, op, params })
+    sendDaemonDurable: async (daemonKey, op, params, rpcOptions) => {
+      calls.push({ daemonKey, op, params, rpcOptions })
       return { resolvedMessage: 'review', inlineAttachments: [] }
     },
     resolveRpc: () => {
@@ -48,7 +48,7 @@ test('unquote-file routes rechat through the durable daemon route', async () => 
       }),
     })
     assert.equal(response.status, 200)
-    assert.deepEqual(calls, [{
+    assert.deepEqual(calls.map(({ rpcOptions, ...rest }) => rest), [{
       daemonKey: 'mini:testing',
       op: 'rechat',
       params: {
@@ -56,6 +56,11 @@ test('unquote-file routes rechat through the durable daemon route', async () => 
         text: '/Users/you/work/talks/imagined-randomization-20min-review.md',
       },
     }])
+    // The rechat RPC must be bounded: an unbounded call parks the route
+    // forever when the daemon holds its socket open and never answers.
+    const rpcOptions = calls[0].rpcOptions
+    assert.ok(Number.isFinite(rpcOptions?.attemptTimeoutMs) && rpcOptions.attemptTimeoutMs > 0)
+    assert.ok(Number.isFinite(rpcOptions?.totalDeadlineMs) && rpcOptions.totalDeadlineMs > rpcOptions.attemptTimeoutMs)
   } finally {
     await new Promise(resolve => server.close(resolve))
   }
@@ -73,8 +78,8 @@ test('resolve-chat-file materializes a sender-local path through its daemon', as
     fleetStore,
     broadcastEvent: () => {}, broadcastState: () => {}, clearEphemeralState: () => {}, suppressEchoFor: () => {},
     sendDaemonEphemeral: async () => { throw new Error('unexpected ephemeral RPC') },
-    sendDaemonDurable: async (daemonKey, op, params) => {
-      calls.push({ daemonKey, op, params })
+    sendDaemonDurable: async (daemonKey, op, params, rpcOptions) => {
+      calls.push({ daemonKey, op, params, rpcOptions })
       return { resolvedMessage: '{{att:0}}', inlineAttachments: [{ id: 0, url: '/api/file?path=%2Fuploads%2Freport.md' }] }
     },
     resolveRpc: () => { throw new Error('legacy resolver must not be used') },
@@ -90,10 +95,14 @@ test('resolve-chat-file materializes a sender-local path through its daemon', as
     })
     assert.equal(response.status, 200)
     assert.equal((await response.json()).url, '/api/file?path=%2Fuploads%2Freport.md')
-    assert.deepEqual(calls, [{
+    assert.deepEqual(calls.map(({ rpcOptions, ...rest }) => rest), [{
       daemonKey: 'mini:testing', op: 'rechat',
       params: { agent_id: 'fleet:reviewer', text: '/Users/you/work/report.md' },
     }])
+    // Same bound as unquote-file: this route awaits the same rechat RPC.
+    const rpcOptions = calls[0].rpcOptions
+    assert.ok(Number.isFinite(rpcOptions?.attemptTimeoutMs) && rpcOptions.attemptTimeoutMs > 0)
+    assert.ok(Number.isFinite(rpcOptions?.totalDeadlineMs) && rpcOptions.totalDeadlineMs > rpcOptions.attemptTimeoutMs)
   } finally {
     await new Promise(resolve => server.close(resolve))
   }

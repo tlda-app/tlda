@@ -30,6 +30,24 @@ const SERVER_OWNER_NAME = process.env.TLDA_USER || os.userInfo().username || 'us
 const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_OWNER_HOST = os.hostname()
 
+// The unquote-file and resolve-chat-file routes await a 'rechat' RPC on the
+// sender's daemon (path detection + upload + markdown render check). A healthy
+// rechat answers in seconds (measured ~6s end to end); with no rpcOptions the
+// durable sender waits forever on a daemon that holds its socket open and never
+// answers, so the route never responds and the client's hourglass never clears
+// (measured 2026-09-26: an unquote POST silent past 120s, the identical POST
+// fine at 5.7s once the daemon answered). Bound the RPC so a dead daemon fails
+// cleanly with a 502 the client renders, instead of parking the request.
+// Sized with headroom: the attempt covers one exchange, the total covers
+// slow-but-working uploads; the client aborts above the total so a working
+// request is never killed first (see unquoteSpan in FleetChatShape.tsx).
+const RECHAT_ATTEMPT_TIMEOUT_MS = Number(process.env.TLDA_RECHAT_ATTEMPT_TIMEOUT_MS) || 60000
+const RECHAT_TOTAL_DEADLINE_MS = Number(process.env.TLDA_RECHAT_TOTAL_DEADLINE_MS) || 180000
+const rechatRpcOptions = () => ({
+  attemptTimeoutMs: RECHAT_ATTEMPT_TIMEOUT_MS,
+  totalDeadlineMs: RECHAT_TOTAL_DEADLINE_MS,
+})
+
 // All inline tmux operations were removed — they now route through the
 // fleet-daemon WS RPC layer (`sendDaemonEphemeral(machineId, op, params)` injected
 // from unified-server.mjs). If no daemon is connected for an agent's
@@ -1276,7 +1294,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const result = await sendDaemonDurable(seat.daemon_key, 'rechat', {
         agent_id: agent.id,
         text: String(filePath),
-      })
+      }, rechatRpcOptions())
       const attachment = (result.inlineAttachments || []).find(att => att && !att.broken && att.url)
       if (!attachment) return res.status(404).json({ ok: false, error: 'file did not materialize' })
       res.json({ ok: true, url: attachment.url })
@@ -1310,7 +1328,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       result = await sendDaemonDurable(seat.daemon_key, 'rechat', {
         agent_id: agent.id,
         text: rawText,
-      })
+      }, rechatRpcOptions())
     } catch (e) {
       const code = e.code === 'NO_DAEMON' ? 503 : 502
       return res.status(code).json({ ok: false, error: e.message })

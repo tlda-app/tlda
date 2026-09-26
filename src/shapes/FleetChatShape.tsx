@@ -5449,11 +5449,18 @@ function FleetChatInner({ shape }: { shape: any }) {
       spinner.style.opacity = '0.6'
       codeEl.replaceWith(spinner)
 
+      // Bound the wait: the server fails a dead daemon by ~180s, but a hung
+      // socket would spin forever (measured 2026-09-26: no response past 120s).
+      // Abort above the server total so a working request is never killed first;
+      // the abort lands in the same unavailable UI as any other failure.
+      const controller = new AbortController()
+      const abortTimer = setTimeout(() => controller.abort(), 200000)
       try {
         const resp = await fetch('/api/unquote-file', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ eventId: parseInt(eventId, 10), quoted: text, agentId }),
+          signal: controller.signal,
         })
         if (!resp.ok) {
           const detail = await resp.json().catch(() => null)
@@ -5467,10 +5474,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       } catch (err) {
         const wrapper = document.createElement('span')
         wrapper.className = 'att-upload-failed'
-        const reason = err instanceof Error ? err.message : String(err || 'unquote failed')
+        const reason = err instanceof Error
+          ? (err.name === 'AbortError' ? 'timed out' : err.message)
+          : String(err || 'unquote failed')
         wrapper.title = `Reference unavailable: ${reason}`
         wrapper.textContent = `⚠ ${text} unavailable: ${reason}`
         spinner.replaceWith(wrapper)
+      } finally {
+        clearTimeout(abortTimer)
       }
     }
 
