@@ -19,7 +19,7 @@ export function injectWordSpaces(svgEl: SVGSVGElement) {
   const styleEl = svgEl.querySelector('style')
   if (styleEl) {
     const cssText = styleEl.textContent || ''
-    const re = /text\.(\w+)\s*\{font-family:(\w+);font-size:([\d.]+)px\}/g
+    const re = /text\.([\w-]+)\s*\{font-family:([\w-]+);font-size:([\d.]+)px\}/g
     let m
     while ((m = re.exec(cssText)) !== null) {
       fontInfoMap[m[1]] = { family: m[2], size: parseFloat(m[3]) }

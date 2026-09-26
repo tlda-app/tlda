@@ -23,7 +23,7 @@ export function injectSvgFonts(root: SVGSVGElement | Document): void {
   document.head.appendChild(pageStyle)
 
   // Track which families we injected
-  const familyRe = /font-family:(\w+)/
+  const familyRe = /font-family:([\w-]+)/
   for (const m of fontFaces) {
     const fm = m.match(familyRe)
     if (fm) injectedFontFamilies.add(fm[1])
@@ -50,7 +50,7 @@ export function parseFontClasses(root: SVGSVGElement | Document): Record<string,
   if (!styleEl) return result
 
   const cssText = styleEl.textContent || ''
-  const re = /text\.(\w+)\s*\{font-family:(\w+);font-size:([\d.]+)px\}/g
+  const re = /text\.([\w-]+)\s*\{font-family:([\w-]+);font-size:([\d.]+)px\}/g
   let m
   while ((m = re.exec(cssText)) !== null) {
     result[m[1]] = { family: m[2], size: parseFloat(m[3]) }
