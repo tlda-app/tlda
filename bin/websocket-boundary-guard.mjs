@@ -236,6 +236,11 @@ const ALLOWED = {
     category: 'tooling',
     reason: 'Operation coalescing over /ws/fleet: coalescing is a property of the wire, not of a function. Endpoint: /ws/fleet.',
   },
+  'server/lib/process-liveness-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Proves a daemon process-liveness verdict admitted over the wire flips the roster status with no server-side interpretation. The socket must bypass the client transport library because the admission path is the subject: calling both ends in one process would prove the two ends and not that the wire joins them. Endpoint: /ws/fleet-daemon.',
+  },
   'server/lib/read-receipt-wire.test.mjs': {
     count: 1,
     category: 'tooling',
