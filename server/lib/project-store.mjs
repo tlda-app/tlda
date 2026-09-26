@@ -1073,13 +1073,31 @@ async function buildLogErrors(name) {
 // existed — "the build was clean" and "there is no log to read" — and callers
 // could not tell them apart, so a failed build reported `Clean.`. `logMissing`
 // is the discriminator: an empty error list is only good news when it is false.
-export async function extractBuildErrors(name) {
+export async function extractBuildErrors(name, options = {}) {
   const project = await readProject(name)
   if (!project) return { errors: [], warnings: [], logMissing: true }
 
   // latex.log is preserved by build-runner after latexmk runs, and carried out
   // of a failed build's instance by publishBuildDiagnostics.
+  //
+  // A start-failure produces no latex.log of its own, so the file on disk is
+  // the PREVIOUS build's — and a stale one (empty from a success, or old
+  // errors from an earlier failure) masks the build.log reason the failing
+  // path just wrote. Callers on a path with no live latex output pass
+  // `ignoreStaleLatexLog` with the failure's timestamp; a latex.log older than
+  // the failure is then skipped in favour of build.log.
   const logPath = join(projectDir(name), 'latex.log')
+  if (options.ignoreStaleLatexLog) {
+    const cutoff = Number(options.ignoreStaleLatexLog)
+    if (Number.isFinite(cutoff)) {
+      try {
+        const latexStat = await stat(logPath)
+        if (latexStat.mtimeMs < cutoff) return buildLogErrors(name)
+      } catch {
+        return buildLogErrors(name)
+      }
+    }
+  }
   const logText = await readTextOrNull(logPath)
   if (logText === null) return buildLogErrors(name)
   const result = parseLatexErrors(logText)

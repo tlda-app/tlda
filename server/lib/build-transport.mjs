@@ -117,6 +117,37 @@ export function createForkTransport(workerPath = WORKER) {
 export const ForkTransport = createForkTransport()
 
 /**
+ * Probe the executor's pre-connect health gate, retrying the whole gate as one
+ * unit (fetch + status check + json parse + revision check) on a bounded
+ * exponential backoff. Returns the parsed health body on success; throws the
+ * LAST error unchanged on budget exhaustion so downstream failure strings are
+ * byte-identical to the no-retry path.
+ */
+export async function checkExecutorHealthWithRetry({
+  url, fetchImpl = fetch, expectedRevision,
+  budgetMs = 45_000, baseDelayMs = 1_000,
+  sleepImpl = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
+} = {}) {
+  const started = Date.now()
+  let attempt = 0
+  for (;;) {
+    try {
+      const health = await fetchImpl(url)
+      if (!health.ok) throw new Error(`build executor health returned HTTP ${health.status}`)
+      const executor = await health.json()
+      requireMatchingExecutorRevision(expectedRevision, executor.revision)
+      return executor
+    } catch (error) {
+      const elapsed = Date.now() - started
+      const delay = baseDelayMs * 2 ** attempt
+      if (elapsed + delay > budgetMs) throw error
+      attempt += 1
+      await sleepImpl(delay)
+    }
+  }
+}
+
+/**
  * RemoteTransport — the same build, on a different machine.
  *
  * It satisfies the interface `createForkTransport` satisfies, and it carries the
@@ -159,6 +190,9 @@ export function createRemoteTransport({
   fetchImpl = fetch,
   logError = console.error,
   cancelTimeoutMs = 30_000,
+  healthRetryBudgetMs = 45_000,
+  healthRetryBaseDelayMs = 1_000,
+  sleepImpl = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
 } = {}) {
   if (!executorUrl) throw new Error('a remote build transport requires an executor URL')
   if (typeof readProject !== 'function') throw new Error('a remote build transport requires readProject')
@@ -262,10 +296,20 @@ export function createRemoteTransport({
         if (!project) throw new Error(`no project record for ${job.name}`)
         const head = publishedHead ? await publishedHead(job.name) : null
 
-        const health = await fetchImpl(`${httpUrl}/health`)
-        if (!health.ok) throw new Error(`build executor health returned HTTP ${health.status}`)
-        const executor = await health.json()
-        requireMatchingExecutorRevision(expectedRevision, executor.revision)
+        // Bounded retry over the whole pre-connect gate as one unit: fetch +
+        // status + parse + revision check. A deploy-cutover window reads as
+        // unreachable, non-200, truncated, or revision-mismatched, and each
+        // resolves itself when the new executor boots. Anything still failing
+        // after the budget is a dead executor, so the LAST error is thrown
+        // unchanged and the `.catch` below keeps its current string.
+        //
+        // Pre-connect scope only: `localizePaths` below runs mid-build with the
+        // worker waiting on an RPC deadline, and retrying there holds a slot.
+        const executor = await checkExecutorHealthWithRetry({
+          url: `${httpUrl}/health`,
+          fetchImpl, expectedRevision,
+          budgetMs: healthRetryBudgetMs, baseDelayMs: healthRetryBaseDelayMs, sleepImpl,
+        })
 
         socket = connect(socketUrl)
         socket.on('error', error => fail(`remote build executor at ${executorUrl} failed for ${job.name}: ${error.message}`))

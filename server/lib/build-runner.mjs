@@ -2661,8 +2661,8 @@ function signalBuildProgress(name, phase, detail) {
   }
 }
 
-async function currentBuildStatusPayload(name, errorMessage, extraWarnings = []) {
-  const { errors, warnings } = await extractBuildErrors(name)
+async function currentBuildStatusPayload(name, errorMessage, extraWarnings = [], options = {}) {
+  const { errors, warnings } = await extractBuildErrors(name, options)
   const signaledErrors = (errorMessage && errors.length === 0)
     ? [{ message: errorMessage, file: 'build' }]
     : errors
@@ -2670,9 +2670,9 @@ async function currentBuildStatusPayload(name, errorMessage, extraWarnings = [])
   return { errors: signaledErrors, warnings: allWarnings }
 }
 
-async function signalBuildStatus(name, errorMessage, extraWarnings = []) {
+async function signalBuildStatus(name, errorMessage, extraWarnings = [], options = {}) {
   try {
-    const { errors, warnings } = await currentBuildStatusPayload(name, errorMessage, extraWarnings)
+    const { errors, warnings } = await currentBuildStatusPayload(name, errorMessage, extraWarnings, options)
     _reporter.broadcastSignal(`doc-${name}`, 'signal:build-status', {
       error: errorMessage,
       errors,
@@ -2685,9 +2685,9 @@ async function signalBuildStatus(name, errorMessage, extraWarnings = []) {
   }
 }
 
-async function recordPersistentBuildStatus(name, errorMessage, sourceRevision, acceptSeq, extraWarnings = []) {
+async function recordPersistentBuildStatus(name, errorMessage, sourceRevision, acceptSeq, extraWarnings = [], options = {}) {
   try {
-    const { errors, warnings } = await currentBuildStatusPayload(name, errorMessage, extraWarnings)
+    const { errors, warnings } = await currentBuildStatusPayload(name, errorMessage, extraWarnings, options)
     const seq = Number.isInteger(acceptSeq) ? acceptSeq : 0
     Promise.resolve(_reporter.writeSentinel(`doc-${name}`, {
       timestamp: Date.now(),
@@ -2707,18 +2707,18 @@ async function recordPersistentBuildStatus(name, errorMessage, sourceRevision, a
   }
 }
 
-export async function reportBuildFailure(name, message, sourceRevision = null, acceptSeq = null) {
-  await recordPersistentBuildStatus(name, message, sourceRevision, acceptSeq)
-  await signalBuildStatus(name, message)
+export async function reportBuildFailure(name, message, sourceRevision = null, acceptSeq = null, options = {}) {
+  await recordPersistentBuildStatus(name, message, sourceRevision, acceptSeq, [], options)
+  await signalBuildStatus(name, message, [], options)
   signalBuildProgress(name, 'failed', message)
-  await emitBuildFailureCard(name, message)
+  await emitBuildFailureCard(name, message, options)
 }
 
-async function emitBuildFailureCard(name, message) {
+async function emitBuildFailureCard(name, message, options = {}) {
   let errors = []
   let warnings = []
   try {
-    const parsed = await currentBuildStatusPayload(name, message)
+    const parsed = await currentBuildStatusPayload(name, message, [], options)
     errors = parsed.errors || []
     warnings = parsed.warnings || []
   } catch (e) {

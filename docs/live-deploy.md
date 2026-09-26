@@ -62,6 +62,21 @@ fly status -c fly.live.toml
 `/api/build-info` must report the pushed `gitSha`; `/api/health` must return
 `ok` with `store: up`; Fly must show the machine as `started`.
 
+Then check the build executor — the same `/health` the transport uses as its
+pre-build gate (`server/lib/build-transport.mjs`), derived from
+`buildExecutor.url` in `config/deployments/live/server.yaml` (`ws://…`
+with the scheme swapped to http, `/health` appended), from a tailnet host:
+
+```bash
+# EXECUTOR_HTTP = buildExecutor.url with ws->http
+curl -fsS "$EXECUTOR_HTTP/health"   # -> { revision: "<pushed-sha>", ... }
+```
+
+Its `revision` must equal the pushed sha — the same comparison as
+`requireMatchingExecutorRevision` in the transport path. A revision-mismatched
+executor refuses the build, which fails the deploy verification the same way a
+build-info mismatch does (hook rejects, ref does not move).
+
 ## A rejected push does not mean nothing shipped
 
 The deploy runs inside the pre-receive hook, so the machine is updated **before**

@@ -839,6 +839,19 @@ async function recordDisposition(job, state, result = null) {
     // Never let recording the reason replace the failure being recorded.
     console.error(`[build] could not write failure log for ${job.name}: ${e?.message || e}`)
   }
+  // The sentinel is the surface the pill and `tlda project errors` read, and
+  // nothing above writes it on this path — lifecycle phase, buildStatus, and
+  // the build.log line all land without it. `reportBuildFailure` is already
+  // imported (and in SINKS) and writes it via the existing fallback payload.
+  //
+  // `ignoreStaleLatexLog` is for the general case, not this instance: any
+  // start-failure leaves the previous build's latex.log in place, and a stale
+  // one masks the build.log line just written above on a fail-after-fail.
+  try {
+    await reportBuildFailure(job.name, reason, job.sourceRevision, job.acceptSeq, { ignoreStaleLatexLog: Date.now() })
+  } catch (e) {
+    console.error(`[build] could not record failure sentinel for ${job.name}: ${e?.message || e}`)
+  }
 }
 
 export async function admitProposal(submission, options = {}) {

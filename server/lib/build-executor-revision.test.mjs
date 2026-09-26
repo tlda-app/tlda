@@ -23,6 +23,9 @@ test('remote transport refuses a stale executor before opening the build socket'
       executorUrl: 'ws://executor.example:7711',
       token: 'secret',
       expectedRevision: '40eaab617',
+      // No retry here: this test asserts refusal, not the retry loop (which
+      // would otherwise spend the whole health budget re-probing a stale host).
+      healthRetryBudgetMs: 0,
       readProject: async () => ({ name: 'course', format: 'qmd' }),
       publishedHead: async () => 'published-revision',
       fetchImpl: async url => {
