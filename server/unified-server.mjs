@@ -96,6 +96,7 @@ import { selfBaseUrl } from '../shared/self-base-url.mjs'
 import { listProposalRefs, parseDaemonProposalRef } from './lib/git-proposals.mjs'
 import { createSourceProposalAdmissionConnectionDispatcher, createSourceProposalAdmissionHandler } from './lib/source-proposal-admission.mjs'
 import { admitDaemonHeartbeat } from './lib/daemon-heartbeat-admission.mjs'
+import { annotateIdleFreshness } from './lib/trusted-idle-freshness.mjs'
 import projectRoutes from './routes/projects.mjs'
 import { classroomPrincipal, createClassroomRouter, logClassroomRefusal, requireClassroomDocumentAccess } from './routes/classroom.mjs'
 import { ClassroomStore } from './lib/classroom-store.mjs'
@@ -2009,6 +2010,14 @@ const mailboxLibrarian = new MailboxLibrarian({
 })
 const _contextState = new Map()    // agentId → { percent, inputTokens }
 const _lastActivityAt = new Map()  // agentId → timestamp (ms) — last real activity (thinking, tool call, chat)
+// Most recent touch attributable to daemon-pipe processing (activity-event,
+// agent-status, admitted heartbeat). Chat, login, and hook touches do not
+// move it: the canary must reflect the daemon delivery path, not any traffic.
+// Read by /api/fleet/trusted-idle as the map's freshness signal — under a
+// delivery stall it ages while idles go stale. A quiet fleet ages it too;
+// that is the consumer's to interpret, and the server never withholds the
+// map for it.
+let _lastDaemonPipeTouchAtMs = null
 const _viewingContext = new Map()   // agentId → { doc, page, sourceLine, ... , updatedAt }
 let _lastReaperStatus = null       // latest reaper snapshot from daemon
 const _daemonWarnDedup = new Map() // project → { eventId, count, lastSeen, baseText }
@@ -2018,6 +2027,12 @@ const MY_TASK_DELIVERY_LIMIT = 50
 
 function touchActivity(agentId) {
   _lastActivityAt.set(agentId, Date.now())
+}
+
+// A touch arrived via daemon-pipe processing. Called alongside touchActivity
+// at the daemon-message sites only — never for chat, login, or hooks.
+function markDaemonPipeTouch() {
+  _lastDaemonPipeTouchAtMs = Date.now()
 }
 
 // ---- Turn-end synthetic event ----
@@ -4549,9 +4564,23 @@ app.get('/api/fleet/prefs', requireRead, async (req, res) => {
 
 // Todd owns hibernation policy; the server owns only this read-only liveness
 // fact. Keeping the boundary explicit prevents a bot from deriving idleness
-// from roster labels or becoming a second status publisher.
+// from roster labels or becoming a second status publisher. The freshness
+// block beside it is additive input provenance — the age of the touch each
+// idle rests on, and how long since any daemon-pipe touch was processed — so
+// a consumer can decline a stale map. The server never withholds the map.
 app.get('/api/fleet/trusted-idle', requireRead, async (_req, res) => {
-  res.json({ idleSecondsByAgent: await getTrustedIdleSeconds() })
+  const nowMs = Date.now()
+  const idleSecondsByAgent = await getTrustedIdleSeconds()
+  const touchAtMsByAgent = {}
+  for (const agentId of Object.keys(idleSecondsByAgent)) {
+    touchAtMsByAgent[agentId] = _lastActivityAt.get(agentId) ?? null
+  }
+  res.json(annotateIdleFreshness({
+    idleSecondsByAgent,
+    touchAtMsByAgent,
+    daemonPipeTouchAtMs: _lastDaemonPipeTouchAtMs,
+    nowMs,
+  }))
 })
 
 app.get('/api/fleet/prefs/:key', requireRead, async (req, res) => {
@@ -10772,6 +10801,7 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
     if (!agent_id || typeof jsonl_offset !== 'number') return
     spawnLibrarian.observeActivity({ type, agent_id, jsonl_offset, ts })
     touchActivity(agent_id)
+    markDaemonPipeTouch()
     if (fleetStore?.updateHeartbeat) {
       await fleetStore.updateHeartbeat(agent_id)
       broadcastState()
@@ -10792,7 +10822,9 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
     try {
       const outcome = await admitDaemonHeartbeat({
         store: fleetStore,
-        touchActivity,
+        // Admitted beats feed the map, so they move the pipe canary; refused
+        // ones never reach here and honestly leave it still.
+        touchActivity: id => { touchActivity(id); markDaemonPipeTouch() },
         log: console,
       }, { ...msg, daemon_key: msg.daemon_key || ws._daemonKey || null })
       if (outcome?.changed && outcome?.agentId) broadcastState([outcome.agentId])
@@ -10835,7 +10867,10 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
       atMs: activityAtMs,
     })
     broadcastEvent('agent-status', { agent: agentId, status: 'awake', activity, tool: msg.tool || null, ts: msg.ts || new Date(activityAtMs).toISOString() })
-    if (activity === 'thinking' || activity === 'compacting') touchActivity(agentId)
+    if (activity === 'thinking' || activity === 'compacting') {
+      touchActivity(agentId)
+      markDaemonPipeTouch()
+    }
     return
   }
 
@@ -10867,7 +10902,10 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
       })
       broadcastEvent('agent-status', { agent: agent_id, status: 'awake', activity: currentActivity, tool, ts: msg.ts || new Date(activityAtMs).toISOString() })
     }
-    if (!historical) touchActivity(agent_id)
+    if (!historical) {
+      touchActivity(agent_id)
+      markDaemonPipeTouch()
+    }
     if (sourceEditActivity && (msg.status === 'completed' || msg.status === 'error')) return
     if (!shouldStoreDaemonActivity(msg)) return
     if (msg.operation_id && await fleetStore.activityOperationDuplicateExists(msg.operation_id)) return
