@@ -8976,6 +8976,9 @@ async function dispatchFleetWsMessage(ws, msg) {
         wokeRecipient: r.deliveryDecision ? (r.nativeNeedsParent ? false : r.deliveryDecision.wokeRecipient) : 'no',
         notifyBy: r.deliveryDecision?.notifyBy || null,
         ...(r.entry.reason ? { reason: r.entry.reason } : {}),
+        // The receipt formatter omits the inbox-status bracket for a dead
+        // recipient (its presence value is stale); explicit, not sniffed.
+        recipientDead: !!r.recipientAgent?.dead,
       })
     }
     // Echo _tempId on the broadcast so a client whose WS reply was lost during

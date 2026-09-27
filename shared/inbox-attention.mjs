@@ -135,10 +135,16 @@ export function promptestSubscriptionDelivery(current, candidate) {
     : current
 }
 
-export function formatAttentionReceipt({ recipientLabel, status, tag, priority, delivery, notifyBy, notificationPolicy, reason }) {
-  const label = notificationPolicy
-    ? `${recipientLabel || 'recipient'} [${notificationPolicy}]`
-    : `${recipientLabel || 'recipient'} [${normalizeInboxStatus(status)}${tag ? ` (${tag})` : ''}]`
+export function formatAttentionReceipt({ recipientLabel, status, tag, priority, delivery, notifyBy, notificationPolicy, reason, recipientDead }) {
+  // A dead recipient's inbox status is the presence it last set while alive
+  // (or the 'available' default) — stale either way, and "Available" beside
+  // "is dead" reads as a contradiction. The sentence below already names
+  // death, so the bracket is omitted rather than replaced.
+  const label = recipientDead
+    ? `${recipientLabel || 'recipient'}`
+    : notificationPolicy
+      ? `${recipientLabel || 'recipient'} [${notificationPolicy}]`
+      : `${recipientLabel || 'recipient'} [${normalizeInboxStatus(status)}${tag ? ` (${tag})` : ''}]`
   const p = normalizeMessagePriority(priority)
   // "Notified" was a completed-action verb for something that has not happened.
   // Everything this function is given is pre-delivery: `delivery` is the policy
