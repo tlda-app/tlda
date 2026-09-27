@@ -673,6 +673,25 @@ async function getSpawnModelCatalog({ maxAgeMs = 60_000 } = {}) {
   return data;
 }
 
+async function spawnMachineChoices() {
+  try {
+    const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/health`);
+    const data = await res.json();
+    if (!Array.isArray(data?.machines)) return { unknown: 'unreported' };
+    return { machines: data.machines };
+  } catch {
+    return { unknown: 'unreachable' };
+  }
+}
+
+export function formatSpawnMachinesSummary(result) {
+  if (result?.unknown === 'unreachable') return 'Machines: (unknown — server unreachable)'
+  if (result?.unknown === 'unreported') return 'Machines: (connected daemons not reported by this server build)'
+  const machines = result?.machines || []
+  if (!machines.length) return 'Machines: (none connected)'
+  return `Machines: ${machines.join(', ')}`
+}
+
 function configuredSpawnProfileNames() {
   try {
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR));
@@ -3466,10 +3485,11 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     if (args.help) {
       const catalog = await getSpawnModelCatalog({ maxAgeMs: 0 });
       const profiles = configuredSpawnProfileNames();
+      const machines = await spawnMachineChoices();
       return {
         content: [{
           type: 'text',
-          text: `${formatSpawnModelSummary(catalog)}${catalog?.defaultAlias ? `\nDefault: ${catalog.defaultAlias}` : ''}\nPermission profiles: ${profiles.length ? profiles.join(', ') : '(none configured)'}`,
+          text: `${formatSpawnModelSummary(catalog)}${catalog?.defaultAlias ? `\nDefault: ${catalog.defaultAlias}` : ''}\nPermission profiles: ${profiles.length ? profiles.join(', ') : '(none configured)'}\n${formatSpawnMachinesSummary(machines)}\nMint targets your own machine by default; an operator sets spawn_machine_id per minter.`,
         }],
       };
     }

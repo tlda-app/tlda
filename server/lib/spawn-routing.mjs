@@ -43,8 +43,23 @@ function splitDaemonKey(value) {
   }
 }
 
+// The address an agent row actually carries. The machine_id/env_name columns
+// were dropped from agents on 2026-07-28 (4cdbb55b8); since then the only
+// source is the route table, surfaced on every row as route_daemon_key. A
+// caller or target read for machine_id sees nothing, so any default below it
+// is dead unless the route is consulted. The machine_id read stays for
+// plain-object callers; rows always take the route branch.
+function knownAddress(agent) {
+  if (agent?.machine_id) return { machine_id: agent.machine_id, env_name: agent.env_name || null }
+  if (agent?.route_daemon_key) return splitDaemonKey(agent.route_daemon_key)
+  return { machine_id: null, env_name: null }
+}
+
 function requireConnected(machineId, daemonConnections, context, onDaemonMissing, envName = null) {
-  if (!machineId || !envName) throw new Error(`${context} has no daemon address configured — cannot spawn agents`)
+  if (!machineId || !envName) {
+    const keys = connectedDaemonAddresses(daemonConnections).map(d => d.key).join(', ')
+    throw new Error(`${context} has no daemon address configured — cannot spawn agents (connected: ${keys || 'none'})`)
+  }
   const key = daemonKey(machineId, envName)
   if (!daemonConnections?.has?.(key)) {
     onDaemonMissing?.(machineId, context, { envName, hasWs: false, readyState: 'missing' })
@@ -84,10 +99,14 @@ async function normalizeConfiguredSpawnMachine(fleetStore, identity, rawValue, r
 
 function documentedDefaultMachine(identity, daemonConnections) {
   const daemons = connectedDaemonAddresses(daemonConnections)
-  if (!identity?.human && identity?.machine_id) {
+  // No special-casing by caller kind (Skip's spec 9/26): a bot, an agent, or a
+  // human mints on its own box when it has a route, and all three take the
+  // same offered-choice failure when none of them does.
+  const own = knownAddress(identity)
+  if (own.machine_id) {
     return {
-      machine_id: identity.machine_id,
-      env_name: identity.env_name || null,
+      machine_id: own.machine_id,
+      env_name: own.env_name,
       source: 'agent-own-machine',
     }
   }
@@ -101,17 +120,22 @@ function documentedDefaultMachine(identity, daemonConnections) {
   if (daemons.length === 0) {
     throw new Error('No fleet daemon connected — cannot spawn agents')
   }
+  // Genuinely ambiguous (no route, no pref, several daemons): offer the choice
+  // the process already knows instead of naming an id and stopping. The setter
+  // is operator-only — an agent reader relays it; a human reader runs it.
+  const keys = daemons.map(d => d.key).join(', ')
   throw new Error(
-    `spawn machine is not configured for ${identity?.id || 'caller'} and ${daemons.length} daemons are connected (${daemons.map(d => d.key).join(', ')}) — set ${SPAWN_MACHINE_PREF_KEY}`,
+    `spawn machine is not configured for ${identity?.id || 'caller'} and ${daemons.length} daemons are connected — set ${SPAWN_MACHINE_PREF_KEY} to one of: ${keys} (operator shell: tlda agent set-mint-machine ${identity?.id || '<agent-id>'} <one of the above>)`,
   )
 }
 
 export async function resolveSpawnMachine({ caller, targetAgent, fresh, respawn, refresh, fleetStore, daemonConnections, onDaemonMissing }) {
   if ((respawn || refresh) && targetAgent) {
     const label = `target ${targetAgent.id || targetAgent.friendly_name || 'agent'}`
-    if (targetAgent.machine_id && targetAgent.env_name) {
+    const addr = knownAddress(targetAgent)
+    if (addr.machine_id && addr.env_name) {
       return {
-        ...requireConnected(targetAgent.machine_id, daemonConnections, label, onDaemonMissing, targetAgent.env_name),
+        ...requireConnected(addr.machine_id, daemonConnections, label, onDaemonMissing, addr.env_name),
         source: 'target-agent-machine',
       }
     }
@@ -136,9 +160,10 @@ export async function resolveSpawnMachine({ caller, targetAgent, fresh, respawn,
 
   if (fresh && targetAgent) {
     const label = `route anchor ${targetAgent.id || targetAgent.friendly_name || 'agent'}`
-    if (targetAgent.machine_id && targetAgent.env_name) {
+    const addr = knownAddress(targetAgent)
+    if (addr.machine_id && addr.env_name) {
       return {
-        ...requireConnected(targetAgent.machine_id, daemonConnections, label, onDaemonMissing, targetAgent.env_name),
+        ...requireConnected(addr.machine_id, daemonConnections, label, onDaemonMissing, addr.env_name),
         source: 'route-agent-machine',
       }
     }

@@ -1589,7 +1589,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- GET /api/health ---
   router.get('/api/health', (req, res) => {
-    res.json({ ok: true, fleet: 'embedded', store: fleetStore ? 'up' : 'down' })
+    res.json({
+      ok: true,
+      fleet: 'embedded',
+      store: fleetStore ? 'up' : 'down',
+      // Live spawn targets for `delegate help` and failure messages: the
+      // connected daemon keys, e.g. ["air:testing", "mini:testing"].
+      machines: [...(daemonConnections?.keys?.() || [])].sort(),
+    })
   })
 
   return router
