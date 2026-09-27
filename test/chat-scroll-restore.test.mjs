@@ -5,6 +5,7 @@ import {
   anchorChatScrollPosition,
   chatScrollStartOf,
   chatScrollStoreKey,
+  decideScrollRestore,
   readChatScrollState,
   resolveChatScrollRestore,
   writeChatScrollState,
@@ -107,4 +108,59 @@ test('storage read tolerates missing and corrupt records', () => {
   assert.equal(readChatScrollState(storage, chatScrollStoreKey('shape:abc')), null)
   storage._raw(chatScrollStoreKey('shape:abc'), '"just-a-string"')
   assert.equal(readChatScrollState(storage, chatScrollStoreKey('shape:abc')), null)
+})
+
+// A pending restore retries across mount settling: the first population may
+// precede the synced filter or the anchored row, so a single refusal must
+// hold rather than fall to the tail.
+
+function decide(saved, resetKey, atTail, starts) {
+  const map = new Map(starts)
+  return decideScrollRestore({ saved, resetKey, atTail, startOf: (k) => map.get(k) })
+}
+
+const ANCHORED = { v: 1, filterKey: FILTER, tail: false, anchorKey: 'b', anchorOffset: 50 }
+
+test('pending restore jumps when the filter matches and the key is present', () => {
+  assert.deepEqual(
+    decide(ANCHORED, FILTER, true, [['a', 0], ['b', 100]]),
+    { action: 'restore', top: 150 },
+  )
+})
+
+test('pending restore holds while the filter is still settling', () => {
+  assert.deepEqual(decide(ANCHORED, '[]', true, [['b', 100]]), { action: 'hold' })
+  assert.deepEqual(decide(ANCHORED, '', true, [['b', 100]]), { action: 'hold' })
+  assert.deepEqual(decide(ANCHORED, null, true, [['b', 100]]), { action: 'hold' })
+})
+
+test('pending restore holds while the anchored row has not arrived', () => {
+  assert.deepEqual(decide(ANCHORED, FILTER, true, [['a', 0]]), { action: 'hold' })
+  assert.deepEqual(decide(ANCHORED, FILTER, true, []), { action: 'hold' })
+})
+
+test('pending restore abandons on a genuine filter change', () => {
+  assert.deepEqual(
+    decide(ANCHORED, '[[["from","someone-else"]]]', true, [['b', 100]]),
+    { action: 'abandon' },
+  )
+})
+
+test('pending restore abandons once the reader moves off the tail', () => {
+  assert.deepEqual(
+    decide(ANCHORED, FILTER, false, [['a', 0], ['b', 100]]),
+    { action: 'abandon' },
+  )
+})
+
+test('pending restore abandons records that can never resolve', () => {
+  const starts = [['a', 0], ['b', 100]]
+  assert.deepEqual(decide(null, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide('x', FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, v: 2 }, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, tail: true }, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, filterKey: '' }, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, anchorKey: '' }, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, anchorOffset: -1 }, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, anchorOffset: '50' }, FILTER, true, starts), { action: 'abandon' })
 })

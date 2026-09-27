@@ -50,7 +50,7 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
-import { anchorChatScrollPosition, anchoredTailTop, chatScrollStartOf, chatScrollStoreKey, isReaderInputInFlight, nextEarlierChatHistoryWindow, readChatScrollState, resolveChatScrollRestore, shouldPrefetchEarlierChatHistory, writeChatScrollState, CHAT_SCROLL_STORE_VERSION } from './chatViewportAnchor.mjs'
+import { anchorChatScrollPosition, anchoredTailTop, chatScrollStartOf, chatScrollStoreKey, decideScrollRestore, isReaderInputInFlight, nextEarlierChatHistoryWindow, readChatScrollState, shouldPrefetchEarlierChatHistory, writeChatScrollState, CHAT_SCROLL_STORE_VERSION } from './chatViewportAnchor.mjs'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 // @ts-ignore — vanilla JS module
 import {
@@ -2505,6 +2505,8 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
   const didStartReachRef = useRef(false)
   const persistThrottleRef = useRef(0)
   const pendingPersistRef = useRef<Record<string, unknown> | null>(null)
+  const didAdoptScrollRestoreRef = useRef(false)
+  const pendingScrollRestoreRef = useRef<Record<string, unknown> | null>(null)
   const earlierHistoryWindowRef = useRef(initialHistoryWindow)
   const previousResetKeyRef = useRef(resetKey)
   const previousKeysRef = useRef<string[]>([])
@@ -2709,25 +2711,45 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     previousResetKeyRef.current = resetKey
     previousKeysRef.current = itemKeys
     if (previousKeys.length && itemKeys[0] !== previousKeys[0]) didStartReachRef.current = false
-    if (wasReset || previousKeys.length === 0 || tailModeRef.current) {
-      // First population after a mount is the only restore point: a filter
-      // change (wasReset) always takes the tail, and so does a saved state
-      // that names nothing on screen. Anything resolveChatScrollRestore
-      // refuses falls through to the tail below, which is the behaviour to
-      // this point.
-      if (!wasReset && previousKeys.length === 0 && persistKey) {
-        const heightOf = (key: string) => heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
-        const saved = readChatScrollState(browserLocalStorage(), chatScrollStoreKey(persistKey))
-        const top = resolveChatScrollRestore(saved, resetKey, (key: string) => chatScrollStartOf(itemKeys, heightOf, key))
-        if (top != null) {
-          setModelTop(top)
-          // setModelTop arms the follow-off settle timer, but the reader was
-          // already away from the tail before the reload — commit that now,
-          // or a live arrival inside the settle window yanks back to the tail.
-          setTailMode(false, () => scrollSnapshot(top, modelTopRef.current))
-          return
-        }
+    // A persisted scroll anchor is adopted once per mount and stays pending
+    // until it restores or is abandoned: the first population regularly
+    // precedes the synced filter and the row the anchor names, so refusing
+    // once would burn the restore on mount settling. A pending restore retries
+    // on every population while the reader sits where the mount put them; the
+    // reader moving off, or a genuine filter change, abandons it.
+    if (persistKey && !didAdoptScrollRestoreRef.current) {
+      didAdoptScrollRestoreRef.current = true
+      if (previousKeys.length === 0) {
+        const adopted = readChatScrollState(browserLocalStorage(), chatScrollStoreKey(persistKey))
+        if (adopted && adopted.tail !== true) pendingScrollRestoreRef.current = adopted
       }
+    }
+    const pendingRestore = persistKey ? pendingScrollRestoreRef.current : null
+    if (pendingRestore) {
+      const heightOf = (key: string) => heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
+      const atTail = Math.abs(modelTopRef.current - tailTop()) <= tailEpsRef.current
+      const decision = decideScrollRestore({
+        saved: pendingRestore,
+        resetKey,
+        atTail,
+        startOf: (key: string) => chatScrollStartOf(itemKeys, heightOf, key),
+      })
+      if (decision.action === 'restore' && decision.top != null) {
+        setModelTop(decision.top)
+        // setModelTop arms the follow-off settle timer, but the reader was
+        // already away from the tail before the reload — commit that now,
+        // or a live arrival inside the settle window yanks back to the tail.
+        setTailMode(false, () => scrollSnapshot(decision.top as number, modelTopRef.current))
+        pendingScrollRestoreRef.current = null
+        return
+      }
+      if (decision.action === 'hold') {
+        scrollToTail()
+        return
+      }
+      pendingScrollRestoreRef.current = null
+    }
+    if (wasReset || previousKeys.length === 0 || tailModeRef.current) {
       scrollToTail()
       return
     }
@@ -2746,7 +2768,10 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     }
     const newAnchorTop = anchorKey ? geometry.starts.get(anchorKey) : undefined
     setModelTop((newAnchorTop ?? modelTopRef.current) + anchorOffset)
-  }, [itemKeySignature, resetKey, persistKey])
+    // tailTop rides along because the pending-restore check above reads it;
+    // a side benefit is that settling heights re-offer the restore while it
+    // is still pending rather than only on new content.
+  }, [itemKeySignature, resetKey, persistKey, tailTop])
 
   // Persist the reader's anchor so a reload lands where they were. Runs after
   // scroll renders (geometryVersion moves on every setModelTop) and after new

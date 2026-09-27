@@ -137,6 +137,40 @@ export function resolveChatScrollRestore(saved, resetKey, startOf) {
   return start + saved.anchorOffset
 }
 
+// One decision of a pending mount restore: the first population after a mount
+// may precede the synced filter or the row the anchor names (shape sync and
+// history land after first paint), so a restore that refuses once must WAIT,
+// not fall to the tail. Re-evaluated on every population until it restores or
+// is abandoned. `atTail` is whether the reader is still where the mount put
+// them; `startOf` resolves the anchor key against the CURRENT item set.
+//   restore: jump now ({action:'restore', top}).
+//   hold:    stay at the tail and retry next population.
+//   abandon: normal list behaviour from here (genuine change, reader moved on,
+//            or a record that can never resolve).
+export function decideScrollRestore({ saved, resetKey, atTail, startOf }) {
+  if (!saved || typeof saved !== 'object') return { action: 'abandon' }
+  if (saved.v !== CHAT_SCROLL_STORE_VERSION) return { action: 'abandon' }
+  if (saved.tail === true) return { action: 'abandon' }
+  if (!atTail) return { action: 'abandon' }
+  if (typeof saved.filterKey !== 'string' || !saved.filterKey) return { action: 'abandon' }
+  if (saved.filterKey !== resetKey) {
+    // A filter that is still empty is mount settling, not a change: the shape
+    // sync has not delivered the panel's filter yet. Any other mismatch is a
+    // genuine filter change and restores nothing.
+    if (resetKey === '[]' || resetKey === '' || resetKey == null) return { action: 'hold' }
+    return { action: 'abandon' }
+  }
+  if (typeof saved.anchorKey !== 'string' || !saved.anchorKey) return { action: 'abandon' }
+  if (!Number.isFinite(saved.anchorOffset) || saved.anchorOffset < 0) return { action: 'abandon' }
+  const start = startOf(saved.anchorKey)
+  // A missing key is either a population that has not arrived yet (history or
+  // a derived row lands in a later pass) or an anchor beyond the loaded
+  // window. Both hold: the first resolves, the second degrades to the tail,
+  // which is the behaviour to this point.
+  if (!Number.isFinite(start) || start < 0) return { action: 'hold' }
+  return { action: 'restore', top: start + saved.anchorOffset }
+}
+
 export function readChatScrollState(storage, key) {
   try {
     const raw = storage?.getItem?.(key)
