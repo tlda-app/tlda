@@ -5,7 +5,28 @@ export interface PresentationRoute {
   prefix: 'root' | 'docs'
 }
 
+/**
+ * One route object per pathname, by reference.
+ *
+ * SvgDocumentEditor calls presentationRoute(window.location.pathname) on every
+ * render and feeds it into the presentationDocument useMemo deps. When each
+ * call returned a fresh object the memo recomputed on every render, the
+ * SlidesNavigator `document` prop changed identity on every render, and its
+ * mount effect re-ran — resetting the deck to slide 1 on any ambient parent
+ * re-render (story-2 nondeterministic counter resets, Sep 24). Callers only
+ * read fields, so sharing the reference is safe; pathnames per session are
+ * few, so the cache stays small.
+ */
+const routeCache = new Map<string, PresentationRoute | null>()
+
 export function presentationRoute(pathname: string): PresentationRoute | null {
+  if (routeCache.has(pathname)) return routeCache.get(pathname) ?? null
+  const route = parsePresentationRoute(pathname)
+  routeCache.set(pathname, route)
+  return route
+}
+
+function parsePresentationRoute(pathname: string): PresentationRoute | null {
   const docsMatch = pathname.match(/^\/docs\/([^/]+)\/(app|static)(?:\/(.*))?$/)
   const rootMatch = pathname.match(/^\/(app|static)\/(.+)$/)
   const match = docsMatch || rootMatch

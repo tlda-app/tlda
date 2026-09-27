@@ -218,6 +218,13 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     })
   }, [])
 
+  // The `document` prop can change identity without changing decks (a parent
+  // memo rebuilt with an equal-content object). Re-running initial navigation
+  // then would reset the reader to slide 1 on an arbitrary re-render — the
+  // story-2 nondeterministic counter resets. Navigate only when the deck
+  // identity actually changes; the opacity repair and mode class still run
+  // every time.
+  const initialNavKeyRef = useRef<string | null>(null)
   // On mount: fix stale opacity and navigate to the first page
   useEffect(() => {
     for (let i = 0; i < document.pages.length; i++) {
@@ -230,18 +237,22 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
         editor.store.update(page.shapeId, (s) => ({ ...s, ...updates }))
       }
     }
-    // An explicit ?slide link wins; otherwise resume this tab's last position
-    // so a reload/remount continues the deck instead of resetting to 1.
-    const positionKey = deckPositionKey(document.name)
-    const initial = resolveInitialSlide(
-      new URLSearchParams(window.location.search).get('slide'),
-      readStoredSlide(positionKey),
-      totalSlides,
-    )
-    setCurrentSlide(initial)
-    storeSlide(positionKey, initial)
-    navigateToSlide(editor, document, initial, false)
     window.document.body.classList.add('slides-mode')
+    const navKey = `${document.name} ${document.pages[0]?.shapeId ?? ''} ${totalSlides}`
+    if (initialNavKeyRef.current !== navKey) {
+      initialNavKeyRef.current = navKey
+      // An explicit ?slide link wins; otherwise resume this tab's last position
+      // so a reload/remount continues the deck instead of resetting to 1.
+      const positionKey = deckPositionKey(document.name)
+      const initial = resolveInitialSlide(
+        new URLSearchParams(window.location.search).get('slide'),
+        readStoredSlide(positionKey),
+        totalSlides,
+      )
+      setCurrentSlide(initial)
+      storeSlide(positionKey, initial)
+      navigateToSlide(editor, document, initial, false)
+    }
     return () => {
       window.document.body.classList.remove('slides-mode')
       window.document.documentElement.style.removeProperty('--tlda-slide-background')
