@@ -8720,8 +8720,10 @@ async function dispatchFleetWsMessage(ws, msg) {
     // isn't running and can't act on a message; delivering to it also
     // double-fans a filter when a dead twin shares a live agent's name (e.g.
     // an old `preread` row + the live `preread`) → the sender sees their
-    // message twice. To reach a dead agent, reanimate it first (it goes live,
-    // then matches here). No "prefer the live one" — dead is simply excluded.
+    // message twice. But a dead sole holder addressed BY NAME is resolved, not
+    // refused: death stops delivery, not addressing, and the receipt below
+    // states the message will not be delivered. Filter expressions keep
+    // excluding dead; only the direct-name fallback reaches them.
     const recipients = await fleetStore.resolveChatRecipients(filterAst, { from, filter: rawTo })
     // Server-owner pseudo-recipient: not in the roster, so evaluate the filter
     // against its literal id/name label set. An empty filter (null) does NOT
@@ -8800,6 +8802,12 @@ async function dispatchFleetWsMessage(ws, msg) {
       const daemonRoute = await fleetStore.getAgentDaemonRoute?.(to)
       const deliveryBlockReason = (() => {
         if (!recipientAgent || recipientAgent.human || to === SERVER_OWNER_ID) return null
+        // Load-bearing wording: the receipt renders "It was not delivered:
+        // <reason>", and for a dead recipient that sentence is the whole
+        // difference between addressing (allowed) and delivery (stopped). It
+        // must name death, not a mechanism — "no daemon route" reads as a
+        // transient routing fault and invites a retry that can never work.
+        if (recipientAgent.dead) return 'recipient is dead — reanimate it to deliver'
         // ONLY while it is still starting. Past its deadline a shell is an
         // unreachable agent, and blocking here is what made 1,675 rows accept
         // mail that was never announced -- measured 2026-09-12, 5 of 5 sampled

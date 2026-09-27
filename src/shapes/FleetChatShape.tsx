@@ -5838,92 +5838,112 @@ function FleetChatInner({ shape }: { shape: any }) {
   // handler) so there's no memoization-induced staleness. Every submit trigger
   // uses this one path.
   const composerSend = (text: string, targets: string[]) => {
+    // The send gate lives below, after dispatch: the live path stays exactly as
+    // it was, and only labels with no live match take the async branch.
+    const dispatch = () => {
+      expireClearedComposerDraft()
+      const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      injectOptimisticEvent({
+        _tempId: tempId,
+        type: 'chat',
+        event_type: 'chat',
+        from: getHumanId(),
+        // ONE event for the whole send. The optimistic row carries every target,
+        // so a group send is one line here and reconciles against the one real
+        // row the server writes for it.
+        recipients: targets,
+        text,
+        timestamp: new Date().toISOString(),
+        read: false,
+      }, chatEventBufferKey)
+      const settlement = (async () => {
+        const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
+        if (context) await enrichContextWithSourceLines(context)
+        const bullets = consumeBulletContexts()
+        if (bullets.length > 0 && context) {
+          ;(context as any).bullets = bullets
+        }
+        const lc = text.toLowerCase().replace(/[.,!?]+$/, '').trim()
+        const APPROVE_PHRASES = new Set([
+          'go for it', 'do it', 'proceed', 'implement it', 'implement', 'approve',
+          'yes', 'yes do it', "let's go", 'lets go', 'sounds good', 'looks good',
+          'go ahead', 'yeah go for it', 'yep', 'yeah', 'ok', 'okay', 'ship it',
+        ])
+        const REJECT_PHRASES = new Set([
+          'stop', 'abort', "don't do it", 'cancel', 'no', 'reject', 'hold off',
+          'wait', 'hold on', 'never mind', 'nevermind', 'nope', 'nah',
+        ])
+        if (APPROVE_PHRASES.has(lc) || REJECT_PHRASES.has(lc)) {
+          const planResponse = APPROVE_PHRASES.has(lc) ? 'approve' : 'reject'
+          for (const agentId of targets) {
+            const chatLog = chatLogRef.current
+            const hasCard = chatLog
+              ? Array.from(chatLog.querySelectorAll(`.plan-card[data-agent-id="${CSS.escape(agentId)}"]`))
+                  .some(el => !el.classList.contains('plan-card-approved') && !el.classList.contains('plan-card-rejected'))
+              : false
+            if (hasCard) {
+              fleetEphemeral('plan-mode-respond', { agent: agentId, response: planResponse })
+                .catch((e: Error) => console.warn('[fleet-chat] plan-mode-respond failed:', e.message))
+            }
+          }
+        }
+        const ENTER_PLAN_RE = /^\/plan\b|\blet'?s plan\b|\bplan mode\b|\bplanning mode\b|\bchat in planning\b|\bstay in planning\b|\bplan first\b|\bthink before\b/i
+        if (ENTER_PLAN_RE.test(text)) {
+          for (const agentId of targets) {
+            const agentName = agentNames[agentId] || agentId
+            fleetEphemeral('plan-mode-toggle', { agent: agentId })
+              .then((data: any) => {
+                if (data?.error) {
+                  sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
+                } else if (data?.mode) {
+                  const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode
+                  sendMessage(getHumanId(), `📋 ${agentName} → ${modeLabel}`, {})
+                }
+              })
+              .catch((err: any) => sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${err.message}`, {}))
+          }
+        }
+        const refAttachments = buildRefAttachments(text, editor)
+        const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
+        if (refAttachments.length > 0) sendOpts.attachments = refAttachments
+        if (doc?.projectName) sendOpts.preambleRef = { doc: doc.projectName, version: currentDocVersion(panel, editor) || null }
+        // ONE send for the whole target set. `to` is a filter expression, so the
+        // union of the targets is the expression that ORs them — one message, one
+        // event, every recipient, instead of N independent sends nothing rejoins.
+  	      return sendWithFailedRetry(targets.join('|'), text, tempId, sendOpts)
+  	    })()
+  	    return { accepted: true as const, settlement }
+    }
     // The client roster is alive-only, so a send target with no roster match is
-    // dead, missing, or mistyped — and the server would reject it ("No
-    // recipients matched"); a rejected send resurrects its text in the composer
-    // via the failed-send restore (the ghost). Refuse it here instead: returning
-    // false keeps the field and its draft, honestly unsent. Only once the roster
-    // has loaded (non-empty): before the first agents-page arrives every label
-    // is unknown, and the server — which has the data — decides.
+    // dead, missing, or mistyped — and dead is indistinguishable from unknown
+    // here. A label with no live match is asked of the server, which sees dead
+    // rows: a name the server resolves proceeds — the server accepts addressing
+    // a dead agent and receipts it undelivered — while a name nothing resolves
+    // is refused here instead (returning false keeps the field and its draft,
+    // honestly unsent, where a server rejection would resurrect the text via
+    // the failed-send restore). Only once the roster has loaded (non-empty):
+    // before the first agents-page arrives every label is unknown, and the
+    // server — which has the data — decides.
     if (agents.length > 0) {
       const sendTargetsLive = targets.some(label => {
         const matches = resolveTargetAgents(label, agents)
         return matches.length > 0 && matches.some(a => !a?.dead)
       })
-      if (!sendTargetsLive) return false
-    }
-    expireClearedComposerDraft()
-    const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    injectOptimisticEvent({
-      _tempId: tempId,
-      type: 'chat',
-      event_type: 'chat',
-      from: getHumanId(),
-      // ONE event for the whole send. The optimistic row carries every target,
-      // so a group send is one line here and reconciles against the one real
-      // row the server writes for it.
-      recipients: targets,
-      text,
-      timestamp: new Date().toISOString(),
-      read: false,
-    }, chatEventBufferKey)
-    const settlement = (async () => {
-      const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
-      if (context) await enrichContextWithSourceLines(context)
-      const bullets = consumeBulletContexts()
-      if (bullets.length > 0 && context) {
-        ;(context as any).bullets = bullets
-      }
-      const lc = text.toLowerCase().replace(/[.,!?]+$/, '').trim()
-      const APPROVE_PHRASES = new Set([
-        'go for it', 'do it', 'proceed', 'implement it', 'implement', 'approve',
-        'yes', 'yes do it', "let's go", 'lets go', 'sounds good', 'looks good',
-        'go ahead', 'yeah go for it', 'yep', 'yeah', 'ok', 'okay', 'ship it',
-      ])
-      const REJECT_PHRASES = new Set([
-        'stop', 'abort', "don't do it", 'cancel', 'no', 'reject', 'hold off',
-        'wait', 'hold on', 'never mind', 'nevermind', 'nope', 'nah',
-      ])
-      if (APPROVE_PHRASES.has(lc) || REJECT_PHRASES.has(lc)) {
-        const planResponse = APPROVE_PHRASES.has(lc) ? 'approve' : 'reject'
-        for (const agentId of targets) {
-          const chatLog = chatLogRef.current
-          const hasCard = chatLog
-            ? Array.from(chatLog.querySelectorAll(`.plan-card[data-agent-id="${CSS.escape(agentId)}"]`))
-                .some(el => !el.classList.contains('plan-card-approved') && !el.classList.contains('plan-card-rejected'))
-            : false
-          if (hasCard) {
-            fleetEphemeral('plan-mode-respond', { agent: agentId, response: planResponse })
-              .catch((e: Error) => console.warn('[fleet-chat] plan-mode-respond failed:', e.message))
+      if (!sendTargetsLive) {
+        return (async () => {
+          for (const label of targets) {
+            try {
+              const found: any = await fleetEphemeral('resolve-agent', { agent: label })
+              if (found?.agent) return dispatch()
+            } catch {
+              // Unresolvable until proven otherwise; try the next label.
+            }
           }
-        }
+          return false
+        })()
       }
-      const ENTER_PLAN_RE = /^\/plan\b|\blet'?s plan\b|\bplan mode\b|\bplanning mode\b|\bchat in planning\b|\bstay in planning\b|\bplan first\b|\bthink before\b/i
-      if (ENTER_PLAN_RE.test(text)) {
-        for (const agentId of targets) {
-          const agentName = agentNames[agentId] || agentId
-          fleetEphemeral('plan-mode-toggle', { agent: agentId })
-            .then((data: any) => {
-              if (data?.error) {
-                sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
-              } else if (data?.mode) {
-                const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode
-                sendMessage(getHumanId(), `📋 ${agentName} → ${modeLabel}`, {})
-              }
-            })
-            .catch((err: any) => sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${err.message}`, {}))
-        }
-      }
-      const refAttachments = buildRefAttachments(text, editor)
-      const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
-      if (refAttachments.length > 0) sendOpts.attachments = refAttachments
-      if (doc?.projectName) sendOpts.preambleRef = { doc: doc.projectName, version: currentDocVersion(panel, editor) || null }
-      // ONE send for the whole target set. `to` is a filter expression, so the
-      // union of the targets is the expression that ORs them — one message, one
-      // event, every recipient, instead of N independent sends nothing rejoins.
-	      return sendWithFailedRetry(targets.join('|'), text, tempId, sendOpts)
-	    })()
-	    return { accepted: true as const, settlement }
+    }
+    return dispatch()
 	  }
 
   const composerCommand = (text: string, targets: string[], ta: HTMLTextAreaElement): boolean => {

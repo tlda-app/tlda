@@ -1890,6 +1890,11 @@ export class FleetStore {
     this._getAgent = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.id = ?`);
     // A daemon's agents are the ones it most recently reported as its own.
     this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.id IN (SELECT agent_id FROM agent_daemon_routes WHERE daemon_key = @daemonKey)`);
+    // No ORDER BY: among several dead rows sharing one friendly_name (death frees
+    // the name, so repeats accumulate) `.get()` returns whichever row the query
+    // plan visits first. Live names are unique, so this only bites all-dead
+    // names — and there the choice is genuinely arbitrary. Do not build
+    // most-recent or any other certainty on it; add an ORDER BY first.
     this._getAgentByName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.friendly_name = ?`);
     this._getLiveAgentsByFriendlyName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.friendly_name = ?`);
     this._getLiveHumanByFriendlyName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0 AND human = 1');
@@ -3092,16 +3097,20 @@ export class FleetStore {
       // which is how Skip lost a worker whose exact friendly name he had.
       //
       // Only on an empty result, so this cannot change any resolution that already
-      // succeeds, and still never dead: a dead agent cannot act on a message, and a
-      // dead twin sharing a live name double-fans the send (see the caller). Dead is
-      // reached by reanimating first, exactly as before.
+      // succeeds. `findAgent` prefers the live holder and falls back to a dead one
+      // only when no living agent holds the name — the live-preferring singleton,
+      // so a dead twin sharing a live name cannot double-fan the send (the live
+      // match above already won). A dead sole holder IS addressed: death stops
+      // delivery, not addressing, and the send records a receipt stating the
+      // message will not be delivered. Filter expressions keep excluding dead;
+      // only this direct-name fallback reaches them.
       if (found.size === 0) {
         const stored = this.findAgent(literal);
         // `stored.id !== from` used to be tested here too. The projection below
         // removes the sender anyway, so the two were the same exclusion written
         // twice — and having it here made membership depend on the caller,
         // which is exactly what must not go in a cached set.
-        if (stored && !stored.dead) found.set(stored.id, stored);
+        if (stored) found.set(stored.id, stored);
       }
       const literalMembers = [...found.values()];
       this._resolvedSetSet(filterAst, literalMembers);

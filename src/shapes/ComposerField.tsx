@@ -26,7 +26,7 @@ type DispatchedComposerSend = {
   accepted: true
   settlement: Promise<boolean | void>
 }
-export type ComposerFieldSend = (text: string, targets: string[]) => boolean | void | Promise<boolean | void> | DispatchedComposerSend
+export type ComposerFieldSend = (text: string, targets: string[]) => boolean | void | Promise<boolean | void | DispatchedComposerSend> | DispatchedComposerSend
 export type ComposerFieldVoiceHandle = {
   sendTargets: string[]
   agentNames: Record<string, string>
@@ -212,13 +212,23 @@ export function ComposerField({
       sentHistoryRef.current = [...sentHistoryRef.current, text]
       historyIndexRef.current = -1
     }
+    const acceptDispatched = (dispatched: DispatchedComposerSend) => {
+      finish(true)
+      void dispatched.settlement.then(value => { if (value === false) restore() }, restore)
+    }
     const result = onSend(text, sendTargets)
     if (result && typeof result === 'object' && 'accepted' in result && result.accepted === true) {
-      finish(true)
-      void result.settlement.then(value => { if (value === false) restore() }, restore)
+      acceptDispatched(result)
     } else if (result && typeof (result as Promise<boolean | void>).then === 'function') {
       sendPendingRef.current = true
-      void Promise.resolve(result).then(value => finish(value !== false), () => finish(false))
+      // A promise may resolve to the same dispatched-send shape a sync send
+      // returns (the chat gate resolves dead targets via the server before it
+      // can dispatch): wire its settlement exactly like the sync shape, so a
+      // later transport failure still restores the text.
+      void Promise.resolve(result).then(value => {
+        if (value && typeof value === 'object' && 'accepted' in value && (value as DispatchedComposerSend).accepted === true) acceptDispatched(value as DispatchedComposerSend)
+        else finish(value !== false)
+      }, () => finish(false))
     } else {
       finish(result !== false)
     }
