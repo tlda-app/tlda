@@ -6,6 +6,7 @@ import { getFleetRuntimeSummary } from './fleet/fleet-data.mjs'
 import { getVoiceRuntimeSummary } from './voice.mjs'
 import { getAppShellFreshnessSummary } from './appShellFreshness'
 import { postLivePerf } from './livePerfUpload'
+import { readLivePerfViewer } from './livePerfViewer'
 
 type LivePerfProbeHandle = {
   recordEvent: (type: string, detail?: Record<string, unknown>) => void
@@ -293,6 +294,7 @@ export function installLivePerfProbe(
 
   const baseContext = () => ({
     sessionId,
+    viewer: readLivePerfViewer(),
     uptimeMs: Date.now() - startedAt,
     href: window.location.href,
     userAgent: navigator.userAgent,

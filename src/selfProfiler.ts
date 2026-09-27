@@ -17,6 +17,7 @@
 // document can open.
 
 import { postLivePerf } from './livePerfUpload'
+import { readLivePerfViewer } from './livePerfViewer'
 import { isAutomatedBrowser } from './cameraLink'
 // One conversion, shared with the server, which is where uploaded windows are
 // converted. Re-exported because callers of this module use it.
@@ -243,7 +244,7 @@ export function installSelfProfiler(): SelfProfilerHandle {
     // both — a reader told only "unavailable" goes looking in the wrong half.
     unavailableReason = 'window.Profiler is absent — browser lacks the JS Self-Profiling API, or the document was served without the Document-Policy: js-profiling header'
     console.warn(`[self-profiler] NOT RUNNING: ${unavailableReason}`)
-    postLivePerf({ kind: 'self-profiler-unavailable', reason: unavailableReason })
+    postLivePerf({ kind: 'self-profiler-unavailable', reason: unavailableReason, viewer: readLivePerfViewer() })
     window.__tldaProfiler = handle
     return handle
   }
@@ -260,7 +261,7 @@ export function installSelfProfiler(): SelfProfilerHandle {
       unavailableReason = `Profiler constructor threw: ${(err as Error)?.message || String(err)}`
       running = false
       console.warn(`[self-profiler] NOT RUNNING: ${unavailableReason}`)
-      postLivePerf({ kind: 'self-profiler-unavailable', reason: unavailableReason })
+      postLivePerf({ kind: 'self-profiler-unavailable', reason: unavailableReason, viewer: readLivePerfViewer() })
       return false
     }
   }
@@ -306,6 +307,7 @@ export function installSelfProfiler(): SelfProfilerHandle {
       postLivePerf({
         kind: 'self-profile-long-task',
         at: retained[retained.length - 1].at,
+        viewer: readLivePerfViewer(),
         worstTaskMs: +taskMs.toFixed(1),
         sampleCount: trace.samples.length,
         windowMs: +(endedAt - startedAt).toFixed(1),
