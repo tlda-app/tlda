@@ -14,7 +14,7 @@ import './index.css'
 import './frame-probe'  // perf-probe frame timing (inactive unless ?perf=1)
 import App from './App.tsx'
 import { installAppShellFreshnessProbe } from './appShellFreshness'
-import { installUnreadAppBadge } from './fleet-data-adapter'
+import { installFleetWebNotifications, installUnreadAppBadge } from './fleet-data-adapter'
 import { installSelfProfiler } from './selfProfiler'
 
 // Always-on stack sampling. Unlike `./frame-probe` above this needs no flag: it
@@ -82,6 +82,7 @@ installSelfProfiler()
 
 installAppShellFreshnessProbe()
 installUnreadAppBadge()
+installFleetWebNotifications()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

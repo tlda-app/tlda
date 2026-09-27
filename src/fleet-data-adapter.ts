@@ -53,6 +53,7 @@ import {
 } from './fleet/fleet-data.ts'
 import { resolveFleetFilter } from '../shared/filter-semantics.mjs'
 import { applyAppBadge, coalesceAsyncRefresh } from './appBadge'
+import { collectNewItems, requestPermissionOnNextGesture, shouldNotifyForItem, showWebNotification } from './webNotifications'
 // @ts-ignore — vanilla JS module
 import { subscribeChat } from './fleet/chat-subscription.mjs'
 import {
@@ -1122,5 +1123,25 @@ export function installUnreadAppBadge(): void {
     subscribe('connection', null, (ev: any) => { if (ev?.connected) schedule() })
     aimSubscription()
     schedule()
+  })
+}
+
+let webNotificationsInstalled = false
+
+export function installFleetWebNotifications(): void {
+  if (typeof window === 'undefined' || webNotificationsInstalled) return
+  webNotificationsInstalled = true
+
+  requestPermissionOnNextGesture()
+  const seen = new Set<string>()
+  void ensureInit().then(() => {
+    // Seed from current items so history never notifies — only arrivals do.
+    for (const item of getItems()) seen.add(item.id)
+    subscribe('items', null, (data: any) => {
+      const items = data.items || getItems()
+      for (const item of collectNewItems(seen, items)) {
+        if (shouldNotifyForItem(item)) showWebNotification(item)
+      }
+    })
   })
 }
