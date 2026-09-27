@@ -1,0 +1,63 @@
+/* SyncBlockedOverlay — bottom-center, over tldraw's loader, below nothing.
+   Dark card reads on both loader themes (dark #0f0f1a, light #fff). No motion:
+   the loader beneath already spins, and there is nothing to animate. */
+
+.sync-blocked-overlay {
+  position: fixed;
+  bottom: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--tlda-z-top-control);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: min(420px, calc(100vw - 48px));
+  padding: 12px 18px;
+  background: rgba(20, 20, 28, 0.92);
+  color: #e8e8ee;
+  border-radius: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  text-align: center;
+  pointer-events: all;
+}
+
+body.phone-mode .sync-blocked-overlay {
+  bottom: calc(72px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+}
+
+.sync-blocked-line {
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.sync-blocked-head {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.sync-blocked-sub {
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: 0.8;
+}
+
+.sync-blocked-reload {
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #14141c;
+  background: #e8e8ee;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 22px;
+  min-height: 32px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+body.phone-mode .sync-blocked-reload {
+  min-height: 44px;
+  padding: 7px 30px;
+}

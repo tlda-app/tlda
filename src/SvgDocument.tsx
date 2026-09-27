@@ -114,6 +114,7 @@ import { ClassroomPlaybackPill } from './pills/ClassroomPlaybackPill'
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { BuildErrorPill } from './pills/BuildErrorPill'
 import { SyncErrorPill } from './pills/SyncErrorPill'
+import { SyncBlockedOverlay } from './pills/SyncBlockedOverlay'
 import { RecorderErrorPill } from './pills/RecorderErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
 import { BookLayersSlot } from './classroom/BookLayersSlot'
@@ -1484,6 +1485,10 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
     <BottomPanelsContext.Provider value={bottomPanelsContent}>
     <AgentPillContext.Provider value={agentPillContent}>
     <VersionStampContext.Provider value={versionStampContent}>
+    <SyncBlockedOverlay
+      key={storeWithStatus.status === 'synced-remote' ? 'synced' : 'unsynced'}
+      status={storeWithStatus.status}
+    />
     <Tldraw
         className={classroomGrading ? 'classroom-grading-editor' : undefined}
         store={storeWithStatus}
