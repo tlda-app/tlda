@@ -1252,7 +1252,7 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
         level: 'warning',
         code: 'pending-pickup',
         text: `⚠ task still pending ${sinceMin}m after ${sinceNotify ? 'notify' : 'delegation'}`,
-        managerAction: 'The agent may not have called inbox(); nudge, inspect, or redelegate.',
+        managerAction: 'Delivery unconfirmed; the agent may never have been notified. Check terminal/thread, nudge, or redelegate.',
       };
     }
   }
@@ -2783,8 +2783,10 @@ export async function resolveInboxMessage(message, resolvers) {
   const recipientDelivery = (message.metadata?.recipient_delivery || [])
     .find(d => d?.recipient === readerId) || null;
   const idHint = message.id ? `, id:${message.id}` : '';
+  const taskOpenHint = message.task_id ? ` · open \`thread({ task_id: "${message.task_id}" })\`` : '';
   return {
     id: message.id,
+    task_id: message.task_id || null,
     from: message.from,
     fromLabel,
     // Carried through because two readers need it and neither could see it:
@@ -2809,7 +2811,7 @@ export async function resolveInboxMessage(message, resolvers) {
     // a formatter, not a filter (Skip: "show me what you experience, nicely
     // formatted… written in proper markdown"). `\n` renders as a line break
     // (marked `breaks:true`).
-    line: `**${fromLabel}**${idHint}${docHint}  ·  reply \`chat(to: "${message.from}")\`\n${imgResolvedText}${pendingFootnote}${reminder}`,
+    line: `**${fromLabel}**${idHint}${docHint}  ·  reply \`chat(to: "${message.from}")\`${taskOpenHint}\n${imgResolvedText}${pendingFootnote}${reminder}`,
   };
 }
 
@@ -5536,7 +5538,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         ? `[DONE] ${e.description || ''}`
         : e.text || e.message || '';
       return {
-        id: e.id, type: e.type, metadata,
+        id: e.id, type: e.type, metadata, task_id: e.task_id || null,
         from: e.from_id || e.from, recipients: e.recipients || [], text, timestamp: e.timestamp,
         fromName: e.fromName, fromNameNow: e.fromNameNow,
         // Per-recipient name-at-send, parallel to `recipients`. Dropping
@@ -5944,7 +5946,10 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         : supersededBy?.length
         ? `  [AMENDED — superseded by #${supersededBy.join(', #')} below]`
         : '';
-      const line = `[${ts}${verStr}] ${from} → ${to}${amendMark}\n${m.text}`;
+      const taskMark = m.task_id
+        ? `  [TASK ${m.task_id} — open with \`thread({ task_id: "${m.task_id}" })\`]`
+        : '';
+      const line = `[${ts}${verStr}] ${from} → ${to}${amendMark}${taskMark}\n${m.text}`;
       const lineBytes = Buffer.byteLength(line + SEP, 'utf8');
 
       // `lines.length > 0` exempts the first message, so MAX_BYTES cannot bind

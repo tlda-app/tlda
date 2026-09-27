@@ -1491,6 +1491,9 @@ export function createJsonlIngestor({
         if (activity.length > 0) {
           log.info(`activity extracted for ${agentId}: ${activity.length} event(s) from ${path.basename(pw.jsonlPath)}`)
           if (bufferActivity(agentId, activity) === false) delivered = false
+          // Observed production is the heartbeat: heads-down work with no chats still counts.
+          // Best-effort: a missed beat must never fail the batch.
+          sendMsg({ type: 'heartbeat', agent: agentId })
         }
       } else if (output.type === 'context') {
         if (!sendMsg({

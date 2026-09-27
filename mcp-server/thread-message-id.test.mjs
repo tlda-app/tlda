@@ -172,6 +172,33 @@ test('a persisted mint delegation renders its full payload and criteria', async 
   assert.match(result.content[0].text, /2\. The paper builds cleanly\./)
 })
 
+test('a delegate row carrying a task id names how to open it', async () => {
+  installTransport({
+    event: {
+      ...EVENT,
+      type: 'delegate',
+      text: 'Finish survival review response',
+      task_id: 'fleet:2b81-mujxvt14',
+      metadata: null,
+    },
+  })
+
+  const result = await handleFleetTool('thread', { message_id: 2923649 })
+
+  assert.equal(result.isError, undefined, result.content?.[0]?.text)
+  assert.match(result.content[0].text, /\[TASK fleet:2b81-mujxvt14/)
+  assert.match(result.content[0].text, /thread\(\{ task_id: "fleet:2b81-mujxvt14" \}\)/)
+})
+
+test('a chat row without a task id carries no task marker', async () => {
+  installTransport()
+
+  const result = await handleFleetTool('thread', { message_id: 2923649 })
+
+  assert.equal(result.isError, undefined, result.content?.[0]?.text)
+  assert.equal(result.content[0].text.includes('[TASK '), false)
+})
+
 test('thread with no selector at all names message_id among the options', async () => {
   installTransport()
 
