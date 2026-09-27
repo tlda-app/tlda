@@ -2337,6 +2337,20 @@ export function getFleetTools() {
         required: ['agent'],
       },
     },
+    {
+      name: 'task-append',
+      description: 'Append a follow-up to a task without transferring it. Owner, recording delegator, or human only — anyone else is refused. The owner is nudged to re-read only after arrival; a still-starting owner reads the follow-up at pickup, so no nudge is sent.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task_id: { type: 'string', description: 'The task to append to.' },
+          message: { type: 'string', description: 'The follow-up text. Provide this OR file+selector.' },
+          file: { type: 'string', description: 'Path to a markdown file holding the follow-up text.' },
+          selector: { type: 'string', description: 'CSS selector within file selecting the follow-up markdown.' },
+        },
+        required: ['task_id'],
+      },
+    },
     // ---- Fleet Operations ----
     {
       name: 'roster',
@@ -4153,6 +4167,32 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       return { content: [{ type: 'text', text: `spawn-mailbox got no usable response for "${mailboxId}" — retry shortly.` }], isError: true };
     }
     return { content: [{ type: 'text', text: formatSpawnMailboxStatus(data) }], ...(spawnMailboxIsError(data) ? { isError: true } : {}) };
+  }
+
+  // ---- task-append ----
+  if (name === 'task-append') {
+    const { task_id } = args;
+    if (!task_id || typeof task_id !== 'string') {
+      return { content: [{ type: 'text', text: 'task-append requires task_id.' }], isError: true };
+    }
+    const resolved = resolveChatBody(args, getAgentCwd() || process.env.PWD || null);
+    if (resolved.error) return { content: [{ type: 'text', text: resolved.error }], isError: true };
+    const operationId = crypto.randomUUID();
+    let data;
+    try {
+      data = await mcpFleetTransport.durable('task-append', { task_id, message: resolved.body, from: activeAgentId() }, { operationId });
+    } catch (e) {
+      let text = null;
+      try {
+        const row = getFleetTransportOutbox(activeAgentId())?.get(operationId);
+        text = describeDurableOutcome('task-append', durableDelivery(row), { waitedMs: e.waitedMs });
+      } catch { text = null; }
+      return { content: [{ type: 'text', text: text || `Task append failed: ${e.message}` }], isError: true };
+    }
+    if (!data || typeof data !== 'object' || data.error || !data.ok) {
+      return { content: [{ type: 'text', text: `Task append failed: ${data?.error || 'no result from fleet server'}` }], isError: true };
+    }
+    return { content: [{ type: 'text', text: formatTaskAppendResult(data) }] };
   }
 
   // ---- tasks ----
@@ -6569,6 +6609,37 @@ export function pendingRefusalNote({ recipients = [], rows = [], delivery = null
     + `so ${plural ? 'they cannot' : 'it cannot'} receive chat. This message was not stored and will not arrive later. `
     + `Resend after ${plural ? 'they join' : 'it joins'} — the roster will show ${plural ? 'them' : 'it'} — `
     + `and hold any follow-up until ${plural ? 'they report' : 'it reports'}.`;
+}
+
+// The spawn-mailbox verdict, rendered. Every state names what happened, whether
+// waiting helps, and the next action — the stuck-vs-slow distinction is the
+// whole point of the handle, and a failure preserves the launch error verbatim
+// (a cap refusal already carries its count, ceiling, and remedy; restating it
+// would be replacing honesty with paraphrase).
+export function spawnMailboxIsError(data) {
+  if (!data || typeof data !== 'object') return true;
+  if (data.status === 'failed' || data.status === 'indeterminate' || data.status === 'unknown') return true;
+  return data.status === 'completed' && !!data.live && data.live.state !== 'live';
+}
+
+function spawnMailboxLabel(data) {
+  const name = data.assigned_name || data.requested_name;
+  return name ? `${name} (${data.agent_id || 'no agent id yet'})` : String(data.agent_id || data.mailbox_id);
+}
+
+export function formatTaskAppendResult(data) {
+  const head = `Appended to [${data.task_id}] for ${data.owner} (${data.appended_chars} chars).`;
+  if (data.nudged) return `${head} ${data.owner} has arrived and was nudged to re-read it.`;
+  if (data.nudge_skipped === 'pending') {
+    return `${head} ${data.owner} is still starting — no nudge sent; it reads the follow-up at pickup.`;
+  }
+  if (data.nudge_skipped === 'missing-owner' || data.nudge_skipped === 'dead-owner') {
+    return `${head} No nudge: the owner row is ${data.nudge_skipped === 'dead-owner' ? 'dead' : 'missing'} — the follow-up is stored but nobody will read it. Consider reassigning the task.`;
+  }
+  if (data.nudge_skipped === 'human-agent') {
+    return `${head} No wake sent — the owner is human and reads it in their inbox.`;
+  }
+  return `${head} Not nudged (${data.nudge_skipped || 'no reason recorded'}).`;
 }
 
 export function formatSpawnMailboxStatus(data) {

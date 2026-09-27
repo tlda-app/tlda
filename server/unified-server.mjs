@@ -125,7 +125,7 @@ import { buildSpawnMailboxStatus } from './lib/spawn-mailbox-status.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { spawnCallerId } from './lib/spawn-caller.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
-import { completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
+import { appendTaskLifecycle, completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { writeCandidateClip } from './lib/recording-publication.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle } from './lib/wake-route-lifecycle.mjs'
 import { rejectMatchingWsRequests } from '../shared/fleet-transport.mjs'
@@ -7966,6 +7966,57 @@ async function dispatchFleetWsMessage(ws, msg) {
       ok: true,
       ...(await buildSpawnMailboxStatus(entry, { findAgent: (id) => fleetStore.findAgent(id) })),
       ...(!entry ? { mailbox_id: msg.mailbox_id } : {}),
+    })
+    return
+  }
+
+  // Append a follow-up to a task without transferring it. The fence is the
+  // owner, the recording delegator, or a human; strangers are refused with
+  // their names on the refusal. The owner is nudged only after arrival — a
+  // pending owner reads the follow-up at pickup.
+  if (type === 'task-append') {
+    const { task_id, message, from: rawFrom } = msg
+    if (!task_id) { error('task-append requires task_id'); return }
+    if (!message) { error('task-append requires message'); return }
+    const task = await fleetStore.getTask?.(task_id)
+    if (!task) { error(`task not found: ${task_id}`); return }
+    const callerRow = rawFrom ? await fleetStore.findAgent(rawFrom).catch(() => null) : null
+    const caller = { id: callerRow?.id || rawFrom || null, human: !!callerRow?.human }
+    const ownerRow = task.agent ? await fleetStore.findAgent(task.agent).catch(() => null) : null
+    let outcome
+    try {
+      outcome = await appendTaskLifecycle({
+        fleetStore,
+        task,
+        caller,
+        message,
+        ownerRow,
+        onNudge: async (agentId, text) => {
+          try {
+            const wake = await requestWake(agentId, text, caller.id)
+            if (wake?.delivered) return { nudged: true }
+            return { nudged: false, reason: wake?.reason || 'nudge-skipped' }
+          } catch (e) {
+            // The append already landed: failing the reply would report failure
+            // for a completed write (and poison retries with a replayed error),
+            // so a dead wake path degrades to a reported skip, never silence.
+            console.error(`[task-append] nudge failed for ${agentId}: ${e?.message || e}`)
+            return { nudged: false, reason: 'nudge-error' }
+          }
+        },
+      })
+    } catch (e) {
+      error(e.message)
+      return
+    }
+    broadcastState()
+    reply({
+      ok: true,
+      task_id: task.id,
+      owner: task.agent,
+      appended_chars: message.length,
+      nudged: outcome.nudged,
+      nudge_skipped: outcome.nudgeSkipped,
     })
     return
   }

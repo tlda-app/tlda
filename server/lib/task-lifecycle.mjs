@@ -95,6 +95,72 @@ export async function transferTaskLifecycle({
   }
 }
 
+export function appendTaskMessage(task, {
+  fromAgentId,
+  message,
+  appendedAt = new Date().toISOString(),
+}) {
+  if (!task?.id) throw new Error('missing task')
+  if (!fromAgentId) throw new Error('missing appending agent')
+  if (!message) throw new Error('missing message')
+
+  const existing = task.message || task.description || ''
+  const addition = `### Appended by ${fromAgentId}\n\nAt: ${appendedAt}\n\n${message}`
+  return existing ? `${existing}\n\n---\n\n${addition}` : addition
+}
+
+// Append authority is deliberately narrower than canReportTask: the owner, the
+// recording delegator, or a human — no management-chain grant. (Product
+// decision, PM-approved: a follow-up lands in the task the owner is executing,
+// so the writers are the two parties to the delegation.)
+export function canAppendTask({ caller, task }) {
+  if (!caller?.id || !task?.id) return false
+  if (caller.human) return true
+  return task.agent === caller.id || task.delegated_by === caller.id
+}
+
+function ownerPendingForAppend(ownerRow) {
+  if (!ownerRow || ownerRow.dead) return false
+  const shell = ownerRow.metadata?.shell
+  return shell === true || shell === 1
+}
+
+export async function appendTaskLifecycle({
+  fleetStore,
+  task,
+  caller,
+  message,
+  appendedAt = new Date().toISOString(),
+  ownerRow = null,
+  onNudge = null,
+}) {
+  if (!fleetStore) throw new Error('missing fleetStore')
+  if (!task?.id) throw new Error('missing task')
+  if (!message) throw new Error('missing message')
+  if (task.status === 'done' || task.status === 'retracted') throw new Error('cannot append to a closed task')
+  if (!canAppendTask({ caller, task })) {
+    throw new Error(`task-append refused: ${caller?.id || 'unknown caller'} is neither the owner nor the delegator of [${task.id}] (owner ${task.agent}, delegator ${task.delegated_by})`)
+  }
+  const appendedTask = {
+    ...task,
+    message: appendTaskMessage(task, { fromAgentId: caller.id, message, appendedAt }),
+  }
+  await fleetStore.upsertTask(appendedTask)
+  // Nudge on append-after-arrival only: a pending owner reads the follow-up at
+  // pickup, and there is no session to wake before then. The nudge outcome is
+  // reported, not assumed — a wake path that declines (human owner, dead
+  // daemon) must read as not-nudged, never as nudged.
+  if (!ownerRow) return { task: appendedTask, nudged: false, nudgeSkipped: 'missing-owner' }
+  if (ownerRow.dead) return { task: appendedTask, nudged: false, nudgeSkipped: 'dead-owner' }
+  if (ownerPendingForAppend(ownerRow)) return { task: appendedTask, nudged: false, nudgeSkipped: 'pending' }
+  if (!onNudge) return { task: appendedTask, nudged: false, nudgeSkipped: 'nudge-unavailable' }
+  const nudgeResult = await onNudge(task.agent, `Task [${task.id}] has a follow-up from ${caller.id} — re-read the task.`)
+  if (nudgeResult && nudgeResult.nudged === false) {
+    return { task: appendedTask, nudged: false, nudgeSkipped: nudgeResult.reason || 'nudge-failed' }
+  }
+  return { task: appendedTask, nudged: true, nudgeSkipped: null }
+}
+
 // Coordination guard, not a security boundary. Active temporary delegation
 // markers intentionally grant manager cleanup authority. Do not replace this
 // with immutable or pre-existing delegation-lineage semantics.

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { appendDelegationMessage, canReportTask, completeTaskLifecycle, transferTaskLifecycle } from './task-lifecycle.mjs'
+import { appendDelegationMessage, appendTaskLifecycle, appendTaskMessage, canAppendTask, canReportTask, completeTaskLifecycle, transferTaskLifecycle } from './task-lifecycle.mjs'
 
 const task = (id, agent, delegatedBy, delegatedAt) => ({
   id,
@@ -89,6 +89,116 @@ test('appends existing-task delegation text without replacing the original brief
   assert.match(message, /From: worker/)
   assert.match(message, /Continue with the remaining verification\./)
   assert.ok(message.indexOf('Original assignment text.') < message.indexOf('Continue with the remaining verification.'))
+})
+
+test('appends a follow-up without transferring ownership', () => {
+  const original = task('target', 'worker', 'owner', '2026-07-20T12:00:00.000Z')
+  original.description = 'Original subject'
+  original.message = 'Original assignment text.'
+
+  const message = appendTaskMessage(original, {
+    fromAgentId: 'owner',
+    appendedAt: '2026-07-25T12:00:00.000Z',
+    message: 'New requirement: also check the retirement path.',
+  })
+
+  assert.match(message, /Original assignment text\./)
+  assert.match(message, /Appended by owner/)
+  assert.match(message, /New requirement: also check the retirement path\./)
+  assert.ok(message.indexOf('Original assignment text.') < message.indexOf('New requirement:'))
+})
+
+test('append authority is the owner, the delegator, or a human — nothing else', () => {
+  const target = task('target', 'worker', 'owner', '2026-07-20T12:00:00.000Z')
+  assert.equal(canAppendTask({ caller: { id: 'worker' }, task: target }), true)
+  assert.equal(canAppendTask({ caller: { id: 'owner' }, task: target }), true)
+  assert.equal(canAppendTask({ caller: { id: 'stranger', human: true }, task: target }), true)
+  assert.equal(canAppendTask({ caller: { id: 'stranger' }, task: target }), false)
+  assert.equal(canAppendTask({ caller: null, task: target }), false)
+})
+
+test('appending stores the follow-up and nudges an arrived owner', async () => {
+  const original = {
+    ...task('target', 'worker', 'owner', '2026-07-20T12:00:00.000Z'),
+    description: 'Original subject',
+    message: 'Original assignment text.',
+    status: 'working',
+  }
+  let storedTask = null
+  let nudged = null
+  const result = await appendTaskLifecycle({
+    fleetStore: { upsertTask: t => { storedTask = t } },
+    task: original,
+    caller: { id: 'owner' },
+    message: 'New requirement.',
+    ownerRow: { id: 'worker', friendly_name: 'worker', dead: false, metadata: {} },
+    onNudge: (agentId, text) => { nudged = { agentId, text }; return { nudged: true } },
+  })
+  assert.equal(storedTask.id, 'target')
+  assert.equal(storedTask.agent, 'worker')
+  assert.equal(storedTask.description, 'Original subject')
+  assert.match(storedTask.message, /New requirement\./)
+  assert.equal(result.nudged, true)
+  assert.equal(nudged.agentId, 'worker')
+})
+
+test('appending to a pending owner stores without nudging', async () => {
+  const original = {
+    ...task('target', 'worker', 'owner', '2026-07-20T12:00:00.000Z'),
+    message: 'Original assignment text.',
+    status: 'working',
+  }
+  let storedTask = null
+  let nudgeCount = 0
+  const result = await appendTaskLifecycle({
+    fleetStore: { upsertTask: t => { storedTask = t } },
+    task: original,
+    caller: { id: 'owner' },
+    message: 'New requirement.',
+    ownerRow: { id: 'worker', friendly_name: 'worker', dead: false, metadata: { shell: true } },
+    onNudge: () => { nudgeCount++ },
+  })
+  assert.match(storedTask.message, /New requirement\./)
+  assert.equal(result.nudged, false)
+  assert.equal(result.nudgeSkipped, 'pending')
+  assert.equal(nudgeCount, 0)
+})
+
+test('a declined wake reads as not-nudged, never as nudged', async () => {
+  const original = {
+    ...task('target', 'worker', 'owner', '2026-07-20T12:00:00.000Z'),
+    message: 'Original assignment text.',
+    status: 'working',
+  }
+  const result = await appendTaskLifecycle({
+    fleetStore: { upsertTask: () => {} },
+    task: original,
+    caller: { id: 'owner' },
+    message: 'New requirement.',
+    ownerRow: { id: 'worker', friendly_name: 'worker', dead: false, metadata: {} },
+    onNudge: () => ({ nudged: false, reason: 'human-agent' }),
+  })
+  assert.equal(result.nudged, false)
+  assert.equal(result.nudgeSkipped, 'human-agent')
+})
+
+test('appending refuses closed tasks and strangers', async () => {
+  const done = { ...task('target', 'worker', 'owner', '2026-07-20T12:00:00.000Z'), status: 'done' }
+  await assert.rejects(() => appendTaskLifecycle({
+    fleetStore: { upsertTask: () => {} },
+    task: done,
+    caller: { id: 'owner' },
+    message: 'Too late.',
+    ownerRow: null,
+  }), /closed task/)
+  const open = { ...task('target', 'worker', 'owner', '2026-07-20T12:00:00.000Z'), status: 'working' }
+  await assert.rejects(() => appendTaskLifecycle({
+    fleetStore: { upsertTask: () => {} },
+    task: open,
+    caller: { id: 'stranger' },
+    message: 'Sneaky.',
+    ownerRow: null,
+  }), /neither the owner nor the delegator/)
 })
 
 test('transfers a task by keeping its id and appending the delegation message', async () => {
