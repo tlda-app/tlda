@@ -24,8 +24,10 @@ const DEADLINE_MS = 120_000
 /** Minimal outbox: FIFO by insertion, which is what pending(100) gives. */
 function fakeOutbox(rows) {
   const store = rows.map(r => ({ ...r }))
+  const recordedUnanswered = []
   return {
     rows: store,
+    recordedUnanswered,
     pending: (limit = 100) => store.filter(r => !r.acked).slice(0, limit),
     // The claim step the flush actually uses: same window and order, ids and
     // types only. A double that served payloads here would hide the whole point
@@ -44,6 +46,7 @@ function fakeOutbox(rows) {
     },
     markAttempt: id => { const r = store.find(x => x.id === id); if (r) r.attempts = (r.attempts || 0) + 1 },
     markTransientError: () => {},
+    recordUnanswered: id => { recordedUnanswered.push(id) },
     deadLetter: () => {},
     ack: id => { const r = store.find(x => x.id === id); if (r) r.acked = true },
     get: id => store.find(x => x.id === id) || null,
@@ -54,8 +57,9 @@ function fakeOutbox(rows) {
 function runtimeOver(rows, { clock }) {
   const sent = []
   const warnings = []
+  const outbox = fakeOutbox(rows)
   const delivery = new DaemonDeliveryRuntime({
-    outbox: fakeOutbox(rows),
+    outbox,
     send: message => { sent.push(message); return true },
     isConnected: () => true,
     isReady: () => true,
@@ -64,7 +68,7 @@ function runtimeOver(rows, { clock }) {
     flushByteBudget: 1_048_576,
     now: () => clock.ms,
   })
-  return { delivery, sent, warnings }
+  return { delivery, sent, warnings, outbox }
 }
 
 const HEAD = { id: 'stuck-source-change', payload: { type: 'source-change' } }
@@ -98,6 +102,24 @@ test('past the deadline the head releases its slot and is offered again', () => 
     `expiry must be loud, got ${JSON.stringify(warnings)}`)
   assert.ok(warnings.some(w => /never answered/.test(w)),
     'the warning must say the server never answered, not just that time passed')
+})
+
+test("an expired release records the silence without changing the row's fate", () => {
+  const clock = { ms: 1_000_000 }
+  const { delivery, sent, outbox } = runtimeOver([HEAD, BEHIND], { clock })
+
+  delivery.flushDurable()
+  assert.deepEqual(outbox.recordedUnanswered, [],
+    'no silence to record while everything is inside the deadline')
+
+  clock.ms += DEADLINE_MS + 1
+  delivery.flushDurable()
+
+  assert.deepEqual(outbox.recordedUnanswered, ['stuck-source-change', 'activity-1'],
+    'every row the server took and never answered must be recorded')
+  assert.deepEqual(sent.map(m => m.type),
+    ['source-change', 'activity-event', 'source-change', 'activity-event'],
+    'recording must not change what gets re-offered')
 })
 
 test('the queue keeps moving even when the head is never answered at all', () => {

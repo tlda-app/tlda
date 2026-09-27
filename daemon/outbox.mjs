@@ -7,6 +7,16 @@ import { SqliteTransportOutbox, parseTransportOutboxRow } from '../shared/fleet-
 export const OUTBOX_ID_FIELD = DAEMON_OUTBOX_ID_FIELD
 export const DEFAULT_MAX_ATTEMPTS = 5
 
+const EXTRA_COLUMNS = [
+  { name: 'dead_lettered_at', definition: 'TEXT' },
+  { name: 'dead_letter_reason', definition: 'TEXT' },
+  // Nullable on purpose: the shared insert binds every extra column
+  // explicitly, so a NOT NULL here would turn each enqueue into a silently
+  // ignored row. Reads normalize NULL to 0 (see recordUnanswered/parseRow).
+  { name: 'unanswered_count', definition: 'INTEGER DEFAULT 0' },
+  { name: 'last_unanswered_at', definition: 'TEXT' },
+]
+
 function nowIso() {
   return new Date().toISOString()
 }
@@ -18,6 +28,8 @@ function parseRow(row) {
     ...parsed,
     deadLetteredAt: row.dead_lettered_at,
     deadLetterReason: row.dead_letter_reason,
+    unansweredCount: row.unanswered_count ?? 0,
+    lastUnansweredAt: row.last_unanswered_at,
   }
 }
 
@@ -29,13 +41,17 @@ export class DaemonOutbox {
     this.db = new Database(dbPath)
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('busy_timeout = 5000')
+    // Migrate before the queue prepares its statements: the shared insert
+    // names every extra column, so preparing against a legacy table throws
+    // before any post-construction migration could run. A missing table needs
+    // no migration -- the queue creates it with all columns below.
+    if (this.tableExists('daemon_outbox')) {
+      for (const col of EXTRA_COLUMNS) this.ensureColumn('daemon_outbox', col.name, col.definition)
+    }
     this.queue = new SqliteTransportOutbox(this.db, {
       tableName: 'daemon_outbox',
       clock,
-      extraColumns: [
-        { name: 'dead_lettered_at', definition: 'TEXT' },
-        { name: 'dead_letter_reason', definition: 'TEXT' },
-      ],
+      extraColumns: EXTRA_COLUMNS,
       indexes: [
         `CREATE INDEX IF NOT EXISTS daemon_outbox_pending_idx
           ON daemon_outbox(created_at, id)
@@ -46,8 +62,7 @@ export class DaemonOutbox {
       ],
       pendingWhere: 'dead_lettered_at IS NULL',
     })
-    this.ensureColumn('daemon_outbox', 'dead_lettered_at', 'TEXT')
-    this.ensureColumn('daemon_outbox', 'dead_letter_reason', 'TEXT')
+    for (const col of EXTRA_COLUMNS) this.ensureColumn('daemon_outbox', col.name, col.definition)
     this.deadLetterStmt = this.db.prepare(`
       UPDATE daemon_outbox
       SET last_error = ?,
@@ -57,6 +72,19 @@ export class DaemonOutbox {
     `)
     this.pendingCountStmt = this.db.prepare('SELECT count(*) AS count FROM daemon_outbox WHERE dead_lettered_at IS NULL')
     this.deadLetterCountStmt = this.db.prepare('SELECT count(*) AS count FROM daemon_outbox WHERE dead_lettered_at IS NOT NULL')
+    // COALESCE because the shared insert writes extra columns explicitly,
+    // so existing rows (and rows written before this column existed) hold
+    // NULL rather than the DEFAULT 0.
+    this.recordUnansweredStmt = this.db.prepare(`
+      UPDATE daemon_outbox
+      SET unanswered_count = COALESCE(unanswered_count, 0) + 1,
+          last_unanswered_at = ?
+      WHERE id = ?
+    `)
+  }
+
+  tableExists(table) {
+    return !!this.db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table)
   }
 
   ensureColumn(table, name, type) {
@@ -132,6 +160,13 @@ export class DaemonOutbox {
   markTransientError(id, error) {
     const message = this.queue.markError(id, error)
     return { deadLettered: false, attempts: this.get(id)?.attempts || 0, error: message }
+  }
+
+  // The server took this row and never answered. Observability only: it
+  // touches neither attempts nor last_error nor dead-letter state, so no
+  // message's fate changes -- the silence just stops vanishing.
+  recordUnanswered(id) {
+    this.recordUnansweredStmt.run(this.clock(), id)
   }
 
   deadLetter(id, reason) {

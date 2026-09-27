@@ -160,6 +160,7 @@ export class DaemonDeliveryRuntime {
         const heldMs = now - sentAt
         if (heldMs >= this.inflightDeadlineMs) {
           this.log?.warn?.(`daemon durable message unanswered for ${Math.round(heldMs / 1000)}s (type=${type || 'unknown'}, id=${id}) — releasing its delivery slot and offering it again; the server received it and never answered`)
+          this.outbox.recordUnanswered(id)
           this.inflight.delete(id)
           continue
         }
