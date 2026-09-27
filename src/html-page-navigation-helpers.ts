@@ -1,3 +1,12 @@
+/**
+ * How long a link navigation waits for the target chapter's anchor positions
+ * after switching to it. A cold chapter iframe takes far longer than feels
+ * reasonable to load and report (measured: chapter-comparing-two-groups took
+ * 27.8s from click to first positions on testing over tailscale), so anything
+ * under that strands the reader at the top of the chapter on a slow load.
+ */
+export const ANCHOR_RESOLVE_TIMEOUT_MS = 60000
+
 export function htmlPageReloadUrl(url: string, timestamp: number) {
   const [base, hash = ''] = url.split('#', 2)
   const [path, query = ''] = base.split('?', 2)

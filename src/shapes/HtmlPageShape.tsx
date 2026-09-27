@@ -14,7 +14,7 @@ import { useContext, useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken, canPresent, isPresentPermissionKnown, subscribeCanPresent } from '../authToken'
 import { isClassroomDocumentWorkspace } from '../classroom/classroomDocumentWorkspace'
 import { createMeasuredGeometryWriter } from '../measuredGeometryWrite'
-import { createLinkPeekTracker, docviewInLayoutExtent, findNavigateTargetShape } from '../html-page-navigation-helpers'
+import { ANCHOR_RESOLVE_TIMEOUT_MS, createLinkPeekTracker, docviewInLayoutExtent, findNavigateTargetShape } from '../html-page-navigation-helpers'
 import { isMyFleetShape } from './fleet-ownership'
 import { isDocumentPageShape } from './document-pages'
 import { htmlIframeElements, noteHtmlIframeLoaded, disposeHtmlIframeLoadWaiters } from '../htmlIframeRegistry'
@@ -1076,7 +1076,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
               clearInterval(poll)
               showTarget(resolved)
             }, 200)
-            setTimeout(() => clearInterval(poll), 8000)
+            setTimeout(() => clearInterval(poll), ANCHOR_RESOLVE_TIMEOUT_MS)
           }
           linkPeekTracker.recordPeek(String(editor.getCurrentPageId()), peekKey)
           return
@@ -1140,7 +1140,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
                   }
                 }
               }, 200)
-              setTimeout(() => clearInterval(poll), 8000)
+              setTimeout(() => clearInterval(poll), ANCHOR_RESOLVE_TIMEOUT_MS)
             }
           } else {
             if (isTemporaryMarkdownNavigation) {

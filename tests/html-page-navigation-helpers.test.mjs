@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  ANCHOR_RESOLVE_TIMEOUT_MS,
   createLinkPeekTracker,
   docviewInLayoutExtent,
   findNavigateTargetShape,
@@ -118,6 +119,13 @@ test('a different link, anchor, or page does not commit', () => {
   assert.equal(tracker.shouldCommit('page:one', 'shape:book-page-1::fig-b'), false)
   assert.equal(tracker.shouldCommit('page:one', 'shape:book-page-2::fig-a'), false)
   assert.equal(tracker.shouldCommit('page:two', 'shape:book-page-1::fig-a'), false)
+})
+
+test('the anchor wait covers a slow cold chapter load', () => {
+  // Measured on testing: chapter-comparing-two-groups took 27.8s from click
+  // to first positions. Anything under that strands a cold cross-chapter
+  // click at the top of the chapter.
+  assert.ok(ANCHOR_RESOLVE_TIMEOUT_MS >= 60000)
 })
 
 test('committing clears the peek, so the next click peeks again', () => {

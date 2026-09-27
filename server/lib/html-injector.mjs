@@ -716,7 +716,11 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
           );
         }
       }
-      var tabset = pane.closest('.panel-tabset, .tab-content') || pane.parentElement;
+      // Scope to the whole tabset: the tablist is a sibling of .tab-content,
+      // so scoping to .tab-content clears the panes but leaves the old tab
+      // button marked selected alongside the new one (measured: Civic Duty
+      // and Neighbors both aria-selected after a Figure 3.4 click).
+      var tabset = pane.closest('.panel-tabset') || pane.parentElement;
       if (tabset) {
         tabset.querySelectorAll('.tab-pane.active').forEach(function(p) {
           p.classList.remove('active');

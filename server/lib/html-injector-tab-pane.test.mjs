@@ -26,6 +26,17 @@ test('pane activation applies to same-document anchors only', () => {
   assert.ok(html.includes('if (anchor && !targetFile && activateTabPaneForAnchor(anchor))'))
 })
 
+test('pane activation clears the whole tabset, tablist included', () => {
+  // The tab buttons live in a tablist beside .tab-content, so clearing only
+  // .tab-content swaps the panes while both tab buttons stay selected.
+  const html = injectBridge('<html><body><main></main></body></html>')
+  const defn = html.indexOf('function activateTabPaneForAnchor(anchorId)')
+  const end = html.indexOf('// Intercept link clicks', defn)
+  const body = html.slice(defn, end)
+  assert.ok(body.includes("pane.closest('.panel-tabset')"), 'clearing scopes to the tabset')
+  assert.ok(!body.includes("closest('.panel-tabset, .tab-content')"), 'not to .tab-content alone')
+})
+
 test('pane activation goes through the tab, not a synthetic click', () => {
   // A synthetic tab.click() would bubble back into this same interceptor and
   // post a second navigation, so the bridge manipulates tab classes directly.
