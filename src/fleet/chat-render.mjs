@@ -607,6 +607,14 @@ export function renderChatLine(m, ctx) {
     const toggleHtml = hasBody
       ? `<button type="button" class="lc-expand-btn" data-lc-collapsed-label="show full task">show full task</button>`
       : ''
+    // Mount shell for the borrowed thread collapse control: while the card is
+    // open, a React root here renders the same floating edge control threads
+    // use (same hook, same CSS), so collapse stays reachable without
+    // scrolling. Skip, 2026-09-27: a collapse at the top of a giant expanded
+    // card "sucks", which is why the thread control rides the left edge.
+    const collapseShellHtml = hasBody
+      ? `<div class="semantic-operation-expanded-shell lc-collapse-shell"></div>`
+      : ''
     const moreHtml = hasBody
       ? `<div class="lc-more" style="display:none">${messageHtml}${criteriaHtml}</div>`
       : ''
@@ -614,8 +622,9 @@ export function renderChatLine(m, ctx) {
       ? `<div class="lc-task-schedule" data-timer-until="${esc(m._taskNextFireAt)}"><span class="timer-msg">${esc(absoluteTime(m._taskNextFireAt))} · in <span class="ticker-countdown">${esc(countdownLabel(m._taskNextFireAt))}</span>${m._taskRepeatSeconds ? ` · every ${esc(durationLabel(m._taskRepeatSeconds))}` : ''}</span></div>`
       : ''
     return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
-      <div class="lifecycle-card lc-delegate" data-task-id="${esc(taskId)}" data-lc-type="delegate">
+      <div class="lifecycle-card lc-delegate${hasBody ? ' lc-collapsible' : ''}" data-task-id="${esc(taskId)}" data-lc-type="delegate">
         <div class="drag-handle" title="Drag"></div>
+        ${collapseShellHtml}
         <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(toId)}">${esc(toLabel)}</span></span></div>
         ${scheduleHtml}
         ${toggleHtml}

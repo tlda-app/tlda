@@ -1084,6 +1084,38 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .lifecycle-card .lc-more .lc-criteria {
   border-top: none;
 }
+/* Delegate-card collapse borrows the thread floating control (Skip,
+   2026-09-27): a collapse at the top of a giant expanded card scrolls out of
+   reach, so the control rides the left edge tracking the viewport. The button
+   itself is thread's .semantic-operation-collapse, positioned by thread's
+   useFloatingCollapse; only this shell host, the open gating, and the gutter
+   strip are card-specific. Thread's own rules are untouched. */
+.fleet-chat-shape .lifecycle-card > .lc-collapse-shell {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  /* The shell spans the card but must never eat its clicks. */
+  pointer-events: none;
+}
+.fleet-chat-shape .lifecycle-card.lc-open > .lc-collapse-shell {
+  display: block;
+}
+.fleet-chat-shape .lifecycle-card > .lc-collapse-shell > .semantic-operation-collapse {
+  pointer-events: auto;
+}
+/* While open, the top button is gone: the edge control is the collapse. */
+.fleet-chat-shape .lifecycle-card.lc-open > .lc-expand-btn {
+  display: none;
+}
+/* Gutter strip so the riding control never occludes text. Reserved always,
+   not gated on open -- mirroring the thread tool-line indent, so expand and
+   collapse never re-wrap the card. Only cards with a collapsible body. */
+.fleet-chat-shape .lifecycle-card.lc-delegate.lc-collapsible {
+  padding-left: calc(16px + var(--chat-collapse-gutter));
+}
 .fleet-chat-shape .lifecycle-card.lc-attention {
   border-color: rgba(255, 170, 0, 0.3);
   background: rgba(255, 170, 0, 0.05);

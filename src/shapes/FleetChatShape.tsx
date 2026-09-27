@@ -2320,6 +2320,22 @@ function ThreadChatOperationView({
   )
 }
 
+// Delegate-card collapse: the borrowed thread control, nothing else. Same hook
+// (useFloatingCollapse) and same CSS (.semantic-operation-collapse) as the
+// thread card, so it rides the left edge tracking the viewport exactly as
+// threads do. Only the collapse target is card-specific: the card's .lc-more
+// body and its .lc-open gate. Skip, 2026-09-27: the top collapse on a giant
+// expanded card "sucks ... which is why we have it ride the left edge of the
+// card with your view position". Mounted per card into .lc-collapse-shell;
+// thread's own code is untouched.
+function LcCollapseButton({ host, onCollapse }: {
+  host: HTMLElement
+  onCollapse: (event: any) => void
+}) {
+  const ref = useFloatingCollapse(host)
+  return <button ref={ref} type="button" className="semantic-operation-collapse" onPointerUp={onCollapse}>Collapse</button>
+}
+
 function SemanticChatOperationView({
   descriptor,
   renderCtx,
@@ -3040,15 +3056,37 @@ const ChatMessageRow = memo(function ChatMessageRow({
       )
       semanticRoots.push(root)
     })
+    // Mount the borrowed edge collapse control into each delegate card that has
+    // a body. Same component family as the thread mount above: one React root
+    // per card, unmounted with the row.
+    const lcRoots: any[] = []
+    el.querySelectorAll<HTMLElement>('.lc-collapse-shell').forEach(shell => {
+      const card = shell.closest('.lifecycle-card') as HTMLElement | null
+      if (!card) return
+      const root = createRoot(shell)
+      root.render(
+        <LcCollapseButton
+          host={card}
+          onCollapse={(event: any) => {
+            stopEventPropagation(event)
+            const more = card.querySelector('.lc-more') as HTMLElement | null
+            if (more) more.style.display = 'none'
+            card.classList.remove('lc-open')
+            const itemRow = shell.closest('[data-item-key]') as HTMLElement | null
+            if (itemRow && more) {
+              const allMores = Array.from(itemRow.querySelectorAll('.lc-more'))
+              expanded.delete(`${itemKey}:lc:${Math.max(0, allMores.indexOf(more))}`)
+            }
+          }}
+        />,
+      )
+      lcRoots.push(root)
+    })
     // Restore delegation-body expand state (each card keyed by index within the row)
     el.querySelectorAll('.lc-more').forEach((more, i) => {
       if (expanded.has(`${itemKey}:lc:${i}`)) {
         (more as HTMLElement).style.display = ''
-        const btn = (more as HTMLElement).closest('.lifecycle-card')?.querySelector('.lc-expand-btn') as HTMLElement | null
-        if (btn) {
-          if (!btn.dataset.collapsedLabel) btn.dataset.collapsedLabel = btn.textContent || 'show full task'
-          btn.textContent = 'hide full task'
-        }
+        ;(more as HTMLElement).closest('.lifecycle-card')?.classList.add('lc-open')
       }
     })
     // Restore code-block expand state (each block keyed by index within the row)
@@ -3066,6 +3104,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
     }
     return () => {
       for (const root of semanticRoots) root.unmount()
+      for (const root of lcRoots) root.unmount()
     }
   }, [processed, itemKey, expandedRowsRef, semanticRenderCtx, currentProject, hostShapeId, semanticOperationPageSize, editor])
 
@@ -5156,27 +5195,22 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
         return
       }
-      // Expand/collapse delegation body (full message + criteria). The old
-      // tap-the-message toggle flipped a class with no CSS, so it did nothing;
-      // the card now carries an explicit button instead (Skip, 2026-09-26).
+      // Expand delegation body (full message + criteria). Expand-only: collapse
+      // is the borrowed thread edge control, which rides the viewport instead
+      // of scrolling away with the top of a giant card (Skip, 2026-09-27).
       const lcExpand = (e.target as HTMLElement).closest('.lc-expand-btn') as HTMLElement | null
       if (lcExpand) {
         const card = lcExpand.closest('.lifecycle-card') as HTMLElement | null
         const more = card?.querySelector('.lc-more') as HTMLElement | null
         if (more) {
-          const wasExpanded = more.style.display !== 'none'
-          if (!lcExpand.dataset.collapsedLabel) {
-            lcExpand.dataset.collapsedLabel = lcExpand.textContent || 'show full task'
-          }
-          more.style.display = wasExpanded ? 'none' : ''
-          lcExpand.textContent = wasExpanded ? (lcExpand.dataset.collapsedLabel || 'show full task') : 'hide full task'
+          more.style.display = ''
+          card?.classList.add('lc-open')
           const itemRow = lcExpand.closest('[data-item-key]') as HTMLElement | null
           const itemKey = itemRow?.getAttribute('data-item-key')
           if (itemRow && itemKey) {
             const allMores = Array.from(itemRow.querySelectorAll('.lc-more'))
             const key = `${itemKey}:lc:${Math.max(0, allMores.indexOf(more))}`
-            if (wasExpanded) expandedRowsRef.current.delete(key)
-            else expandedRowsRef.current.add(key)
+            expandedRowsRef.current.add(key)
           }
         }
         return

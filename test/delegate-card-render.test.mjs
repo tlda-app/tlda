@@ -106,3 +106,17 @@ test('a bounced task card has no toggle and no collapsible body', () => {
   assert.doesNotMatch(html, /lc-expand-btn/)
   assert.doesNotMatch(html, /lc-more/)
 })
+
+// The edge collapse control (borrowed thread UI) mounts into the shell; the
+// shell exists exactly when the card has a body to collapse.
+test('a delegate card with a body carries the edge-collapse mount shell', () => {
+  const html = renderChatLine(delegate(), ctx)
+  assert.match(html, /<div class="semantic-operation-expanded-shell lc-collapse-shell"><\/div>/)
+  assert.match(html, /lifecycle-card lc-delegate lc-collapsible/)
+})
+
+test('a delegate card with no body has no mount shell and no collapsible class', () => {
+  const html = renderChatLine(delegate({ _message: '', _criteria: [] }), ctx)
+  assert.doesNotMatch(html, /lc-collapse-shell/)
+  assert.doesNotMatch(html, /lc-collapsible/)
+})
