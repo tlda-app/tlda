@@ -4945,7 +4945,9 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     let contextMap = {};
     let unresolvedNames = [];
     try {
-      const contextTimestamps = [];
+      // One search, not two: the handler derives context timestamps from its
+      // own page when context_window arrives without explicit
+      // context_timestamps, so the context comes back with this call.
       const searchParams = {
         query,
         limit,
@@ -4959,22 +4961,12 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         eventType: searchFilters.eventType,
         cwd: searchFilters.cwd,
         project: args.project || searchFilters.project,
+        context_window: contextWindow > 0 ? contextWindow : undefined,
       };
       const data = await mcpFleetTransport.ephemeral('fleet-search', searchParams);
       results = data?.results || [];
       unresolvedNames = data?.unresolvedNames || [];
-
-      // Fetch context for chat results if requested
-      if (contextWindow > 0) {
-        for (const r of results) {
-          if (r.source === 'fleet' && r.timestamp) contextTimestamps.push(r.timestamp);
-        }
-        if (contextTimestamps.length > 0) {
-          const ctxSearchParams = { ...searchParams, context_timestamps: contextTimestamps.slice(0, 10), context_window: contextWindow };
-          const ctxData = await mcpFleetTransport.ephemeral('fleet-search', ctxSearchParams);
-          contextMap = ctxData?.context || {};
-        }
-      }
+      contextMap = data?.context || {};
     } catch (e) {
       return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };
     }

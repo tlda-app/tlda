@@ -8371,12 +8371,19 @@ async function dispatchFleetWsMessage(ws, msg) {
       }
       results = await stampNames(results)
       const context = {}
-      if (msg.context_timestamps?.length) {
-        for (const ts of msg.context_timestamps) {
-          const ctx = await fleetSearchStore.getChatContext(ts, msg.context_window || 3)
-          await stampNames(ctx.before); await stampNames(ctx.after)
-          context[ts] = ctx
-        }
+      // A context window without explicit timestamps means the caller's own
+      // page: the first 10 fleet rows. The MCP client used to fetch those
+      // timestamps with one search and re-issue the whole search for context;
+      // deriving them here makes that second full search unnecessary.
+      const contextTimestamps = msg.context_timestamps?.length
+        ? msg.context_timestamps
+        : (msg.context_window > 0
+          ? results.filter(r => r.source === 'fleet' && r.timestamp).slice(0, 10).map(r => r.timestamp)
+          : [])
+      for (const ts of contextTimestamps) {
+        const ctx = await fleetSearchStore.getChatContext(ts, msg.context_window || 3)
+        await stampNames(ctx.before); await stampNames(ctx.after)
+        context[ts] = ctx
       }
       reply({ results, context, unresolvedNames: [...unresolvedNames] })
     } catch (e) { error(e.message) }
