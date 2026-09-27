@@ -131,7 +131,15 @@ const FENCE_DENY_READ = [...FENCE_SECRET_PATTERNS]
 const FENCE_DENY_WRITE = [
   ...FENCE_SECRET_PATTERNS,
 ]
-const FENCE_GIT_READONLY_DENY = ['**/.git/**', '**/.git', '**/.git/worktrees/**']
+// Deliberate removal, not tidy-up: bare `**/.git` was void by emitter bug
+// (PCRE group in ERE output) and the ERE fix would silently start enforcing
+// it — refusing `git worktree add`, `init` and `clone` at `.git` creation,
+// measured on the Air walk 2026-09-27. That would ship one third of the git
+// posture as a side effect of a secrets repair; the posture is one pending
+// decision of Skip's (fence-p3-decision.md), so the bare rule stays out until
+// he rules. `**/.git` is now void by removal rather than by emitter bug —
+// identical from the outside, intended rather than accidental.
+const FENCE_GIT_READONLY_DENY = ['**/.git/**', '**/.git/worktrees/**']
 const FENCE_COMMAND_DENY = []
 const FENCE_CODE_ALLOWED_DOMAINS = [
   'api.openai.com', 'chatgpt.com', '*.chatgpt.com', '*.anthropic.com',
