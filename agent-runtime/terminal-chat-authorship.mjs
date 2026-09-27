@@ -109,6 +109,33 @@ export function isMachineAuthoredText(text) {
   return LOGIN_PROMPT.test(start)
 }
 
+// One reading of "what was typed", shared by both tail implementations so
+// they cannot drift apart. Authorship is decided on the RAW record: parsed
+// events lose the harness-set fields (isSidechain, isMeta, origin) the
+// test reads, so judging the event would mirror sidechain briefs as the
+// human. Text then comes from the parsed event's blocks when there is
+// one — muse and codex user turns only exist in parsed form — falling
+// back to the raw message content for Claude-shaped records.
+export function terminalChatFromShapes(record, ev) {
+  if (record?.type === 'user' && isHarnessAuthoredRecord(record)) return null
+  const source = ev?.type === 'user' ? ev : (record?.type === 'user' ? record : null)
+  if (!source) return null
+  const blocks = Array.isArray(source.blocks) ? source.blocks : []
+  let text = blocks.filter(block => block?.type === 'text').map(block => block.text || '').join('\n')
+  if (!text) {
+    const content = source.message?.content
+    if (typeof content === 'string') text = content
+    else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
+  }
+  if (!text || text.length < 3) return null
+  if (isMachineAuthoredText(text)) return null
+  text = typedTextFrom(text)
+  if (text.length > 2000) text = text.substring(0, 2000)
+  const ts = source.timestamp || record?.timestamp || null
+  if (!ts) return null
+  return { text, ts }
+}
+
 // Recover the line as typed. Returns the text unchanged when it carries no
 // harness wrapper, so ordinary messages pass through untouched.
 export function typedTextFrom(text) {

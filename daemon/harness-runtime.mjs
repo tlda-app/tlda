@@ -71,7 +71,6 @@ export function createHarnessRuntime({
         parseRecord: parseSessionRecord,
         usesClaudeSessionIds: true,
         backfillSearch: true,
-        terminalChat: true,
       },
     },
     codex: {
@@ -83,7 +82,6 @@ export function createHarnessRuntime({
         parseRecord: parseCodexRecord,
         usesClaudeSessionIds: false,
         backfillSearch: true,
-        terminalChat: false,
       },
     },
     muse: {
@@ -95,7 +93,6 @@ export function createHarnessRuntime({
         parseRecord: parseMuseRecord,
         usesClaudeSessionIds: false,
         backfillSearch: false,
-        terminalChat: false,
       },
     },
     goose: {
@@ -106,7 +103,6 @@ export function createHarnessRuntime({
         source: 'sqlite',
         usesClaudeSessionIds: false,
         backfillSearch: false,
-        terminalChat: false,
       },
     },
     agy: {
@@ -117,7 +113,6 @@ export function createHarnessRuntime({
         source: 'sqlite',
         usesClaudeSessionIds: false,
         backfillSearch: false,
-        terminalChat: false,
       },
     },
     bot: {
@@ -127,6 +122,10 @@ export function createHarnessRuntime({
         kind: 'bot',
         usesClaudeSessionIds: false,
         backfillSearch: false,
+        // Opt out: no human types into a bot pane, so any user-shaped
+        // record on a bot-bound tail would be machine-written input
+        // mirrored as chat. Bots define no transcript parser, so today
+        // this changes nothing observable — it pins the intent.
         terminalChat: false,
       },
     },

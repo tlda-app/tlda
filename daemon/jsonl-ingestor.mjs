@@ -5,7 +5,7 @@ import os from 'os'
 import path from 'path'
 
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
-import { isHarnessAuthoredRecord, isMachineAuthoredText, typedTextFrom } from '../agent-runtime/terminal-chat-authorship.mjs'
+import { terminalChatFromShapes } from '../agent-runtime/terminal-chat-authorship.mjs'
 import { codexRolloutIsTopLevel } from '../agent-runtime/resolve-transcript.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -152,6 +152,17 @@ export function catchupReplayBoundary({ startOffset = 0, liveOffset = 0, thresho
 
 export function shouldSuppressCatchupOutput(output) {
   return CATCHUP_DISPLAY_OUTPUT_TYPES.has(output?.type)
+}
+
+// Whether a tail mirrors typed text into fleet chat. Capture defaults ON:
+// a default restated per harness is how five silent falses happened, so a
+// harness opts out with an explicit `terminalChat: false` and a reason, and
+// anything else captures. A native subagent has no terminal and no human:
+// its `user` records are the parent's Task prompt and the tool results
+// feeding it back, and mirroring those produced the parent's brief in
+// Skip's chat, signed by Skip — so subagent tails never mirror.
+export function terminalChatForTail(harness, nativeSubagent) {
+  return harness?.terminalChat !== false && !nativeSubagent
 }
 
 export function createCoalescedSyncRunner(run) {
@@ -931,17 +942,6 @@ export function createJsonlIngestor({
     return null
   }
 
-  // A `user` record in a tailed transcript is the human typing into that
-  // agent's terminal, so it is mirrored into fleet chat authored by the local
-  // OS user. A native subagent has no terminal and no human: its `user` records
-  // are the parent's Task prompt and the tool results feeding it back. Mirroring
-  // those produced the parent's brief in Skip's chat, signed by Skip. The parent
-  // already publishes its own Task tool_use — prompt included — as a
-  // parent-attributed activity event, so the subagent tail owes chat nothing.
-  function terminalChatForTail(harness, nativeSubagent) {
-    return !!harness.terminalChat && !nativeSubagent
-  }
-
   function nativeSubagentDescriptorForPath(jsonlPath) {
     if (nativeSubagentDescriptors.has(jsonlPath)) return nativeSubagentDescriptors.get(jsonlPath)
     const first = readFirstJsonlRecord(jsonlPath)
@@ -1649,7 +1649,7 @@ export function createJsonlIngestor({
       processQualificationEvent(agentId, ev)
     }
 
-    if (terminalChatForTail(harness, pw.nativeSubagent) && !sendTerminalChatFromRecord(agentId, pw.sessionId, record)) delivered = false
+    if (terminalChatForTail(harness, pw.nativeSubagent) && !sendTerminalChatFromRecord(agentId, pw.sessionId, record, ev)) delivered = false
     if (harness.backfillSearch && !sendSearchIndexFromRecord(pw, agentId, pw.sessionId, record)) delivered = false
     return delivered
   }
@@ -1674,25 +1674,15 @@ export function createJsonlIngestor({
     }
   }
 
-  function sendTerminalChatFromRecord(agentId, sessionId, parsed) {
-    if (parsed.type !== 'user') return true
-    if (isHarnessAuthoredRecord(parsed)) return true
-    const content = parsed.message?.content
-    let text = ''
-    if (typeof content === 'string') text = content
-    else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
-    if (!text || text.length < 3) return true
-    if (isMachineAuthoredText(text)) return true
-    text = typedTextFrom(text)
-    if (text.length > 2000) text = text.substring(0, 2000)
-    const ts = parsed.timestamp || null
-    if (!ts) return true
+  function sendTerminalChatFromRecord(agentId, sessionId, record, ev = null) {
+    const chat = terminalChatFromShapes(record, ev)
+    if (!chat) return true
     return sendMsg({
       type: 'terminal-chat',
       agent_id: agentId,
       from: `fleet:${os.userInfo?.()?.username || 'user'}`,
-      text,
-      ts,
+      text: chat.text,
+      ts: chat.ts,
       session_id: sessionId,
     })
   }

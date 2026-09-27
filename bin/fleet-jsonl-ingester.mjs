@@ -26,9 +26,7 @@ import {
   extractNativeTaskEvents,
 } from '../agent-runtime/native-task-events.mjs'
 import {
-  isHarnessAuthoredRecord,
-  isMachineAuthoredText,
-  typedTextFrom,
+  terminalChatFromShapes,
 } from '../agent-runtime/terminal-chat-authorship.mjs'
 
 const MAX_CONTEXT = 200_000
@@ -208,20 +206,8 @@ function parseRecordForHarness(harnessKind, record) {
   return null
 }
 
-export function terminalChatFromRecord(parsed) {
-  if (parsed.type !== 'user') return null
-  if (isHarnessAuthoredRecord(parsed)) return null
-  const content = parsed.message?.content
-  let text = ''
-  if (typeof content === 'string') text = content
-  else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
-  if (!text || text.length < 3) return null
-  if (isMachineAuthoredText(text)) return null
-  text = typedTextFrom(text)
-  if (text.length > 2000) text = text.substring(0, 2000)
-  const ts = parsed.timestamp || null
-  if (!ts) return null
-  return { text, ts }
+export function terminalChatFromRecord(record, ev = null) {
+  return terminalChatFromShapes(record, ev)
 }
 
 export function searchEntriesFromRecord(agentId, sessionId, parsed) {
@@ -295,7 +281,7 @@ export function extractRecordOutputs({ agentId, sessionId, harnessKind, terminal
   }
 
   if (terminalChat) {
-    const chat = terminalChatFromRecord(record)
+    const chat = terminalChatFromRecord(record, ev)
     if (chat) outputs.push({ type: 'terminalChat', ...chat })
   }
   if (backfillSearch) {
