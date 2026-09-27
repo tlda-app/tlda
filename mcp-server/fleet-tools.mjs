@@ -1672,13 +1672,21 @@ const MUSE_POLL_INTERVAL_MS = 150;
 // way. Either way the text parks for a manual Enter.
 const MUSE_STILL_MS = 300;
 
-// ---- Level-triggered muse inbox wakes ----
+// ---- Edge-triggered muse inbox wakes ----
 //
 // A wake is owned, not delivered. Each notice is accepted into this
-// sidecar's wake loop, which keeps trying while TLDA shows unread work,
-// and the notice is acknowledged on acceptance. Coalescing is structural:
-// five rapid notices set one pending doorbell and ensure one loop. There is
-// no queue of five, no watcher, no retry counter on any single event.
+// sidecar's wake loop, which tries until the pending doorbell is confirmed
+// submitted and then quiets, and the notice is acknowledged on acceptance.
+// Coalescing is structural: five rapid notices set one pending doorbell and
+// ensure one loop. There is no queue of five, no watcher, no retry counter
+// on any single event.
+//
+// The loop must NOT keep submitting while unread stays high: a confirmed
+// submit reached the prompt, and unread persisting past it means the agent
+// is slow to read, not that the content was lost. Resubmitting there
+// delivered one message N times into the terminal. Unread gates whether a
+// pass starts, never whether a submitted line goes again; only mail that
+// arrived mid-submit earns another pass.
 //
 // The level signal is the server's canonical unread count: cheap,
 // side-effect-free, and correct across sidecars, because whichever process
@@ -1746,6 +1754,12 @@ async function runMuseWakeLoop() {
       continue;
     }
     if (unread === 0 && !museWakeRequested) return;
+    // What this pass is submitting. A confirmed submission is submitted once:
+    // the agent has it queued or shown, and unread staying high means slow to
+    // read, not undelivered — resubmitting the same line here is the
+    // terminal-repeat defect. Only mail that arrived while this submit was in
+    // flight earns another pass.
+    const attempted = museWakePendingContent;
     let outcome = 'deferred';
     try {
       outcome = await museWakeTransaction(session);
@@ -1757,6 +1771,7 @@ async function runMuseWakeLoop() {
       deferStreak = 0;
       captureFailures = 0;
       museWakeRequested = false;
+      if (museWakePendingContent === attempted) return;
       await museWakeSleep(museWakePostSuccessDelayMs);
       continue;
     }

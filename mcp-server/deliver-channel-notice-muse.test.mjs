@@ -132,6 +132,44 @@ test('a muse wake submits while unread and drains at zero', { skip: skipWithoutT
   }
 })
 
+// No re-delivery: one notice submitted while unread stays unread is typed
+// exactly once. The loop quiets after a confirmed submit even though the
+// level never drops — typing the line again here is the terminal-repeat
+// defect (one message, N copies in the field).
+//
+// Count typed copies, not submit markers: the fixture shell reads once, so a
+// retype lands in the pane without a second marker. After one submit the
+// probe appears exactly twice (tty echo of the typing plus the received
+// marker); any retype adds a third occurrence.
+test('a submitted muse wake is typed once while unread persists', { skip: skipWithoutTmux }, async () => {
+  const session = `muse-wake-noresub-${process.pid}`
+  startPane(session)
+  const restore = useMusePane(session)
+  unreadScript = []
+  unreadDefault = 1
+  const probe = NOTICE.slice(0, 32)
+  const probeCount = () => capture(session).split(probe).length - 1
+  try {
+    assert.equal(await deliverChannelNotice(NOTICE, { event_type: 'chat' }), true)
+    await pollFor(async () => receivedCount(session) === 1, 5000, 'the wake to submit')
+    assert.equal(probeCount(), 2)
+    // Past the post-success recheck window: fail fast on a retype, pass if
+    // the loop left the field alone for the whole window.
+    const deadline = Date.now() + 4000
+    for (;;) {
+      if (probeCount() > 2) assert.fail('wake retyped while unread persisted')
+      if (Date.now() >= deadline) break
+      await new Promise(r => setTimeout(r, 100))
+    }
+    assert.equal(probeCount(), 2)
+  } finally {
+    unreadDefault = 0
+    await __museWakeLoopDrainedForTest()
+    restore()
+    killPane(session)
+  }
+})
+
 // An explicit request is honored once even at zero unread (the wiretap
 // shape), and then the loop goes quiet: drained means drained.
 test('a muse wake honors one explicit request at zero unread, then quiets', { skip: skipWithoutTmux }, async () => {
