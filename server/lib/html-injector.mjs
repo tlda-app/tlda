@@ -695,17 +695,40 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
       postDocLinkClick(e, docLink);
     }, true);
 
+    // Tab-pane state sync across same-document iframe instances.
+    //
+    // The docview renders its OWN iframe of the target document (measured: two
+    // iframes serve chapter-social-pressure-experiment.html with the same
+    // _tldaShape after a peek). A pane opened by a link click exists only in
+    // the clicked instance, so the docview's copy keeps default tabs and shows
+    // the wrong figure in the right slot (measured: Figure 3.1 in the Figure
+    // 3.4 slot). Instances sync open panes over a BroadcastChannel keyed by
+    // document path: the click path broadcasts, and a late joiner queries on
+    // load so a docview opened after the click still converges.
+    var tabSyncChannel = null;
+    try {
+      tabSyncChannel = ('BroadcastChannel' in window) ? new BroadcastChannel('tlda-tab-panes') : null;
+    } catch (bcErr) { tabSyncChannel = null; }
+    function tabSyncDocKey() {
+      try { return window.location.pathname; } catch (e) { return ''; }
+    }
+    function broadcastOpenPane(paneId) {
+      if (!tabSyncChannel || !paneId) return;
+      // Best-effort cross-instance sync: if the broadcast fails the clicked
+      // instance still navigates correctly and only the mirror stays stale.
+      try { tabSyncChannel.postMessage({ t: 'tlda-tab-open', doc: tabSyncDocKey(), pane: paneId }); } catch (e) { /* sync is advisory */ }
+    }
     // Open the tab pane holding an anchor, through its tab, so a link to a
     // figure in a closed pane lands on the figure and not on whichever pane
     // happens to be open (measured: the book keeps one letter-figure per pane
     // with only the first open; clicks landed on the slot showing Figure 3.1
     // whatever the link named). Manipulates Bootstrap tab classes directly
     // rather than clicking the tab, so no second navigation is posted.
-    function activateTabPaneForAnchor(anchorId) {
-      if (!anchorId || !document.getElementById) return false;
-      var el = document.getElementById(anchorId);
-      var pane = el && el.closest ? el.closest('.tab-pane:not(.active)') : null;
-      if (!pane) return false;
+    function openTabPaneById(paneId, broadcast) {
+      if (!paneId || !document.getElementById) return false;
+      var pane = document.getElementById(paneId);
+      if (!pane || !pane.classList || !pane.classList.contains('tab-pane')) return false;
+      if (pane.classList.contains('active')) return false;
       var tab = null;
       if (pane.id) {
         tab = document.querySelector('[role="tab"][aria-controls="' + pane.id + '"]');
@@ -737,7 +760,36 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
         tab.classList.add('active');
         tab.setAttribute('aria-selected', 'true');
       }
+      // A remote apply must not rebroadcast: the sender already has it open,
+      // and an echo would ping-pong between instances.
+      if (broadcast) broadcastOpenPane(pane.id);
       return true;
+    }
+    function activateTabPaneForAnchor(anchorId) {
+      if (!anchorId || !document.getElementById) return false;
+      var el = document.getElementById(anchorId);
+      var pane = el && el.closest ? el.closest('.tab-pane:not(.active)') : null;
+      if (!pane || !pane.id) return false;
+      return openTabPaneById(pane.id, true);
+    }
+    if (tabSyncChannel) {
+      tabSyncChannel.onmessage = function(ev) {
+        var msg = ev && ev.data;
+        if (!msg || msg.doc !== tabSyncDocKey()) return;
+        if (msg.t === 'tlda-tab-open') {
+          openTabPaneById(msg.pane, false);
+        } else if (msg.t === 'tlda-tab-query') {
+          document.querySelectorAll('.tab-pane.active[id]').forEach(function(p) {
+            broadcastOpenPane(p.id);
+          });
+        }
+      };
+    }
+    function queryTabSyncPeers() {
+      if (!tabSyncChannel) return;
+      // Best-effort like the broadcast: a failed query just leaves this
+      // instance on default tabs until a later query or click-path message.
+      try { tabSyncChannel.postMessage({ t: 'tlda-tab-query', doc: tabSyncDocKey() }); } catch (e) { /* sync is advisory */ }
     }
     // Intercept link clicks — route navigation through parent canvas
     document.addEventListener('click', function(e) {
@@ -1235,6 +1287,10 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
       setTimeout(reportMermaidDiagrams, 500);
       setTimeout(reportMermaidDiagrams, 2000);
       setTimeout(reportMermaidDiagrams, 5000);
+      // Late joiner: a docview iframe mounting after a link click asks live
+      // instances which panes they have open, twice in case a peer is mid-load.
+      queryTabSyncPeers();
+      setTimeout(queryTabSyncPeers, 2000);
     });
   } else {
     stripNav();
@@ -1249,6 +1305,8 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
     setTimeout(reportFigures, 2000);
     setTimeout(reportMermaidDiagrams, 500);
     setTimeout(reportMermaidDiagrams, 2000);
+    queryTabSyncPeers();
+    setTimeout(queryTabSyncPeers, 2000);
   }
 
   // Observe DOM mutations (webR output, MathJax rendering, etc.)

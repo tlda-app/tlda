@@ -30,18 +30,36 @@ test('pane activation clears the whole tabset, tablist included', () => {
   // The tab buttons live in a tablist beside .tab-content, so clearing only
   // .tab-content swaps the panes while both tab buttons stay selected.
   const html = injectBridge('<html><body><main></main></body></html>')
-  const defn = html.indexOf('function activateTabPaneForAnchor(anchorId)')
+  const defn = html.indexOf('function openTabPaneById(paneId, broadcast)')
   const end = html.indexOf('// Intercept link clicks', defn)
   const body = html.slice(defn, end)
   assert.ok(body.includes("pane.closest('.panel-tabset')"), 'clearing scopes to the tabset')
   assert.ok(!body.includes("closest('.panel-tabset, .tab-content')"), 'not to .tab-content alone')
 })
 
+test('a link-opened pane broadcasts to same-document instances', () => {
+  // The docview renders its own iframe of the target document; without the
+  // broadcast its copy keeps default tabs and shows the wrong figure.
+  const html = injectBridge('<html><body><main></main></body></html>')
+  assert.ok(html.includes("new BroadcastChannel('tlda-tab-panes')"))
+  const defn = html.indexOf('function activateTabPaneForAnchor(anchorId)')
+  const end = html.indexOf('// Intercept link clicks', defn)
+  const body = html.slice(defn, end)
+  assert.ok(body.includes('openTabPaneById(pane.id, true)'), 'click path broadcasts')
+  assert.ok(body.includes('openTabPaneById(msg.pane, false)'), 'remote apply does not rebroadcast')
+})
+
+test('a mounting instance queries peers for open panes', () => {
+  const html = injectBridge('<html><body><main></main></body></html>')
+  assert.ok(html.includes('queryTabSyncPeers();'), 'queries on load')
+  assert.ok(html.includes("t: 'tlda-tab-query'"), 'query message shape')
+})
+
 test('pane activation goes through the tab, not a synthetic click', () => {
   // A synthetic tab.click() would bubble back into this same interceptor and
   // post a second navigation, so the bridge manipulates tab classes directly.
   const html = injectBridge('<html><body><main></main></body></html>')
-  const defn = html.indexOf('function activateTabPaneForAnchor(anchorId)')
+  const defn = html.indexOf('function openTabPaneById(paneId, broadcast)')
   const end = html.indexOf('// Intercept link clicks', defn)
   const body = html.slice(defn, end)
   assert.ok(!body.includes('.click('), 'no synthetic click inside activation')
