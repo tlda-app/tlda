@@ -5163,15 +5163,20 @@ function FleetChatInner({ shape }: { shape: any }) {
   // list's own pending-restore path owns positioning, and the mount goToTail —
   // a loop of up to 12 frames — would yank over its commit.
   const didMountFollowRef = useRef(false)
+  const filterResetRunsRef = useRef(0) // TEMPORARY verification counter, revert with result
   useEffect(() => {
     noteFollowTransition(String(shape.id), 'filter-reset', {
       filterKey,
       bufferKey: chatEventBufferKey,
     })
+    filterResetRunsRef.current += 1 // TEMPORARY verification counter
     if (!didMountFollowRef.current) {
       didMountFollowRef.current = true
       const saved = readChatScrollState(browserLocalStorage(), chatScrollStoreKey(shape.id))
+      console.info('[filter-reset-run]', JSON.stringify({ panelId: String(shape.id), run: filterResetRunsRef.current, bufferKey: chatEventBufferKey, filterLen: String(filterKey).length, action: saved && saved.tail !== true ? 'skip-mount' : 'goToTail' }))
       if (saved && saved.tail !== true) return
+    } else {
+      console.info('[filter-reset-run]', JSON.stringify({ panelId: String(shape.id), run: filterResetRunsRef.current, bufferKey: chatEventBufferKey, filterLen: String(filterKey).length, action: 'goToTail-rerun' }))
     }
     goToTail('filter-change')
   }, [filterKey, shape.id, goToTail, chatEventBufferKey])
