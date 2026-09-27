@@ -57,6 +57,12 @@ function normalizeInput(name, input, id) {
 
 export function createMuseRecordParser() {
   const pendingCalls = new Map()
+  // Display labels for live execution tasks, by task id. Tool executions
+  // resolve from their committed input at started time; linked display
+  // labels (reminders and the like) arrive on task_stream_linked. Pruned on
+  // every task terminal event so entries live only for the task duration.
+  const taskLabels = new Map()
+  const backgroundedTasks = new Set()
 
   return function parseMuseRecord(record) {
     const ts = timestamp(record?.recorded_at)
@@ -128,6 +134,64 @@ export function createMuseRecordParser() {
         }
         return blocks.length ? { type: 'user', timestamp: ts, blocks } : null
       }
+      // A linked display label names the task for later transitions. The
+      // harness's own name wins over anything resolved later at started time.
+      if (event.kind === 'task_stream_linked' && event.task_id && event.display?.label) {
+        taskLabels.set(event.task_id, event.display.label)
+        return null
+      }
+      // The pane's `Backgrounded` row. Observed in the wild only for tool
+      // executions backgrounded past the foreground patience — reminders and
+      // other silent background work never emit this event, so no role
+      // filter is needed. The label resolves from the linked tool call.
+      if (event.kind === 'task_backgrounded' && event.task_id) {
+        backgroundedTasks.add(event.task_id)
+        const label = taskLabels.get(event.task_id) || ''
+        const id = `bg:${event.task_id}`
+        return {
+          type: 'assistant',
+          timestamp: ts,
+          blocks: [{
+            type: 'tool_use',
+            name: 'Backgrounded',
+            input: label ? { description: label } : {},
+            id,
+            status: 'completed',
+            correlationId: id,
+          }],
+        }
+      }
+      return null
+    }
+
+    // Task lifecycle records. Foreground executions complete here on every
+    // tool call, so a row for each would double the feed — only tasks seen
+    // backgrounded emit a Finished row. Labels prune on every terminal
+    // event regardless, so the map cannot outlive its tasks.
+    if (payloadType === 'runtime.session' && payload.kind === 'task') {
+      const event = payload.event || {}
+      const taskId = event.task_id
+      if (!taskId) return null
+      if (event.kind === 'completed' || event.kind === 'failed' || event.kind === 'cancelled') {
+        const label = taskLabels.get(taskId) || ''
+        const wasBackgrounded = backgroundedTasks.has(taskId)
+        taskLabels.delete(taskId)
+        backgroundedTasks.delete(taskId)
+        if (!wasBackgrounded) return null
+        const id = `fin:${taskId}`
+        return {
+          type: 'assistant',
+          timestamp: ts,
+          blocks: [{
+            type: 'tool_use',
+            name: 'Finished',
+            input: label ? { description: label } : {},
+            id,
+            status: event.kind === 'failed' ? 'error' : 'completed',
+            correlationId: id,
+          }],
+        }
+      }
       return null
     }
 
@@ -136,7 +200,19 @@ export function createMuseRecordParser() {
     // extractor's result synthesis made it three rows. One call ingests one
     // row — the terminal — matching the serve path, which maps completions
     // only. The pending-calls entry still resolves the terminal's name/input.
-    if (payloadType === 'tool_batch.effect.started') return null
+    if (payloadType === 'tool_batch.effect.started') {
+      const effect = payload.record || {}
+      if (effect.task_id && effect.call_id && !taskLabels.has(effect.task_id)) {
+        const pending = pendingCalls.get(effect.call_id) || {}
+        const input = pending.input || {}
+        // bash_input's readable content only exists post-normalization
+        // (raw input is session handles); normalize is identity otherwise.
+        const display = normalizeInput(pending.name || '', input, effect.call_id)
+        taskLabels.set(effect.task_id,
+          input.description || input.command || display.action || input.file_path || input.path || pending.name || effect.tool_name || '')
+      }
+      return null
+    }
     if (payloadType !== 'tool_batch.effect.terminal') return null
     const effect = payload.record || {}
     const callId = effect.call_id || effect.effect_id || record.id

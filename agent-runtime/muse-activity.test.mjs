@@ -148,6 +148,92 @@ test('a todo snapshot emits the completed write_todos call', () => {
   }])
 })
 
+test('a backgrounded execution emits a Backgrounded row with the tool description', () => {
+  const parse = createMuseRecordParser()
+  assert.equal(parse(record('runtime.session', {
+    kind: 'run',
+    event: {
+      kind: 'assistant_tool_calls_committed',
+      tool_calls: [{ call_id: 'call-bg', name: 'bash', args: '{"command":"node /tmp/send-report.mjs","description":"Send task report and close"}' }],
+    },
+  })), null)
+  assert.equal(parse(record('tool_batch.effect.started', {
+    record: { kind: 'started', call_id: 'call-bg', tool_name: 'bash', task_id: 'task-1' },
+  })), null)
+  const bg = parse(record('runtime.session', {
+    kind: 'run',
+    event: { kind: 'task_backgrounded', task_id: 'task-1' },
+  }))
+  assert.deepEqual(bg.blocks, [{
+    type: 'tool_use',
+    name: 'Backgrounded',
+    input: { description: 'Send task report and close' },
+    id: 'bg:task-1',
+    status: 'completed',
+    correlationId: 'bg:task-1',
+  }])
+})
+
+test('a backgrounded execution emits a Finished row when its task ends', () => {
+  const parse = createMuseRecordParser()
+  parse(record('runtime.session', {
+    kind: 'run',
+    event: {
+      kind: 'assistant_tool_calls_committed',
+      tool_calls: [{ call_id: 'call-bg', name: 'bash', args: '{"command":"node /tmp/send-report.mjs","description":"Send task report and close"}' }],
+    },
+  }))
+  parse(record('tool_batch.effect.started', {
+    record: { kind: 'started', call_id: 'call-bg', tool_name: 'bash', task_id: 'task-1' },
+  }))
+  parse(record('runtime.session', { kind: 'run', event: { kind: 'task_backgrounded', task_id: 'task-1' } }))
+  const fin = parse(record('runtime.session', { kind: 'task', event: { kind: 'cancelled', task_id: 'task-1' } }))
+  assert.equal(fin.blocks[0].name, 'Finished')
+  assert.equal(fin.blocks[0].input.description, 'Send task report and close')
+  assert.equal(fin.blocks[0].status, 'completed')
+})
+
+test('a foreground task completing emits nothing: no doubling of tool rows', () => {
+  const parse = createMuseRecordParser()
+  parse(record('runtime.session', {
+    kind: 'run',
+    event: {
+      kind: 'assistant_tool_calls_committed',
+      tool_calls: [{ call_id: 'call-fg', name: 'bash', args: '{"command":"ls"}' }],
+    },
+  }))
+  parse(record('tool_batch.effect.started', {
+    record: { kind: 'started', call_id: 'call-fg', tool_name: 'bash', task_id: 'task-2' },
+  }))
+  assert.equal(parse(record('runtime.session', { kind: 'task', event: { kind: 'completed', task_id: 'task-2' } })), null)
+})
+
+test('a backgrounded poll names the Backgrounded row from its action', () => {
+  const parse = createMuseRecordParser()
+  parse(record('runtime.session', {
+    kind: 'run',
+    event: {
+      kind: 'assistant_tool_calls_committed',
+      tool_calls: [{ call_id: 'call-poll', name: 'bash_input', args: '{"session_id":"sh-1"}' }],
+    },
+  }))
+  parse(record('tool_batch.effect.started', {
+    record: { kind: 'started', call_id: 'call-poll', tool_name: 'bash_input', task_id: 'task-4' },
+  }))
+  const bg = parse(record('runtime.session', { kind: 'run', event: { kind: 'task_backgrounded', task_id: 'task-4' } }))
+  assert.equal(bg.blocks[0].input.description, 'wait for output')
+})
+
+test('a linked display label names the Backgrounded row', () => {
+  const parse = createMuseRecordParser()
+  parse(record('runtime.session', {
+    kind: 'run',
+    event: { kind: 'task_stream_linked', task_id: 'task-3', execution_mode: 'background', display: { label: 'skill-reminder reminder', role: 'reminder' } },
+  }))
+  const bg = parse(record('runtime.session', { kind: 'run', event: { kind: 'task_backgrounded', task_id: 'task-3' } }))
+  assert.equal(bg.blocks[0].input.description, 'skill-reminder reminder')
+})
+
 test('historical ownership requires a committed Muse login result', () => {
   const marker = 'TLDA_LOGIN_MARKER {"type":"tlda-login-marker","version":1,"fleet_id":"fleet:historical","harness_kind":"muse"}'
   assert.equal(museLoginMarkerFromRecord(record('runtime.user_intent.accepted', {
