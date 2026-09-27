@@ -75,6 +75,7 @@ test('the delegation rides on the mint rather than following it', async () => {
   assert.equal(durableCalls[0].payload.delegate.allow_pending_agent, true)
   assert.equal(durableCalls[0].payload.delegate.operation_id, durableCalls[0].payload.operation_id)
   assert.match(result.content[0].text, /Minted agent-under-test and delegated \[task-1\] to fleet:minted-abc/)
+  assert.doesNotMatch(result.content[0].text, /was taken/)
 })
 
 test('a queued mint keeps its delegation instead of dropping it', async () => {
@@ -95,6 +96,25 @@ test('a queued mint keeps its delegation instead of dropping it', async () => {
   assert.match(result.content[0].text, /queued durably/)
   assert.match(result.content[0].text, /op-123/)
   assert.match(result.content[0].text, /nothing is lost/)
+})
+
+test('a mint that rotated names says what was asked and what was assigned', async () => {
+  installTransportStub({
+    ok: true,
+    agent_id: 'fleet:minted-abc',
+    assigned_name: 'agent-under-test-jr',
+    task_id: 'task-1',
+  })
+
+  const result = await handleFleetTool('delegate', {
+    mint: { name: 'agent-under-test' },
+    message: 'do the thing',
+  })
+
+  assert.equal(result.isError, undefined)
+  assert.match(result.content[0].text, /"agent-under-test" was taken/)
+  assert.match(result.content[0].text, /this agent is "agent-under-test-jr"/)
+  assert.match(result.content[0].text, /Minted agent-under-test-jr and delegated \[task-1\] to fleet:minted-abc/)
 })
 
 test('a mint whose server returns no task id is reported as not attached', async () => {

@@ -3635,10 +3635,17 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       if (!spawnResult?.task_id) {
         return { content: [{ type: 'text', text: `mint reserved ${assignedName} (${shellAgentId}), but the server returned no task id, so the delegation did not attach: ${description}` }], isError: true };
       }
+      // A mint that collided hands back a different agent than asked for. Say
+      // so first, loudly: the caller acts on the assigned name, and the
+      // requested one belongs to someone else. Silence here is the rotation
+      // bug — the rename itself is the design.
+      const rotationNotice = assignedName !== agentName
+        ? `⚠️ "${agentName}" was taken — this agent is "${assignedName}". Address them as ${assignedName} (${shellAgentId}); "${agentName}" names someone else.\n`
+        : '';
       return {
         content: [{
           type: 'text',
-          text: `${mintWarnings.map(line => `${line}\n`).join('')}Minted ${assignedName} and delegated [${spawnResult.task_id}] to ${shellAgentId}: ${description}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${assignedName}\nThe task is attached now; the agent is still starting and is notified when it joins. A launch failure retracts the task.`,
+          text: `${rotationNotice}${mintWarnings.map(line => `${line}\n`).join('')}Minted ${assignedName} and delegated [${spawnResult.task_id}] to ${shellAgentId}: ${description}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${assignedName}\nThe task is attached now; the agent is still starting and is notified when it joins. A launch failure retracts the task.`,
         }],
       };
     }
