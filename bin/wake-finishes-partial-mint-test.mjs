@@ -121,4 +121,51 @@ function harness({ sessionId, launchRecipe, joinedAt = null, aliveFrom = false }
   assert.equal(events.filter(([event]) => event === 'wake-deferred').length, 3)
 }
 
+// 7. A rebind that adopted a runtime but never joined. The recovery wrote
+//    process state for a live session and no session identity, so join() bound
+//    the grant and the route and returned without marking the mint joined --
+//    and the wake confirmed the tmux session and the liveness and answered ok.
+//    Same never-joined refusal as 4, one branch up.
+{
+  const reboundFacts = {
+    mintId: 'mint-1', fleetId: 'fleet:test', friendlyName: 'half-minted',
+    sessionId: null, launchRecipe: { kind: 'codex', cwd: '/tmp' }, joinedAt: null,
+    processState: { tmux_session: 'fleet-test' },
+  }
+  const wake = createDaemonWakeCore({
+    store: {
+      resolve: () => ({ mintId: 'mint-1', fleetId: 'fleet:test', sessionId: null, launchRecipe: { kind: 'codex', cwd: '/tmp' }, joinedAt: null, friendlyName: 'half-minted' }),
+    },
+    processAlive: async () => true,
+    resumeSession: async () => { throw new Error('must not relaunch over an adopted runtime') },
+    recoverExistingRuntime: async () => ({ action: 'rebound', reason: 'adopted-live-runtime', session: 'fleet-test', facts: reboundFacts }),
+  })
+  await assert.rejects(
+    () => wake({ fleet_id: 'fleet:test' }),
+    /never joined/,
+    'a rebind that never joined is not a woken agent',
+  )
+}
+
+// 8. Control for 7 -- the same rebind, joined. Still the ordinary
+//    already-alive success, so the check keys on the join and not on the adoption.
+{
+  const reboundFacts = {
+    mintId: 'mint-1', fleetId: 'fleet:test', friendlyName: 'half-minted',
+    sessionId: 'session-1', launchRecipe: { kind: 'codex', cwd: '/tmp' }, joinedAt: '2026-09-26T08:00:00Z',
+    processState: { tmux_session: 'fleet-test' },
+  }
+  const wake = createDaemonWakeCore({
+    store: {
+      resolve: () => ({ mintId: 'mint-1', fleetId: 'fleet:test', sessionId: null, launchRecipe: { kind: 'codex', cwd: '/tmp' }, joinedAt: null, friendlyName: 'half-minted' }),
+    },
+    processAlive: async () => true,
+    resumeSession: async () => { throw new Error('must not relaunch over an adopted runtime') },
+    recoverExistingRuntime: async () => ({ action: 'rebound', reason: 'adopted-live-runtime', session: 'fleet-test', facts: reboundFacts }),
+  })
+  const result = await wake({ fleet_id: 'fleet:test' })
+  assert.equal(result.ok, true)
+  assert.equal(result.rebound, true)
+}
+
 console.log('wake finishes a partial mint: ok')

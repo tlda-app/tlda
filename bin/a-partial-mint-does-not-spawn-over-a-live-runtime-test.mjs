@@ -497,8 +497,27 @@ function wakeHarness({ recoverExistingRuntime, liveSessions = ['fleet-half-minte
 
 // 22. Waking a partial row whose runtime is already up returns that agent as
 //     awake. It does not relaunch it under a rotated name.
+//
+//     The shared stub stops at the session facts because the mint path
+//     completes the join in its binding loop (case 17 asserts that: bound 1,
+//     joinedAt set). The wake path has no loop -- the real recovery joins
+//     through recordProcess before it returns 'rebound' (case 27 proves it end
+//     to end: bound 1, joinedAt set) -- so the faithful double for this path
+//     completes the join here. A rebound that never joined refuses instead;
+//     that is case 7 of wake-finishes-partial-mint.
+//
+//     Falsifier: this double asserts the real recovery cannot return 'rebound'
+//     carrying session identity without joinedAt, because it joins through
+//     recordProcess synchronously. If a rebound ever shows up in the wild with
+//     session identity and no joinedAt, that is a finding about the code, not
+//     about this fixture -- bring it back, do not adjust the double to match.
 {
-  const { wake, calls } = wakeHarness({ recoverExistingRuntime: rebindTo })
+  const { wake, calls } = wakeHarness({
+    recoverExistingRuntime: (facts, store) => {
+      const recovery = rebindTo(facts, store)
+      return { ...recovery, facts: store.markJoined(facts.mintId) }
+    },
+  })
   const result = await wake({ mint_id: 'mint-1' })
   assert.equal(result.ok, true)
   assert.equal(result.rebound, true)

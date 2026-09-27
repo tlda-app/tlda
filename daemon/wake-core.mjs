@@ -65,6 +65,22 @@ export function createDaemonWakeCore({
         if (!await processAlive(rebound)) {
           throw new Error(`wake rebound mint ${facts.mintId} to ${reboundSession}, but no live runtime was confirmed there`)
         }
+        // The join is the third thing that has to be true afterwards, and the
+        // rebind does not complete it. recordProcess joins through recordSession,
+        // and when no session identity was recorded or observed -- no login, no
+        // transcript discovery -- join() binds the grant and the route and then
+        // returns without marking the mint joined. The row it leaves behind has
+        // a live tmux session and no registry row, so nobody can address it, and
+        // this line used to answer `ok: true, alreadyAlive: true` for exactly
+        // that. Same shape as the never-joined check below, one branch up: the
+        // recovery adopted a runtime, not an agent.
+        if (!rebound.joinedAt) {
+          throw new Error(
+            `wake rebound mint ${facts.mintId} to ${reboundSession}, but the mint never joined: no session identity was recorded, `
+            + `so no registry row exists for ${rebound.fleetId || facts.fleetId || '(no fleet id)'}. `
+            + 'It cannot be addressed until it logs in; wake cannot complete a join.',
+          )
+        }
         facts = rebound
         return { ok: true, alreadyAlive: true, rebound: true, ...(recovery.action === 'enriched' ? { enriched: true } : {}), ...facts }
       }
