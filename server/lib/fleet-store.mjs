@@ -176,6 +176,18 @@ function parsePrettyName(value) {
   return value;
 }
 
+// Lowercase roman numerals for the friendly-name rotation suffixes
+// (`chief-pa-iii`, `chief-pa-iv`, …). Standard subtractive forms; the rotation
+// only asks for 3..99.
+const ROMAN_LOWER_TABLE = [[100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']];
+function romanNumeralLower(n) {
+  let out = '';
+  for (const [value, numeral] of ROMAN_LOWER_TABLE) {
+    while (n >= value) { out += numeral; n -= value; }
+  }
+  return out;
+}
+
 // `*chief[2]` counts OCCUPANTS of the seat, so the position indexes agents and
 // not the spans they hold: one agent that held a name across two intervals is
 // the second occupant once, never the second and the third. Slice the distinct
@@ -1176,7 +1188,7 @@ export class FleetStore {
           ).all(friendly_name);
           // The most-recently-seen keeps the name; everyone else rotates.
           for (let i = 1; i < rows.length; i++) {
-            // If a name can't be rotated (reserved label, alphabet exhausted),
+            // If a name can't be rotated (reserved label, every suffix exhausted),
             // wipe it rather than kill the agent — the unique index is partial
             // on `friendly_name IS NOT NULL`, so a nameless agent satisfies it
             // and stays alive to be renamed later. This runs during schema init,
@@ -4612,16 +4624,16 @@ export class FleetStore {
     const unavailable = this._friendlyNameUnavailableLower({ excludeId, asFriendlyName: true });
     if (!unavailable.has(lowerRequested)) return requested;
 
-    const first = requested[0];
-    const rest = requested.slice(1);
-    if (/^[A-Za-z]$/.test(first)) {
-      const isUpper = first >= 'A' && first <= 'Z';
-      const base = isUpper ? 'A'.charCodeAt(0) : 'a'.charCodeAt(0);
-      const code = first.charCodeAt(0);
-      for (let next = code - 1; next >= base; next--) {
-        const candidate = `${String.fromCharCode(next)}${rest}`;
-        if (!unavailable.has(candidate.toLowerCase())) return candidate;
-      }
+    // Collision rotation keeps the stem as a prefix: `-jr` first, then roman
+    // numerals from `-iii` upward — `chief-pa` → `chief-pa-jr` →
+    // `chief-pa-iii` → `chief-pa-iv` → … The name the caller asked for still
+    // finds the agent it got, which the old first-letter-backward rule broke
+    // (`chief-pa` → `bhief-pa` shares nothing searchable with the request).
+    // The suffix is always lowercase; the stem keeps the caller's case.
+    if (!unavailable.has(`${lowerRequested}-jr`)) return `${requested}-jr`;
+    for (let n = 3; n <= 99; n++) {
+      const candidate = `${requested}-${romanNumeralLower(n)}`;
+      if (!unavailable.has(candidate.toLowerCase())) return candidate;
     }
 
     for (let i = 2; i < 10000; i++) {

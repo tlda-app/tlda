@@ -402,9 +402,9 @@ cannot be awake when their parent is not.
     project determines their working directory. When one agent mints another
     directly, they can supply the working directory itself.
 [^agent-name]: Living agents cannot share a name. If there is a collision, tlda
-    rotates the first letter backward through the alphabet. Three agents who
-    ask to be `todd` become `todd`, `sodd`, and `rodd`. After running through
-    the alphabet, tlda adds a number and starts again with `todd-2`.
+    keeps the stem and appends `-jr`, then roman numerals from `-iii`. Three
+    agents who ask to be `todd` become `todd`, `todd-jr`, and `todd-iii`. After
+    running through the romans, tlda adds a number and starts again with `todd-2`.
 [^enlist]: If you already have a Claude Code or Codex session,
     `tlda agent enlist --kind <codex|claude> <session-id> [name]` adopts it as
     an agent instead of starting a fresh one.

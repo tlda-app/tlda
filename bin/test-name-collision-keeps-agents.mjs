@@ -37,15 +37,17 @@ try {
   raw.exec('DROP INDEX IF EXISTS idx_agents_live_name')
   raw.prepare('DELETE FROM agents').run()
   const ins = raw.prepare(
-    "INSERT INTO agents (id, friendly_name, session_id, last_seen, dead) VALUES (?, ?, ?, ?, 0)"
+    "INSERT INTO agents (id, friendly_name, last_seen, last_active, dead) VALUES (?, ?, ?, ?, 0)"
   )
   // Three live agents called todd. The oldest-seen are the ones the old code killed.
-  ins.run('fleet:aaa', 'todd', 'sess-a', '2026-07-25T10:00:00Z')
-  ins.run('fleet:bbb', 'todd', 'sess-b', '2026-07-25T09:00:00Z')
-  ins.run('fleet:ccc', 'todd', 'sess-c', '2026-07-25T08:00:00Z')
-  // A pair whose name cannot rotate: 'a' has no earlier letter to fall back to.
-  ins.run('fleet:ddd', 'a', 'sess-d', '2026-07-25T10:00:00Z')
-  ins.run('fleet:eee', 'a', 'sess-e', '2026-07-25T09:00:00Z')
+  ins.run('fleet:aaa', 'todd', '2026-07-25T10:00:00Z', '2026-07-25T10:00:00Z')
+  ins.run('fleet:bbb', 'todd', '2026-07-25T09:00:00Z', '2026-07-25T09:00:00Z')
+  ins.run('fleet:ccc', 'todd', '2026-07-25T08:00:00Z', '2026-07-25T08:00:00Z')
+  // A pair whose name cannot rotate: a reserved routing word throws out of the
+  // allocator instead of yielding a suffix. (Every ordinary stem rotates now —
+  // there is no first letter to run out of.)
+  ins.run('fleet:ddd', 'awake', '2026-07-25T10:00:00Z', '2026-07-25T10:00:00Z')
+  ins.run('fleet:eee', 'awake', '2026-07-25T09:00:00Z', '2026-07-25T09:00:00Z')
   raw.close()
 
   // Reopen — this is the startup path under test.
@@ -61,13 +63,13 @@ try {
   T('the losers rotated off it',
     byId['fleet:bbb'] !== 'todd' && byId['fleet:ccc'] !== 'todd',
     `bbb=${byId['fleet:bbb']} ccc=${byId['fleet:ccc']}`)
-  T('rotation is the first-letter-back rule',
-    byId['fleet:bbb'] === 'sodd' || byId['fleet:ccc'] === 'sodd',
+  T('rotation keeps the stem: -jr then roman numerals from -iii',
+    byId['fleet:bbb'] === 'todd-jr' && byId['fleet:ccc'] === 'todd-iii',
     `bbb=${byId['fleet:bbb']} ccc=${byId['fleet:ccc']}`)
 
-  // The unrotatable pair: one keeps 'a', the other must be nameless — NOT dead.
+  // The unrotatable pair: one keeps 'awake', the other must be nameless — NOT dead.
   T('an unrotatable name is cleared, not killed',
-    byId['fleet:ddd'] === 'a' && (byId['fleet:eee'] === null || byId['fleet:eee'] !== 'a'),
+    byId['fleet:ddd'] === 'awake' && byId['fleet:eee'] === null,
     `ddd=${byId['fleet:ddd']} eee=${byId['fleet:eee']}`)
 
   // The invariant the index needs: one live holder per non-null name.
@@ -79,7 +81,7 @@ try {
   T('one live holder per name', dupes.length === 0, JSON.stringify(dupes))
 
   // hasEverRun: the carve-out Skip named -- a reservation that never launched.
-  T('an agent with a session has run', await store.hasEverRun('fleet:aaa') === true, 'false')
+  T('an agent with activity has run', await store.hasEverRun('fleet:aaa') === true, 'false')
   raw2: {
     const r2 = new Database(dbPath)
     r2.prepare("INSERT INTO agents (id, friendly_name, last_seen, dead) VALUES ('fleet:never', 'never', '2026-07-25T10:00:00Z', 0)").run()
