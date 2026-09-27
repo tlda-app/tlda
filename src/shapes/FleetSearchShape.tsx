@@ -46,7 +46,7 @@ import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } f
 import { dragCoordinator } from './dragCoordinator'
 import { fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { useFleetInteractionFrame } from '../wm/useFleetInteractionFrame'
-import { FleetSearchResultsView, visibleFleetSearchResultCount } from './FleetSearchResultsView'
+import { FleetSearchResultsView, noteSearchPressStart, searchPressVerified, visibleFleetSearchResultCount } from './FleetSearchResultsView'
 import { usePillDrag as useCanonicalPillDrag } from './FleetAgentsShape'
 import { ProjectContext } from '../PanelContext'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
@@ -827,7 +827,8 @@ function FleetSearchInner({ shape }: { shape: any }) {
           >
             <button
               className="fleet-search-chat-back"
-              onPointerUp={(e) => { stopEventPropagation(e); closeChat() }}
+              onPointerDown={(e) => { stopEventPropagation(e); noteSearchPressStart(e) }}
+              onPointerUp={(e) => { stopEventPropagation(e); if (searchPressVerified(e)) closeChat() }}
             >
               ← back to results
             </button>

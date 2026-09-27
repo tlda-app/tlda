@@ -10,6 +10,24 @@ import { canonicalSearchReference } from '../../shared/canonical-references.mjs'
 
 const SEARCH_GROUP_INITIAL_LIMIT = 6
 
+// A bare onPointerUp fires on ANY release over the element — including a
+// release that ends a press begun elsewhere (pointer drift, a dwell cycle, a
+// drag that started on another row). Below, the ↗ opener stacks a new chat
+// pixel-exact over the current one, so a stray release is an unreadable
+// overlay rather than a misclick. Require the press to have started on the
+// same element within a small drift. The 16px guard matches addTap: a genuine
+// tap drifts, and 10px dropped real ones.
+const searchPressStart = new WeakMap<Element, { x: number, y: number, pointerId: number }>()
+export function noteSearchPressStart(e: React.PointerEvent) {
+  searchPressStart.set(e.currentTarget as Element, { x: e.clientX, y: e.clientY, pointerId: e.pointerId })
+}
+export function searchPressVerified(e: React.PointerEvent, drift = 16) {
+  const start = searchPressStart.get(e.currentTarget as Element)
+  searchPressStart.delete(e.currentTarget as Element)
+  if (!start || start.pointerId !== e.pointerId) return false
+  return Math.abs(e.clientX - start.x) <= drift && Math.abs(e.clientY - start.y) <= drift
+}
+
 export function visibleFleetSearchResultCount(
   resultGroups: FleetSearchResultGroup[],
   expandedSearchGroups: Record<string, boolean>,
@@ -149,6 +167,7 @@ export function FleetSearchResultsView({
         title={r.type === 'document_content' ? 'Open document' : undefined}
         onPointerDown={(e) => {
           stopEventPropagation(e)
+          noteSearchPressStart(e)
           if (openDocument) return
           const nick = (e.target as HTMLElement).closest('[data-agent-id]') as HTMLElement | null
           if (nick && (onStartAgentDrag || onStartDrag)) {
@@ -171,6 +190,7 @@ export function FleetSearchResultsView({
         onPointerUp={(e) => {
           if (!openDocument) return
           stopEventPropagation(e)
+          if (!searchPressVerified(e)) return
           openDocument()
         }}
       >
@@ -178,7 +198,8 @@ export function FleetSearchResultsView({
         {r.type !== 'document_content' && (
           <span
             className="search-result-open"
-            onPointerUp={(e) => { e.stopPropagation(); onOpenChatForResult(r) }}
+            onPointerDown={(e) => { e.stopPropagation(); noteSearchPressStart(e) }}
+            onPointerUp={(e) => { e.stopPropagation(); if (searchPressVerified(e)) onOpenChatForResult(r) }}
             title="Open in chat"
           >↗</span>
         )}
@@ -233,9 +254,10 @@ export function FleetSearchResultsView({
               <button
                 type="button"
                 className="fleet-search-group-more"
-                onPointerDown={(e) => stopEventPropagation(e)}
+                onPointerDown={(e) => { stopEventPropagation(e); noteSearchPressStart(e) }}
                 onPointerUp={(e) => {
                   stopEventPropagation(e)
+                  if (!searchPressVerified(e)) return
                   setExpandedSearchGroups(prev => ({ ...prev, [group.id]: true }))
                 }}
               >
@@ -259,9 +281,10 @@ export function FleetSearchResultsView({
         <button
           type="button"
           className="fleet-search-group-more fleet-search-load-more"
-          onPointerDown={(e) => stopEventPropagation(e)}
+          onPointerDown={(e) => { stopEventPropagation(e); noteSearchPressStart(e) }}
           onPointerUp={(e) => {
             stopEventPropagation(e)
+            if (!searchPressVerified(e)) return
             setExpandedSearchGroups(prev => {
               const next = { ...prev }
               for (const group of resultGroups) next[group.id] = true
