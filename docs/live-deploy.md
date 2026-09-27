@@ -3,8 +3,16 @@
 Deploying is a push to the deployment repository:
 
 ```bash
-git push /Users/you/work/deploy/testing HEAD:refs/heads/main
+git push /Users/you/work/deploy/testing main:refs/heads/main
 ```
+
+**Push `main` by name, not `HEAD`.** This line read `HEAD:refs/heads/main` until
+2026-09-27, which deploys whatever the pushing checkout happens to have checked
+out. The shared checkout is routinely on a feature branch — it sat on
+`fix/playwright-mcp-browser` that day — so following the old line from there
+would have deployed that branch to the testing app. Naming the ref removes the
+question. If you are deploying something other than `main`, you already know it
+and can say so explicitly.
 
 **There is no way to abort a push from the client.** Killing `git push` does not
 stop the deploy — it **orphans** it: `git-receive-pack` and its
