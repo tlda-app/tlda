@@ -26,8 +26,13 @@ const FLEET_ID_RE = /^fleet:[a-zA-Z0-9_-]+$/;
 
 // How long a cached label set is trusted. Past this the entry reads as unknown
 // (deliver + rewarm) rather than as its last value, so removing a mute label
-// takes effect without a restart. Sweeps re-note on every pass, so a steady
-// bot never serves an expired entry for an agent it keeps sweeping.
+// takes effect without a restart.
+//
+// Product property, stated so nobody later files it as a bug: applying
+// `shut-up-<bot>` can be followed by up to this long of arriving traffic.
+// Sweeps re-note on every pass from the same roster read that selects their
+// recipients, so a sweep suppresses a muted recipient within that same sweep —
+// the expiry only governs sends to agents the bot has not recently read.
 const DEFAULT_MAX_AGE_MS = 60_000;
 
 /** The mute label for a bot key: `shut-up-todd`. */
