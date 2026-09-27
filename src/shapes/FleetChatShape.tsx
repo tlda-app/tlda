@@ -2508,6 +2508,28 @@ function browserLocalStorage(): Storage | null {
   }
 }
 
+// TEMPORARY v5 instrumentation — revert after the measurement walk. Traces the
+// post-restore yank: restore commits, tailMode-true writes, wasReset trips,
+// fall-through hits, and persist writes. Ring buffer (read via
+// `window.__tldaScrollRestoreTrace`) plus console. Logging only: it never
+// feeds back into list behaviour.
+function traceScrollRestore(entry: Record<string, unknown>): void {
+  const withTime = { t: Date.now(), ...entry }
+  try {
+    const w = window as unknown as { __tldaScrollRestoreTrace?: Array<Record<string, unknown>> }
+    const buf = (w.__tldaScrollRestoreTrace ??= [])
+    buf.push(withTime)
+    if (buf.length > 150) buf.splice(0, buf.length - 150)
+  } catch {
+    // The trace never breaks the list.
+  }
+  try {
+    console.info('[scroll-restore]', JSON.stringify(withTime))
+  } catch {
+    // Ignore console failures.
+  }
+}
+
 export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProps<AnchoredChatItem>>(function AnchoredChatList({
   items,
   className,
@@ -2627,6 +2649,15 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
         followOffSettleTimerRef.current = 0
       }
       pendingDepartureRef.current = false
+      traceScrollRestore({ // TEMPORARY v5 instrumentation
+        phase: 'tailMode-true',
+        prevTailMode: tailModeRef.current,
+        top,
+        tailTop: tailTop(),
+        eps: tailEpsRef.current,
+        forceTail: opts?.forceTail === true,
+        atBottom,
+      })
       setTailMode(true, getDetail)
     } else if (tailModeRef.current && !followOffSettleTimerRef.current) {
       // Still following as of the last committed transition — give an
@@ -2742,9 +2773,19 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
 
   useLayoutEffect(() => {
     const wasReset = previousResetKeyRef.current !== resetKey
+    const prevResetKeyForTrace = previousResetKeyRef.current // TEMPORARY v5 instrumentation
     const previousKeys = previousKeysRef.current
     previousResetKeyRef.current = resetKey
     previousKeysRef.current = itemKeys
+    if (wasReset) { // TEMPORARY v5 instrumentation
+      traceScrollRestore({
+        phase: 'wasReset',
+        prevResetKey: String(prevResetKeyForTrace ?? '').slice(0, 80),
+        resetKey: String(resetKey ?? '').slice(0, 80),
+        prevCount: previousKeys.length,
+        nextCount: itemKeys.length,
+      })
+    }
     if (previousKeys.length && itemKeys[0] !== previousKeys[0]) didStartReachRef.current = false
     // A persisted scroll anchor is adopted once per mount and stays pending
     // until it restores or is abandoned: the first population regularly
@@ -2775,6 +2816,13 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
         startOf: (key: string) => chatScrollStartOf(itemKeys, heightOf, key),
       })
       if (decision.action === 'restore' && decision.top != null) {
+        traceScrollRestore({ // TEMPORARY v5 instrumentation
+          phase: 'restore-commit',
+          top: decision.top,
+          itemCount: itemKeys.length,
+          atTail,
+          pendingDeparture: pendingDepartureRef.current,
+        })
         setModelTop(decision.top)
         // setModelTop arms the follow-off settle timer, but the reader was
         // already away from the tail before the reload — commit that now,
@@ -2787,9 +2835,26 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
         scrollToTail()
         return
       }
+      traceScrollRestore({ // TEMPORARY v5 instrumentation
+        phase: 'abandon',
+        atTail,
+        tailMode: tailModeRef.current,
+        pendingDeparture: pendingDepartureRef.current,
+      })
       pendingScrollRestoreRef.current = null
     }
     if (wasReset || previousKeys.length === 0 || tailModeRef.current) {
+      traceScrollRestore({ // TEMPORARY v5 instrumentation
+        phase: 'fallthrough',
+        wasReset,
+        first: previousKeys.length === 0,
+        tailMode: tailModeRef.current,
+        modelTop: modelTopRef.current,
+        prevCount: previousKeys.length,
+        nextCount: itemKeys.length,
+        headKey: String(itemKeys[0] ?? '').slice(0, 40),
+        tailKey: String(itemKeys[itemKeys.length - 1] ?? '').slice(0, 40),
+      })
       scrollToTail()
       return
     }
@@ -2827,6 +2892,15 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     if (now - persistThrottleRef.current < 500) return
     persistThrottleRef.current = now
     pendingPersistRef.current = null
+    traceScrollRestore({ // TEMPORARY v5 instrumentation
+      phase: 'persist-write',
+      tail: state.tail,
+      anchorKey: anchor?.anchorKey ?? null,
+      anchorOffset: anchor?.anchorOffset ?? null,
+      modelTop: modelTopRef.current,
+      tailTop: tailTop(),
+      atBottom,
+    })
     writeChatScrollState(browserLocalStorage(), chatScrollStoreKey(persistKey), state)
   }, [geometryVersion, itemKeySignature, resetKey, persistKey, tailTop])
 
@@ -2834,6 +2908,10 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     if (!persistKey) return
     const flush = () => {
       if (!pendingPersistRef.current) return
+      traceScrollRestore({ // TEMPORARY v5 instrumentation
+        phase: 'persist-flush',
+        state: JSON.stringify(pendingPersistRef.current)?.slice(0, 200) ?? null,
+      })
       writeChatScrollState(browserLocalStorage(), chatScrollStoreKey(persistKey), pendingPersistRef.current)
       pendingPersistRef.current = null
     }
