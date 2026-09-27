@@ -67,6 +67,96 @@ export function isReaderInputInFlight({
     || pointerHeldInPanel === true
 }
 
+/**
+ * Scroll restoration across reload.
+ *
+ * A reader scrolled up to a card who reloads lands at the tail: the list
+ * mounts empty and its first population unconditionally scrolls there, so the
+ * card they were looking at is gone from where they were looking. Live keeps
+ * the reader where they were; reload did not, which is the asymmetry Skip
+ * reported as delegate cards missing from history.
+ *
+ * The persisted state is an ANCHOR, not a pixel offset: the key of the topmost
+ * visible item plus the offset into it. A raw modelTop is meaningless against
+ * a different item set, while an anchor either names a row on screen or names
+ * nothing — and nothing restores to the tail, which is the current behaviour.
+ * The filter key rides along so a filter change never restores a stale
+ * position from a different conversation.
+ */
+export const CHAT_SCROLL_STORE_VERSION = 1
+
+export function chatScrollStoreKey(panelId) {
+  return `tlda:chat-scroll:v1:${String(panelId || '')}`
+}
+
+// The topmost item intersecting modelTop: the row the reader's viewport starts
+// in. `heightOf` resolves measured-or-estimated heights the same way the list
+// geometry does. Null when no row intersects, which is the tail case the
+// caller records as tail rather than as an anchor.
+export function anchorChatScrollPosition(keys, heightOf, modelTop) {
+  if (!Array.isArray(keys) || keys.length === 0) return null
+  if (!Number.isFinite(modelTop) || modelTop < 0) return null
+  let cursor = 0
+  for (const key of keys) {
+    const h = heightOf(key)
+    const height = Number.isFinite(h) && h > 0 ? h : 0
+    if (cursor + height > modelTop) {
+      return { anchorKey: String(key), anchorOffset: modelTop - cursor }
+    }
+    cursor += height
+  }
+  return null
+}
+
+// The accumulated start of one key under the same walk the list geometry
+// builds its `starts` map from. Null when the key is not in this item set,
+// which is a page that does not contain the anchor.
+export function chatScrollStartOf(keys, heightOf, anchorKey) {
+  if (!Array.isArray(keys) || typeof anchorKey !== 'string' || !anchorKey) return null
+  let cursor = 0
+  for (const key of keys) {
+    if (String(key) === anchorKey) return cursor
+    const h = heightOf(key)
+    cursor += Number.isFinite(h) && h > 0 ? h : 0
+  }
+  return null
+}
+
+// Where a saved state puts the reader, or null for "the tail, as today".
+// Null covers: no record, a version bump, a filter change, an explicit tail
+// record, a malformed record, and an anchor whose row is not on screen.
+export function resolveChatScrollRestore(saved, resetKey, startOf) {
+  if (!saved || typeof saved !== 'object') return null
+  if (saved.v !== CHAT_SCROLL_STORE_VERSION) return null
+  if (typeof saved.filterKey !== 'string' || saved.filterKey !== resetKey) return null
+  if (saved.tail === true) return null
+  if (typeof saved.anchorKey !== 'string' || !saved.anchorKey) return null
+  if (!Number.isFinite(saved.anchorOffset) || saved.anchorOffset < 0) return null
+  const start = startOf(saved.anchorKey)
+  if (!Number.isFinite(start) || start < 0) return null
+  return start + saved.anchorOffset
+}
+
+export function readChatScrollState(storage, key) {
+  try {
+    const raw = storage?.getItem?.(key)
+    if (typeof raw !== 'string' || !raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+export function writeChatScrollState(storage, key, state) {
+  try {
+    storage?.setItem?.(key, JSON.stringify(state))
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function preserveChatViewportAcrossArrival({
   scrollTop,
   scrollHeight,

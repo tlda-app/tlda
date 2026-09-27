@@ -50,7 +50,7 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
-import { anchoredTailTop, isReaderInputInFlight, nextEarlierChatHistoryWindow, shouldPrefetchEarlierChatHistory } from './chatViewportAnchor.mjs'
+import { anchorChatScrollPosition, anchoredTailTop, chatScrollStartOf, chatScrollStoreKey, isReaderInputInFlight, nextEarlierChatHistoryWindow, readChatScrollState, resolveChatScrollRestore, shouldPrefetchEarlierChatHistory, writeChatScrollState, CHAT_SCROLL_STORE_VERSION } from './chatViewportAnchor.mjs'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 // @ts-ignore — vanilla JS module
 import {
@@ -2453,6 +2453,10 @@ type AnchoredChatListProps<T extends AnchoredChatItem> = {
   className?: string
   style?: React.CSSProperties
   resetKey: string
+  // Persist this list's scroll anchor across reload under this panel id, and
+  // restore to it on the next mount instead of landing at the tail. Omitted
+  // means no persistence: current behaviour exactly.
+  persistKey?: string | null
   renderItem: (item: T) => React.ReactNode
   onStartReached?: (window: number) => boolean
   initialHistoryWindow?: number
@@ -2461,11 +2465,20 @@ type AnchoredChatListProps<T extends AnchoredChatItem> = {
   setScroller?: (el: HTMLDivElement | null) => void
 }
 
+function browserLocalStorage(): Storage | null {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage : null
+  } catch {
+    return null
+  }
+}
+
 export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProps<AnchoredChatItem>>(function AnchoredChatList({
   items,
   className,
   style,
   resetKey,
+  persistKey = null,
   renderItem,
   onStartReached,
   initialHistoryWindow = CHAT_FIRST_PAGE,
@@ -2490,6 +2503,8 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
   // silently cancel every debounced follow-off before it can fire.
   const pendingDepartureRef = useRef(false)
   const didStartReachRef = useRef(false)
+  const persistThrottleRef = useRef(0)
+  const pendingPersistRef = useRef<Record<string, unknown> | null>(null)
   const earlierHistoryWindowRef = useRef(initialHistoryWindow)
   const previousResetKeyRef = useRef(resetKey)
   const previousKeysRef = useRef<string[]>([])
@@ -2695,6 +2710,24 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     previousKeysRef.current = itemKeys
     if (previousKeys.length && itemKeys[0] !== previousKeys[0]) didStartReachRef.current = false
     if (wasReset || previousKeys.length === 0 || tailModeRef.current) {
+      // First population after a mount is the only restore point: a filter
+      // change (wasReset) always takes the tail, and so does a saved state
+      // that names nothing on screen. Anything resolveChatScrollRestore
+      // refuses falls through to the tail below, which is the behaviour to
+      // this point.
+      if (!wasReset && previousKeys.length === 0 && persistKey) {
+        const heightOf = (key: string) => heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
+        const saved = readChatScrollState(browserLocalStorage(), chatScrollStoreKey(persistKey))
+        const top = resolveChatScrollRestore(saved, resetKey, (key) => chatScrollStartOf(itemKeys, heightOf, key))
+        if (top != null) {
+          setModelTop(top)
+          // setModelTop arms the follow-off settle timer, but the reader was
+          // already away from the tail before the reload — commit that now,
+          // or a live arrival inside the settle window yanks back to the tail.
+          setTailMode(false, () => scrollSnapshot(top, modelTopRef.current))
+          return
+        }
+      }
       scrollToTail()
       return
     }
@@ -2713,7 +2746,38 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     }
     const newAnchorTop = anchorKey ? geometry.starts.get(anchorKey) : undefined
     setModelTop((newAnchorTop ?? modelTopRef.current) + anchorOffset)
-  }, [itemKeySignature, resetKey])
+  }, [itemKeySignature, resetKey, persistKey])
+
+  // Persist the reader's anchor so a reload lands where they were. Runs after
+  // scroll renders (geometryVersion moves on every setModelTop) and after new
+  // content, throttled; pagehide flushes the trailing write. Skipped while the
+  // list is empty so a mount never overwrites a good record with the tail.
+  useEffect(() => {
+    if (!persistKey || itemKeys.length === 0) return
+    const heightOf = (key: string) => heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
+    const atBottom = Math.abs(modelTopRef.current - tailTop()) <= tailEpsRef.current
+    const anchor = atBottom ? null : anchorChatScrollPosition(itemKeys, heightOf, modelTopRef.current)
+    const state = anchor
+      ? { v: CHAT_SCROLL_STORE_VERSION, filterKey: resetKey, tail: false, ...anchor }
+      : { v: CHAT_SCROLL_STORE_VERSION, filterKey: resetKey, tail: true }
+    pendingPersistRef.current = state
+    const now = Date.now()
+    if (now - persistThrottleRef.current < 500) return
+    persistThrottleRef.current = now
+    pendingPersistRef.current = null
+    writeChatScrollState(browserLocalStorage(), chatScrollStoreKey(persistKey), state)
+  }, [geometryVersion, itemKeySignature, resetKey, persistKey, tailTop])
+
+  useEffect(() => {
+    if (!persistKey) return
+    const flush = () => {
+      if (!pendingPersistRef.current) return
+      writeChatScrollState(browserLocalStorage(), chatScrollStoreKey(persistKey), pendingPersistRef.current)
+      pendingPersistRef.current = null
+    }
+    window.addEventListener('pagehide', flush)
+    return () => window.removeEventListener('pagehide', flush)
+  }, [persistKey])
 
   // Re-measure every rendered row and absorb the difference.
   //
@@ -7263,6 +7327,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 ref={anchoredListRef}
                 items={allItems}
                 resetKey={filterKey}
+                persistKey={shape.id}
                 style={{ flex: 1, minHeight: 0 }}
                 setScroller={setAnchoredChatScroller}
                 initialHistoryWindow={CHAT_FIRST_PAGE}
