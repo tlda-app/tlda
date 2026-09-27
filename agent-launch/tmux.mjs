@@ -110,6 +110,40 @@ export async function sessionHasRuntime(session, options = {}) {
   return (await sessionRuntimeState(session, options)).runtime
 }
 
+// Do the session's pane pids exist, regardless of what they run? This is the
+// P1 never-joined alive-test — the design's own "pane pid dead / session
+// vanished" (air-settle §5), NOT agent-runtime detection. A pane holding a
+// live non-agent process (a stray shell, a bare sleep) is a live process, and
+// AWAKE=PROCESS forbids the interpretation layer that would call it dead.
+// `alive` is any pane pid signalling OK (EPERM counts: the process exists but
+// is un-signallable); `probed: false` is a failure to look (tmux unreachable
+// or an indeterminate signal check), never an observation of death.
+export async function sessionPaneAlive(session, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+  let panes
+  try {
+    panes = await tmux(tmuxSocket, 'list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_pid}')
+  } catch {
+    return { probed: false, alive: false, pids: [] }
+  }
+  const pids = panes.stdout.trim().split(/\s+/).filter(Boolean).map(Number).filter(n => Number.isInteger(n) && n > 0)
+  // tmux answered and the session has no panes. That is an observation.
+  if (!pids.length) return { probed: true, alive: false, pids: [] }
+  let alive = false
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 0)
+      alive = true
+      break
+    } catch (error) {
+      // ESRCH is the observation (no such process); EPERM is existence
+      // without permission. Anything else is a failure to look, not death.
+      if (error?.code === 'EPERM') { alive = true; break }
+      if (error?.code !== 'ESRCH') return { probed: false, alive: false, pids }
+    }
+  }
+  return { probed: true, alive, pids }
+}
+
 // Which tmux sessions exist, and whether that list is an observation.
 //
 // `sessionRuntimeState` cannot answer "this session does not exist": its probe

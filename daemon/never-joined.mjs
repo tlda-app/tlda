@@ -2,10 +2,21 @@
 // launch-latency grace gets a process-grounded verdict — never a clock
 // verdict. Process alive -> `leaked-alive` (informational: a live process is
 // never a failure). Session observed absent from the tmux list, or listed
-// but confirmed dead -> `absent` (a positive observation by the party that
+// but with dead panes -> `absent` (a positive observation by the party that
 // can see it). An unobserved list, an inconclusive probe, or a row with no
 // recorded session at all (pre-F2 rows) -> no verdict: not looking is not
 // evidence, and an absent record is not an absent process.
+//
+// The alive-test is the design's own "pane pid dead / session vanished"
+// (air-settle §5: "process gone (pane pid dead / session vanished)"), read
+// via sessionPaneAlive: any pane pid signalling OK is a live process,
+// whatever it runs. An earlier revision used sessionRuntimeState —
+// agent-CLI-or-node detection — which called a pane holding a live non-agent
+// process dead; that was the deviation, caught by the harness on a sleep
+// specimen 2026-09-27, and this is the restoration. Do not "tighten" it
+// back: AWAKE=PROCESS, and runtime-semantics is the interpretation layer
+// that rule forbids. Under `absent` the waiter is told its process is gone,
+// so that verdict must never fire while a pane pid exists.
 //
 // Absence is read off `list-sessions`, never off a failed per-session probe:
 // `list-panes -t <session>` fails identically for an absent session and an
@@ -13,8 +24,6 @@
 // documents the trap). The recorded name is final (F2 writes it
 // post-uniqueSessionName, spawnTmux never rotates silently), so a missing
 // name is a missing process, not a renamed one.
-
-import { sessionConfirmedDead } from '../agent-launch/tmux.mjs'
 
 // Launch-latency grace: a process exists within seconds of accepted launch
 // or never; 10 minutes is paranoia (accepted P1 design, restated gate). This
@@ -27,10 +36,10 @@ export function neverJoinedCutoffIso(nowMs = Date.now(), graceMs = NEVER_JOINED_
 
 // Examine one unjoined mint row. Returns the emitted verdict or null.
 // `listSessions()` answers listSessionNames ({probed, names});
-// `probeSession(session)` answers sessionRuntimeState; `emit(msg)` sends it
-// daemon→server; `emitted` holds `${mint_id}:${verdict}` pairs already sent
-// this daemon lifetime (the server admission is durably idempotent, so this
-// set only spares re-sends, never correctness).
+// `probeSession(session)` answers sessionPaneAlive ({probed, alive, pids});
+// `emit(msg)` sends it daemon→server; `emitted` holds `${mint_id}:${verdict}`
+// pairs already sent this daemon lifetime (the server admission is durably
+// idempotent, so this set only spares re-sends, never correctness).
 export async function examineNeverJoinedRow({ facts, listSessions, probeSession, emit, emitted, daemonKey, source = 'daemon-never-joined-sweep' }) {
   if (!facts || facts.joinedAt) return null
   const session = facts.processState && typeof facts.processState === 'object' ? facts.processState.tmux_session : null
@@ -55,12 +64,12 @@ export async function examineNeverJoinedRow({ facts, listSessions, probeSession,
     } catch {
       return null
     }
-    if (probe?.runtime) {
+    if (probe?.alive) {
       verdict = 'leaked-alive'
-      observed = { session, session_listed: true, runtime: true, probed: !!probe?.probed, checked_at: checkedAt }
-    } else if (sessionConfirmedDead(probe)) {
+      observed = { session, session_listed: true, runtime: true, pane_pids: probe.pids || [], probed: !!probe?.probed, checked_at: checkedAt }
+    } else if (probe?.probed) {
       verdict = 'absent'
-      observed = { session, session_listed: true, runtime: false, probed: true, checked_at: checkedAt }
+      observed = { session, session_listed: true, runtime: false, pane_pids: probe.pids || [], probed: true, checked_at: checkedAt }
     } else {
       return null
     }

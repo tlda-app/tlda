@@ -36,9 +36,9 @@ async function examine({ row, list = null, probe = null, emitted = new Set(), ca
   return { verdict, sent, emitted }
 }
 
-const liveProbe = async () => ({ runtime: true, mcp: false, probed: true })
-const deadProbe = async () => ({ runtime: false, mcp: false, probed: true })
-const blindProbe = async () => ({ runtime: false, mcp: false, probed: false })
+const liveProbe = async () => ({ probed: true, alive: true, pids: [4242] })
+const deadProbe = async () => ({ probed: true, alive: false, pids: [4242] })
+const blindProbe = async () => ({ probed: false, alive: false, pids: [] })
 
 test('listed session with live process emits leaked-alive with the approved shape', async () => {
   const { verdict, sent } = await examine({
@@ -57,8 +57,27 @@ test('listed session with live process emits leaked-alive with the approved shap
   assert.equal(msg.observed.session, 'fleet-test')
   assert.equal(msg.observed.session_listed, true)
   assert.equal(msg.observed.runtime, true)
+  assert.deepEqual(msg.observed.pane_pids, [4242])
   assert.ok(msg.observed.checked_at)
   assert.ok(msg.ts)
+})
+
+test('listed session with live pane pid but no agent runtime emits leaked-alive (design: pane pid dead is the test)', async () => {
+  // The pane holds a live non-agent process (a bare sleep, a stray shell):
+  // pane pid signals OK, but no agent CLI would be detected in its subtree.
+  // The design's own test is pane-pid existence, not runtime detection, so
+  // this is leaked-alive — and runtime-semantics answering absent here is
+  // the deviation, caught by the harness on a sleep specimen 2026-09-27.
+  const { verdict, sent } = await examine({
+    row: facts(),
+    list: { probed: true, names: ['fleet-test'] },
+    probe: async () => ({ probed: true, alive: true, pids: [4242] }),
+  })
+  assert.equal(verdict, 'leaked-alive')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].observed.session_listed, true)
+  assert.equal(sent[0].observed.runtime, true)
+  assert.deepEqual(sent[0].observed.pane_pids, [4242])
 })
 
 test('session observed absent from the list emits absent without probing', async () => {
@@ -84,6 +103,18 @@ test('listed but confirmed-dead session emits absent', async () => {
   })
   assert.equal(verdict, 'absent')
   assert.equal(sent[0].observed.session_listed, true)
+  assert.deepEqual(sent[0].observed.pane_pids, [4242])
+})
+
+test('listed session with no panes emits absent', async () => {
+  const { verdict, sent } = await examine({
+    row: facts(),
+    list: { probed: true, names: ['fleet-test'] },
+    probe: async () => ({ probed: true, alive: false, pids: [] }),
+  })
+  assert.equal(verdict, 'absent')
+  assert.equal(sent[0].observed.session_listed, true)
+  assert.deepEqual(sent[0].observed.pane_pids, [])
 })
 
 test('unobserved list emits nothing even for a missing name', async () => {

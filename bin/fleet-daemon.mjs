@@ -128,7 +128,7 @@ import { EditOperationStore } from '../daemon/edit-operation-store.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { launchMintProcess } from '../agent-launch/index.mjs'
-import { listRunningSessionNames, listSessionNames, sessionConfirmedDead, sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
+import { listRunningSessionNames, listSessionNames, sessionConfirmedDead, sessionPaneAlive, sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { sanitizeSessionName } from '../agent-launch/identity.mjs'
 import { resolvePartialMintRuntime } from '../daemon/partial-mint-runtime-recovery.mjs'
 import { resolvePartialMintPermissionAuthority } from '../daemon/partial-mint-permission-authority.mjs'
@@ -1434,7 +1434,7 @@ function examineOneNeverJoinedRow(facts, source) {
   return examineNeverJoinedRow({
     facts,
     listSessions: () => listSessionNames({ tmuxSocket: TMUX_SOCKET }),
-    probeSession: session => sessionRuntimeState(session, { tmuxSocket: TMUX_SOCKET }),
+    probeSession: session => sessionPaneAlive(session, { tmuxSocket: TMUX_SOCKET }),
     emit: msg => sendMsg(msg),
     emitted: neverJoinedEmitted,
     daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
