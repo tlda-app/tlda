@@ -12,7 +12,7 @@ test('PreToolUse maps to thinking with the hook tool name', () => {
 })
 
 test('Stop and failure edges map to idle', () => {
-  for (const name of ['Stop', 'StopFailure', 'PermissionDenied']) {
+  for (const name of ['Stop', 'StopFailure']) {
     assert.equal(hookActivityFor(name), 'idle')
   }
   assert.deepEqual(
@@ -25,6 +25,7 @@ test('non-activity and unknown hook events stay silent', () => {
   for (const name of [
     'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'SubagentStart', 'SubagentStop',
     'PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'PermissionRequest',
+    'PermissionDenied',
     'Notification', 'PreCompact', 'TaskCompleted', 'TeammateIdle', 'Whatever',
     null, undefined, 42,
   ]) {

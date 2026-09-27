@@ -18,22 +18,25 @@
 // Claude hook events that produce an agent-status activity edge. Everything
 // else the binary confirms (SessionStart/End, UserPromptSubmit, SubagentStart/
 // SubagentStop, PostToolBatch, TaskCompleted, TeammateIdle, Notification,
-// PreCompact, PostToolUse, PostToolUseFailure) is either a session/subagent
-// binding concern owned elsewhere, an observational detail below the
-// thinking/idle grain, or a live-verification gap — see the row comments in
-// .scratch/status-audit-table.md. Unknown names return null: hook silence
+// PreCompact, PostToolUse, PostToolUseFailure, PermissionDenied,
+// PermissionRequest) is either a session/subagent binding concern owned
+// elsewhere, an observational detail below the thinking/idle grain, a state
+// the pane owns (permission: continuously observable in the pane, only
+// transition-visible to a hook — a hook edge there would flap against the
+// pane under latest-wins), or a live-verification gap — see the row comments
+// in .scratch/status-audit-table.md. Unknown names return null: hook silence
 // must never fabricate an edge.
 const ACTIVITY_BY_HOOK_EVENT = Object.freeze({
   // A tool is about to run: the agent is working. Carried tool comes from
   // the payload (tool_name), not from this table.
   PreToolUse: 'thinking',
-  // The turn produced no further work: idle, subject to the daemon's
-  // idle-confirm hysteresis (a single Stop never fabricates a turn end).
+  // The turn produced no further work: idle. A hook Stop is a turn-end event,
+  // not a sampled glance, so it needs none of the pane path's idle-confirm
+  // hysteresis — and a turn that continues self-heals on the next PreToolUse.
   Stop: 'idle',
-  // The turn ended because the tool call failed or permission was denied:
-  // nothing is running underneath any more.
+  // The turn ended because the tool call failed: nothing is running
+  // underneath any more.
   StopFailure: 'idle',
-  PermissionDenied: 'idle',
 })
 
 export function hookActivityFor(hookEventName) {
