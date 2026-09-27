@@ -110,7 +110,7 @@ async function resolveSenderFileUrl(chipPath: string, sourceAgent: string): Prom
   return body.url
 }
 
-async function fetchChatMarkdown(chipUrl: string, chipPath: string, sourceAgent: string): Promise<string> {
+export async function fetchChatMarkdown(chipUrl: string, chipPath: string, sourceAgent: string): Promise<string> {
   if (chipUrl) return await fetchMarkdownChipText(chipUrl)
   if (!chipPath || !sourceAgent) throw new Error('markdown chip has no uploaded URL or source agent')
   const url = await resolveSenderFileUrl(chipPath, sourceAgent)

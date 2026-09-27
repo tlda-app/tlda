@@ -6799,15 +6799,21 @@ function FleetChatInner({ shape }: { shape: any }) {
         const mdCard = target.closest('.md-file-card') as HTMLElement
         if (mdCard) {
           const filePath = mdCard.dataset.path || ''
+          const fileUrl = mdCard.dataset.url || ''
           const name = mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
           const wrap = mdCard.closest('.code-block-wrap')
           const source = wrap?.querySelector('template.code-block-copy-source') as HTMLTemplateElement | null
           const markdown = source?.content.textContent || filePath
           const value = `file:${filePath}`
+          // The drop resolves the file through the same chain as clicking the
+          // chip (uploaded URL, else the sender's file via resolve-chat-file),
+          // so the drag carries the same identity a click reads.
+          const chatLine = mdCard.closest('[data-msg-from]') as HTMLElement | null
           drag = {
             pillId: null, pillType: 'doc' as any, value,
             displayName: name, color: '#63a0db', content: markdown,
-            filePath, markdownChip: true,
+            filePath, fileUrl, sourceAgent: chatLine?.dataset.msgFrom || undefined,
+            markdownChip: true,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }

@@ -59,4 +59,14 @@ Earlier forms (superseded, not the build target):
 4. Report rung per behavior (implemented/type-checked/deployed/watched) to
    chief-apprentice. No fix counts; report what the app was watched doing.
 
-Status: IN PROGRESS (existence check code-side done; headed repro next).
+Status: FIXED + VERIFIED HEADED 2026-09-27 (drag-chip). Root cause: the
+drop resolved path-only chips via the removed /api/read-file route and threw
+into a fire-and-forget promise — no document, no error. Fix: drag carries
+fileUrl + sourceAgent; drop resolves via the shared click-path chain
+(fetchChatMarkdown); load failure surfaces CHIP_OPEN_FAILED instead of
+throwing. Headed: URL chip drop creates html-page column + fleet-docview
+rendering the file; unresolvable chip shows the error toast; no unhandled
+rejection. tests 6/6, tsc clean. Finding (pre-existing, shared with label
+drops, not fixed): canvas-dropped panels carry no lane offset, so for
+nonzero-lane identities the HUD projects them off-screen; lane-0 (Skip)
+lands under the cursor.

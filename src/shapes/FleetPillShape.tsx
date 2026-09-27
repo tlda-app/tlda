@@ -40,6 +40,7 @@ import {
   type FleetInteractionFrame,
 } from '../wm/fleet-interaction-frame'
 import { materializeMarkdownChip } from './markdown-chip-materialize'
+import { CHIP_OPEN_FAILED, fetchChatMarkdown } from './fleet-chat-markdown-open'
 import { type UiIntentTransaction } from '../uiIntentTelemetry'
 import {
   applyFilterPreviewWithIntent,
@@ -319,6 +320,7 @@ async function createMarkdownDocviewShapeFromPill(
   const valuePath = value.startsWith('file:') ? value.slice('file:'.length) : undefined
   const filePath = typeof pill.meta.filePath === 'string' ? pill.meta.filePath : valuePath
   const fileUrl = typeof pill.meta.fileUrl === 'string' ? pill.meta.fileUrl : undefined
+  const sourceAgent = typeof pill.meta.sourceAgent === 'string' ? pill.meta.sourceAgent : undefined
   const displayName = typeof pill.props.displayName === 'string' ? pill.props.displayName : undefined
   const title = displayName || filePath?.split('/').pop() || 'Markdown chip'
   const candidate = `${reportArtifactNameCandidate(fileUrl, filePath, title)} `
@@ -328,33 +330,43 @@ async function createMarkdownDocviewShapeFromPill(
 
   let markdown = content
   if (!markdown || markdown === filePath || markdown === value) {
-    const fetchUrl = fileUrl || (filePath ? `/api/read-file?path=${encodeURIComponent(filePath)}` : '')
-    if (!fetchUrl) {
-      showError?.('This Markdown file cannot be opened here.')
+    // A chip outside a code block carries no source template, so its content
+    // IS the path and always lands here. Resolve it through the same chain as
+    // clicking the chip — an uploaded URL first, else the sender's file via
+    // resolve-chat-file — because the file lives on the sender's machine.
+    // A load failure opens NO document; the failure goes to the error surface.
+    try {
+      markdown = await fetchChatMarkdown(fileUrl || '', filePath || '', sourceAgent || '')
+    } catch (e) {
+      console.error('[fleet-pill] markdown chip drop could not load; opening no document:', e instanceof Error ? e.message : e)
+      showError?.(CHIP_OPEN_FAILED)
       return true
     }
-    const sourceRes = await fetch(fetchUrl)
-    if (!sourceRes.ok) throw new Error(`markdown docview read failed: ${sourceRes.status}`)
-    markdown = await sourceRes.text()
   }
 
-  const projectName = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('project')
-  if (!projectName) {
-    showError?.('This Markdown file cannot be attached without an open document.')
+  try {
+    const projectName = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('project')
+    if (!projectName) {
+      showError?.('This Markdown file cannot be attached without an open document.')
+      return true
+    }
+    const materializedPart = await materializeMarkdownChip({ markdown, title, sourcePath: filePath })
+    if (!materializedPart.ok || !materializedPart.outputFile) {
+      showError?.(materializedPart.error || 'This Markdown file could not be attached to the project.')
+      return true
+    }
+    const url = `/docs/${projectName}/${materializedPart.outputFile}?t=${Date.now()}`
+    await createMarkdownDocviewFromContent(editor, pagePoint, title, markdown, {
+      materializedDoc: projectName,
+      materializedFile: materializedPart.outputFile,
+      ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
+    }, url)
+    return true
+  } catch (e) {
+    console.error('[fleet-pill] markdown chip drop failed; opening no document:', e instanceof Error ? e.message : e)
+    showError?.(CHIP_OPEN_FAILED)
     return true
   }
-  const materializedPart = await materializeMarkdownChip({ markdown, title, sourcePath: filePath })
-  if (!materializedPart.ok || !materializedPart.outputFile) {
-    showError?.(materializedPart.error || 'This Markdown file could not be attached to the project.')
-    return true
-  }
-  const url = `/docs/${projectName}/${materializedPart.outputFile}?t=${Date.now()}`
-  await createMarkdownDocviewFromContent(editor, pagePoint, title, markdown, {
-    materializedDoc: projectName,
-    materializedFile: materializedPart.outputFile,
-    ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
-  }, url)
-  return true
 }
 
 export async function createMarkdownDocviewFromContent(

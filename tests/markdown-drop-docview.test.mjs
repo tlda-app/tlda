@@ -36,6 +36,32 @@ test('Markdown doc-view creation is shared with the Markdown chip path', () => {
   )
 })
 
+test('dropped Markdown chips resolve through the shared click-path chain', () => {
+  // A chip outside a code block carries no source template, so its content IS
+  // the path and the drop must resolve it. That used to fetch a removed local
+  // route and throw into a fire-and-forget promise: no document, no error.
+  const fromPill = pill.slice(
+    pill.indexOf('async function createMarkdownDocviewShapeFromPill'),
+    pill.indexOf('export async function createMarkdownDocviewFromContent'),
+  )
+  assert.ok(fromPill.length > 0, 'createMarkdownDocviewShapeFromPill must precede createMarkdownDocviewFromContent')
+  assert.match(
+    fromPill,
+    /fetchChatMarkdown\(fileUrl \|\| '', filePath \|\| '', sourceAgent \|\| ''\)/,
+    'the pill drop must resolve Markdown through the same chain as clicking the chip',
+  )
+  assert.doesNotMatch(
+    fromPill,
+    /api\/read-file/,
+    'the Markdown drop must not fetch the removed local-files route',
+  )
+  assert.match(
+    fromPill,
+    /CHIP_OPEN_FAILED/,
+    'a chip the drop cannot load must surface the shared chip failure sentence',
+  )
+})
+
 test('the doc view is placed the way a dropped label places a chat', () => {
   // Skip, 2026-09-18: "place it like the fking label drop places the chat".
   // The label drop creates its panel at the gesture's page point and stops;
