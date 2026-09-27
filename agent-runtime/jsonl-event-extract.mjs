@@ -3,6 +3,24 @@ import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
 import { ACTIVITY_NOISE, isPrettyPrintTool } from '../shared/activity-tool-classification.mjs'
 import { editOperation, textChange } from './edit-operation.mjs'
 
+function todoSummary(todos) {
+  if (!Array.isArray(todos)) return ''
+  if (todos.length === 0) return '0/0 todos'
+  let done = 0
+  let active = ''
+  let queued = ''
+  for (const item of todos) {
+    const status = item?.status
+    if (status === 'completed' || status === 'complete' || status === 'done') { done++; continue }
+    if (typeof item?.text !== 'string' || !item.text.trim()) continue
+    if (status === 'in_progress' || status === 'working') active ||= item.text.trim()
+    else queued ||= item.text.trim()
+  }
+  const head = `${done}/${todos.length}`
+  const current = active || queued
+  return current ? `${head}: ${current}` : `${head} todos`
+}
+
 function normalizedToolInput(name, input, id) {
   const kind = String(name || '').toLowerCase()
   const file = input?.file_path || input?.path
@@ -179,7 +197,9 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
           const arg = input.file_path || input.path ||
             input.command || input.cat || input.pattern || input.message ||
             input.query || input.description || input.reason ||
-            input.agent || input.doc || input.ref || input.text || input._raw || ''
+            input.agent || input.doc || input.ref ||
+            todoSummary(input.todos) || input.name || input.action || input.session || input.filter ||
+            input.text || input._raw || ''
           const evt = stampOperationId({ tool: humanName, arg, ts: ev.timestamp, id: block.id })
           evt.status = block.status || 'started'
           if (block.duration) evt.duration = block.duration

@@ -92,6 +92,26 @@ export function createMuseRecordParser() {
       if (event.kind === 'msp_tool_result_inline' && event.tool_call_id && event.text != null) {
         return { type: 'user', timestamp: ts, blocks: [{ type: 'tool_result', id: event.tool_call_id, text: event.text, is_error: !!event.is_error }] }
       }
+      // write_todos is the one tool that never produces effect records: its
+      // commit is followed by task records and this snapshot, never by a
+      // terminal — so the terminal path below can never emit it. The snapshot
+      // carries the same items array the commit did; emit it as the completed
+      // call so the feed row exists for the arg summary to fill.
+      if (event.kind === 'todo_snapshot_updated' && Array.isArray(event.items)) {
+        const id = event.revision != null ? `todos:${event.revision}` : record.id
+        return {
+          type: 'assistant',
+          timestamp: ts,
+          blocks: [{
+            type: 'tool_use',
+            name: event.source_tool || 'write_todos',
+            input: { todos: event.items },
+            id,
+            status: 'completed',
+            correlationId: id,
+          }],
+        }
+      }
       if (event.kind === 'tool_result_batch_committed') {
         // Result text is what result-built cards (screenshots, diffs) and
         // pretty-print bodies are made of; the muse parser used to drop it,

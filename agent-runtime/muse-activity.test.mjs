@@ -120,6 +120,34 @@ test('result batches emit tool_result blocks keyed by call id', () => {
   ])
 })
 
+test('a todo snapshot emits the completed write_todos call', () => {
+  const parse = createMuseRecordParser()
+  const out = parse(record('runtime.session', {
+    kind: 'run',
+    event: {
+      kind: 'todo_snapshot_updated',
+      revision: 3,
+      source_tool: 'write_todos',
+      items: [
+        { text: 'Batch 1: land main', status: 'completed' },
+        { text: 'Batch 2: mailbox-poll op', status: 'in_progress' },
+      ],
+    },
+  }))
+  assert.equal(out.type, 'assistant')
+  assert.deepEqual(out.blocks, [{
+    type: 'tool_use',
+    name: 'write_todos',
+    input: { todos: [
+      { text: 'Batch 1: land main', status: 'completed' },
+      { text: 'Batch 2: mailbox-poll op', status: 'in_progress' },
+    ] },
+    id: 'todos:3',
+    status: 'completed',
+    correlationId: 'todos:3',
+  }])
+})
+
 test('historical ownership requires a committed Muse login result', () => {
   const marker = 'TLDA_LOGIN_MARKER {"type":"tlda-login-marker","version":1,"fleet_id":"fleet:historical","harness_kind":"muse"}'
   assert.equal(museLoginMarkerFromRecord(record('runtime.user_intent.accepted', {
