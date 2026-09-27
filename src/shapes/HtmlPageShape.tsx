@@ -1107,11 +1107,17 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           })
           const anchorY = anchor ? htmlHeadingPositions.get(targetShape.id)?.[anchor] : null
           showTarget(anchorY ?? null)
-          if (anchor && anchorY == null) {
+          if (anchor) {
+            // Positions measured mid-load go stale (measured: a figure in a
+            // loading tabset reported y=5 against a true y=1039), and the
+            // bridge re-reports as layout settles — so track changes, not
+            // just the null-to-valued transition. The docview follows without
+            // moving the camera, so converging repeatedly is safe.
+            let shown = anchorY ?? null
             const poll = setInterval(() => {
               const resolved = htmlHeadingPositions.get(targetShape.id)?.[anchor]
-              if (resolved == null) return
-              clearInterval(poll)
+              if (resolved == null || resolved === shown) return
+              shown = resolved
               showTarget(resolved)
             }, 200)
             setTimeout(() => clearInterval(poll), ANCHOR_RESOLVE_TIMEOUT_MS)
@@ -1151,39 +1157,47 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           const cx = targetShape.x + targetShape.props.w / 2
           if (anchor) {
             const yOff = htmlHeadingPositions.get(targetShape.id)?.[anchor]
-            if (yOff != null) {
             // Place heading at ~15% from top (center + 0.35*vh pushes heading up from center)
-              if (isTemporaryMarkdownNavigation) {
-                setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y + yOff, 0.15, sourceLeftScreen)
-              } else {
-                editor.centerOnPoint({ x: cx, y: targetShape.y + yOff + vpHeight * 0.35 }, { animation: { duration: 300 } })
-              }
-              recordHtmlNavigationEnd(editor)
-            } else {
-              // Anchor not resolved yet — center on page top, poll for anchor
-              if (isTemporaryMarkdownNavigation) {
-                setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y, 0.2, sourceLeftScreen)
-              } else {
-                editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
-              }
-              recordHtmlNavigationEnd(editor)
-              const poll = setInterval(() => {
-                const yOff2 = htmlHeadingPositions.get(targetShape.id)?.[anchor!]
-                if (yOff2 != null) {
-                  clearInterval(poll)
-                  const fresh = editor.store.get(targetShape.id) as any
-                  if (fresh) {
-                    const vph = editor.getViewportPageBounds().h
-                    if (isTemporaryMarkdownNavigation) {
-                      setCameraKeepingDocumentMargin(editor, fresh, fresh.y + yOff2, 0.15, sourceLeftScreen)
-                    } else {
-                      editor.centerOnPoint({ x: fresh.x + fresh.props.w / 2, y: fresh.y + yOff2 + vph * 0.35 }, { animation: { duration: 300 } })
-                    }
-                  }
+            const centerOnAnchorY = (y: number | null) => {
+              if (y != null) {
+                if (isTemporaryMarkdownNavigation) {
+                  setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y + y, 0.15, sourceLeftScreen)
+                } else {
+                  editor.centerOnPoint({ x: cx, y: targetShape.y + y + vpHeight * 0.35 }, { animation: { duration: 300 } })
                 }
-              }, 200)
-              setTimeout(() => clearInterval(poll), ANCHOR_RESOLVE_TIMEOUT_MS)
+              } else {
+                // Anchor not resolved yet — center on page top, poll for anchor
+                if (isTemporaryMarkdownNavigation) {
+                  setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y, 0.2, sourceLeftScreen)
+                } else {
+                  editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
+                }
+              }
+              recordHtmlNavigationEnd(editor)
             }
+            centerOnAnchorY(yOff ?? null)
+            // Positions measured mid-load go stale (measured: a figure in a
+            // loading tabset reported y=5 against a true y=1039), and the
+            // bridge re-reports as layout settles — so re-center when the
+            // value arrives or changes. Once only: unlike the docview peek,
+            // repeated camera corrections would yank a reader who has started
+            // scrolling.
+            const shown = yOff ?? null
+            const poll = setInterval(() => {
+              const yOff2 = htmlHeadingPositions.get(targetShape.id)?.[anchor!]
+              if (yOff2 == null || yOff2 === shown) return
+              clearInterval(poll)
+              const fresh = editor.store.get(targetShape.id) as any
+              if (fresh) {
+                const vph = editor.getViewportPageBounds().h
+                if (isTemporaryMarkdownNavigation) {
+                  setCameraKeepingDocumentMargin(editor, fresh, fresh.y + yOff2, 0.15, sourceLeftScreen)
+                } else {
+                  editor.centerOnPoint({ x: fresh.x + fresh.props.w / 2, y: fresh.y + yOff2 + vph * 0.35 }, { animation: { duration: 300 } })
+                }
+              }
+            }, 200)
+            setTimeout(() => clearInterval(poll), ANCHOR_RESOLVE_TIMEOUT_MS)
           } else {
             if (isTemporaryMarkdownNavigation) {
               setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y, 0.2, sourceLeftScreen)
