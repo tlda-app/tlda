@@ -6642,6 +6642,17 @@ export function pendingRefusalNote({ recipients = [], rows = [], delivery = null
 // is not a `fleet:` id (labels, `me`, subtree expressions) is a filter term
 // that stays quiet by design, even at zero. The sender's own id is skipped:
 // the server excludes it from recipients on purpose, which is not a drop.
+//
+// Why ids and not names: a bare token is ambiguous between a name and a
+// label — the resolver matches id, friendly_name, and labels uniformly, so
+// no layer can classify a bare token without guessing, and a label matching
+// nothing is precisely the filter case that must stay quiet. A `fleet:`
+// prefix is unambiguously a literal id, which is why the real incidents
+// (fleet:-id unions, confirmed by mint-squat-fix) are all in scope.
+// KNOWN RESIDUAL: a bare *name* in a union that matches nothing while a
+// sibling delivers is still silent. Narrowing it needs a product ruling on
+// the name/label ambiguity, not more mechanism — do not extend this check
+// to bare tokens without one.
 export function droppedUnionLiterals({ filterAst = null, sentIds = [], selfId = null } = {}) {
   if (!filterAst || filterAst.t !== 'or') return [];
   const members = [];

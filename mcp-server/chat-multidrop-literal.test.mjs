@@ -83,6 +83,10 @@ test('a union whose members all resolve stays quiet', async () => {
   assert.doesNotMatch(result.content[0].text, /matched nothing|no agent matched|did not match/i)
 })
 
+// Known residual, recorded not assumed: a bare token is ambiguous between a
+// name and a label, so a bare *name* matching nothing in a union stays
+// silent while its sibling delivers. Extending the warning there needs a
+// product ruling on the ambiguity — see droppedUnionLiterals.
 test('a filter union with a zero-matching label stays quiet', async () => {
   __resetAgentPreambleForTest()
   installTransportStub({ recipients: ['fleet:aaa111'] })
