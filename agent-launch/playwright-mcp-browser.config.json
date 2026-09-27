@@ -1,0 +1,8 @@
+{
+  "_comment": "Fleet Playwright MCP browser launch options, merged with the CLI flags from playwrightMcpBrowserArgs (the server deep-merges --config over CLI). Plain words: Chromium treats Tailscale IPs as local network and blocks public pages (e.g. the github.io test site) from reaching tailnet sync over WebSocket — the page hangs on a spinner with zero console output. --disable-features=LocalNetworkAccessChecks turns that gate off for agent browsers so walks can load the app they verify. Verified 2026-09-27: with the flag, github.io page wss attempts reach HTTP; without it they hang; the older BlockInsecurePrivateNetworkRequests does nothing. RESIDUAL (disclosed to Skip on approval): an agent browser on a hostile public page could then reach tailnet services. REVERSAL: delete the args entry (or this file + its --config reference in playwright-mcp-browser.mjs) and restart agents. Applies at session start; existing agents keep old args until tlda-dev restart-mcp. Agent MCP browsers only — Skip's own browser never launches through this path.",
+  "browser": {
+    "launchOptions": {
+      "args": ["--disable-features=LocalNetworkAccessChecks"]
+    }
+  }
+}

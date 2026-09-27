@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
   findChromeForTestingExecutable,
   playwrightBrowsersRoot,
   playwrightMcpBrowserArgs,
+  playwrightMcpConfigPath,
 } from './playwright-mcp-browser.mjs'
 
 const DARWIN_BIN = path.join(
@@ -114,6 +115,17 @@ test('the MCP flag set names the bundled browser and the installed binary', t =>
     const exeAt = args.indexOf('--executable-path')
     assert.notEqual(exeAt, -1)
     assert.equal(args[exeAt + 1], bin)
+    // Launch-options config travels with the flag set: the MCP CLI has no
+    // flags for Chromium args, so they ride --config (deep-merged over CLI).
+    const cfgAt = args.indexOf('--config')
+    assert.notEqual(cfgAt, -1)
+    assert.equal(args[cfgAt + 1], playwrightMcpConfigPath())
+    const cfg = JSON.parse(readFileSync(playwrightMcpConfigPath(), 'utf8'))
+    assert.ok(
+      (cfg.browser?.launchOptions?.args || []).includes('--disable-features=LocalNetworkAccessChecks'),
+      'checked-in config must carry the LNA disable (public page -> tailnet sync hangs without it)'
+    )
+    assert.ok(!args.includes('--headless'), 'headed always, also via config')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

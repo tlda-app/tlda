@@ -85,12 +85,26 @@ export function findChromeForTestingExecutable({
 }
 
 /**
+ * Absolute path of the checked-in MCP launch-options config (sibling file).
+ * Exported so the flag set below and its test resolve the same bytes.
+ */
+export function playwrightMcpConfigPath() {
+  return new URL('./playwright-mcp-browser.config.json', import.meta.url).pathname
+}
+
+/**
  * The full Playwright MCP browser flag set both harnesses spawn with. One
  * function owns the list so the two harnesses cannot drift into disagreeing
  * about it again — that drift is the defect that broke the fleet's cameras.
  *
  * Never `--headless`: the camera exists to prove the product surface a headed
  * browser shows, and a headless screenshot can pass where no user would.
+ *
+ * `--config` carries Chromium launch args the MCP CLI has no flags for (it
+ * deep-merges over the CLI flags; verified 2026-09-27 with a CLI+config
+ * spawn). Today that is only the LocalNetworkAccessChecks disable — see the
+ * config file for what it turns off, why, and the residual. Fleet agent
+ * browsers only: nothing on Skip's own browser path reads this file.
  */
 export function playwrightMcpBrowserArgs(deps = {}) {
   const executablePath = findChromeForTestingExecutable(deps)
@@ -99,5 +113,6 @@ export function playwrightMcpBrowserArgs(deps = {}) {
     '--isolated',
     '--no-sandbox',
     ...(executablePath ? ['--executable-path', executablePath] : []),
+    '--config', playwrightMcpConfigPath(),
   ]
 }
