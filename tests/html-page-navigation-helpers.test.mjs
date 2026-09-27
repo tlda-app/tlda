@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   ANCHOR_RESOLVE_TIMEOUT_MS,
   createLinkPeekTracker,
+  createNavigateDedupe,
   docviewInLayoutExtent,
   findNavigateTargetShape,
   htmlPageUrlMatchesTargetFile,
@@ -147,4 +148,25 @@ test('an iframe without a src serves no shape', () => {
   assert.equal(iframeServesShapeId(null, 'shape:book-page-1'), false)
   assert.equal(iframeServesShapeId(undefined, 'shape:book-page-1'), false)
   assert.equal(iframeServesShapeId(CHAPTER_URL, ''), false)
+})
+
+test('a sibling mount re-dispatching the same post does not handle it', () => {
+  const dedupe = createNavigateDedupe()
+  assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), true)
+  assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), false)
+  assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), false)
+})
+
+test('a different post still handles while one is claimed', () => {
+  const dedupe = createNavigateDedupe()
+  assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), true)
+  assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-b::0'), true)
+})
+
+test('a real second click after the microtask clears handles again', async () => {
+  const dedupe = createNavigateDedupe()
+  assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), true)
+  assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), false)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), true)
 })

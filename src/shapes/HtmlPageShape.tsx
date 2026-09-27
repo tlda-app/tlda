@@ -14,7 +14,7 @@ import { useContext, useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken, canPresent, isPresentPermissionKnown, subscribeCanPresent } from '../authToken'
 import { isClassroomDocumentWorkspace } from '../classroom/classroomDocumentWorkspace'
 import { createMeasuredGeometryWriter } from '../measuredGeometryWrite'
-import { ANCHOR_RESOLVE_TIMEOUT_MS, createLinkPeekTracker, docviewInLayoutExtent, findNavigateTargetShape, iframeServesShapeId } from '../html-page-navigation-helpers'
+import { ANCHOR_RESOLVE_TIMEOUT_MS, createLinkPeekTracker, createNavigateDedupe, docviewInLayoutExtent, findNavigateTargetShape, iframeServesShapeId } from '../html-page-navigation-helpers'
 import { isMyFleetShape } from './fleet-ownership'
 import { isDocumentPageShape } from './document-pages'
 import { htmlIframeElements, noteHtmlIframeLoaded, disposeHtmlIframeLoadWaiters } from '../htmlIframeRegistry'
@@ -48,6 +48,11 @@ export const htmlHeadingPositions = new Map<string, Record<string, number>>()
 // Last link peek, for the second-click-commits rule: a repeated click on the
 // same link, with no docview interaction in between, navigates the main view.
 const linkPeekTracker = createLinkPeekTracker()
+
+// One post, one handling: every mount of the target shape hears the same
+// postMessage, and the second mount would read the first mount's fresh peek
+// as a repeat click and commit it.
+const navigateDedupe = createNavigateDedupe()
 
 // Anchors awaiting tab-pane activation in late-mounting iframes, keyed by
 // shape ID. A peek's click-path broadcast only reaches live instances; a
@@ -1007,6 +1012,8 @@ function HtmlPageComponent({ shape }: { shape: any }) {
       }
       if (e.data?.type === 'tlda-navigate') {
         if (e.data.shapeId && e.data.shapeId !== shape.id) return
+        const navMsgKey = `navigate::${e.data.shapeId ?? ''}::${e.data.targetFile ?? ''}::${e.data.targetPath ?? ''}::${e.data.anchor ?? ''}::${e.data.__tldaOpened ? 1 : 0}`
+        if (!navigateDedupe.shouldHandle(navMsgKey)) return
         // Route navigation from iframe links to camera movement + anchor scroll.
         const sourceShape = editor.store.get(shape.id) as any
         const isTemporaryMarkdownNavigation = !!sourceShape?.meta?.temporaryMarkdownColumn

@@ -138,3 +138,31 @@ export function createLinkPeekTracker() {
 }
 
 export type LinkPeekTracker = ReturnType<typeof createLinkPeekTracker>
+
+/**
+ * Exactly-once handling for a `tlda-navigate` post across mounts. The same
+ * shape mounts several times — the main canvas plus each docview's nested
+ * canvas render it (measured: four mounts of one chapter, two per canvas) —
+ * and every mount's listener hears the same postMessage. Without this the
+ * first mount peeks and the second reads the fresh peek as a repeat click
+ * and commits, so every first click also goes. Sibling dispatches run
+ * synchronously in the same task, so a microtask clears the guard before any
+ * real second click can arrive — no timestamp window a fast double-click
+ * could fall into.
+ */
+export function createNavigateDedupe() {
+  let handling: string | null = null
+  return {
+    /** True when this post has not already been claimed by a sibling mount. */
+    shouldHandle(msgKey: string): boolean {
+      if (handling === msgKey) return false
+      handling = msgKey
+      queueMicrotask(() => {
+        if (handling === msgKey) handling = null
+      })
+      return true
+    },
+  }
+}
+
+export type NavigateDedupe = ReturnType<typeof createNavigateDedupe>
