@@ -943,6 +943,11 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
   // Note: toggling the Bootstrap active class (not inline display) is what
   // makes the pane visible — the hiding rule targets panes without the
   // active class, which outranks any inline display value.
+  // The reveal must be isolated, not stacked: activating the hidden pane
+  // alongside the currently-active sibling lays both out, and the revealed
+  // content measures below the sibling's (measured: y=7456 stacked against
+  // a true y=6833). Park the active siblings while measuring, restoring each
+  // pane's exact classes afterwards.
   function measureWithHiddenPanesShown(el, measure) {
     var reveal = [];
     var node = el;
@@ -954,15 +959,45 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
       node = node.parentElement;
     }
     if (reveal.length === 0) return measure();
+    // Collect every pane touched — the reveal chain plus the active sibling
+    // in each of its tabsets — snapshot each once, then swap: deactivating
+    // and snapshotting interleaved would catch an already-revealed pane in a
+    // nested tabset and measure it hidden again.
+    var parked = [];
+    var seen = [];
+    reveal.forEach(function(pane) {
+      var tabset = pane.closest('.panel-tabset') || pane.parentElement;
+      if (tabset) {
+        tabset.querySelectorAll('.tab-pane.active').forEach(function(p) {
+          if (seen.indexOf(p) === -1) { seen.push(p); parked.push(p); }
+        });
+      }
+      if (seen.indexOf(pane) === -1) { seen.push(pane); parked.push(pane); }
+    });
+    var saved = parked.map(function(p) {
+      return {
+        pane: p,
+        active: p.classList.contains('active'),
+        show: p.classList.contains('show'),
+      };
+    });
+    parked.forEach(function(p) {
+      p.classList.remove('active');
+      p.classList.remove('show');
+    });
     reveal.forEach(function(pane) {
       pane.classList.add('active');
+      pane.classList.add('show');
     });
     var value;
     try {
       value = measure();
     } finally {
-      reveal.forEach(function(pane) {
-        pane.classList.remove('active');
+      saved.forEach(function(entry) {
+        if (entry.active) entry.pane.classList.add('active');
+        else entry.pane.classList.remove('active');
+        if (entry.show) entry.pane.classList.add('show');
+        else entry.pane.classList.remove('show');
       });
     }
     return value;

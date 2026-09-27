@@ -59,6 +59,20 @@ test('a late joiner converges through the parent post, not a peer query', () => 
   assert.ok(html.includes("activateTabPaneForAnchor(msg.anchor)"), 'parent post activates the pane')
 })
 
+test('hidden-pane measurement parks the active sibling, not stacked alongside', () => {
+  // Revealing a hidden pane alongside the active one stacks both, and the
+  // revealed content measures below the sibling's (measured: y=7456 stacked
+  // against a true y=6833). The helper parks each tabset's active pane while
+  // measuring, restoring exact classes afterwards.
+  const html = injectBridge('<html><body><main></main></body></html>')
+  const defn = html.indexOf('function measureWithHiddenPanesShown(el, measure)')
+  const end = html.indexOf('function reportHeadings()', defn)
+  const body = html.slice(defn, end)
+  assert.ok(body.includes("querySelectorAll('.tab-pane.active')"), 'active siblings are found')
+  assert.ok(body.includes("p.classList.remove('active')"), 'siblings parked while measuring')
+  assert.ok(body.includes('entry.active'), 'exact classes restored afterwards')
+})
+
 test('pane activation goes through the tab, not a synthetic click', () => {
   // A synthetic tab.click() would bubble back into this same interceptor and
   // post a second navigation, so the bridge manipulates tab classes directly.
