@@ -2718,7 +2718,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
       if (!wasReset && previousKeys.length === 0 && persistKey) {
         const heightOf = (key: string) => heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
         const saved = readChatScrollState(browserLocalStorage(), chatScrollStoreKey(persistKey))
-        const top = resolveChatScrollRestore(saved, resetKey, (key) => chatScrollStartOf(itemKeys, heightOf, key))
+        const top = resolveChatScrollRestore(saved, resetKey, (key: string) => chatScrollStartOf(itemKeys, heightOf, key))
         if (top != null) {
           setModelTop(top)
           // setModelTop arms the follow-off settle timer, but the reader was
