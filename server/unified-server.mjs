@@ -95,6 +95,7 @@ import { parseHistorySeedRef } from '../shared/history-seed-ref.mjs'
 import { selfBaseUrl } from '../shared/self-base-url.mjs'
 import { listProposalRefs, parseDaemonProposalRef } from './lib/git-proposals.mjs'
 import { createSourceProposalAdmissionConnectionDispatcher, createSourceProposalAdmissionHandler } from './lib/source-proposal-admission.mjs'
+import { admitDaemonHeartbeat } from './lib/daemon-heartbeat-admission.mjs'
 import projectRoutes from './routes/projects.mjs'
 import { classroomPrincipal, createClassroomRouter, logClassroomRefusal, requireClassroomDocumentAccess } from './routes/classroom.mjs'
 import { ClassroomStore } from './lib/classroom-store.mjs'
@@ -10702,6 +10703,30 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
     if (fleetStore?.updateHeartbeat) {
       await fleetStore.updateHeartbeat(agent_id)
       broadcastState()
+    }
+    return
+  }
+
+  // ---- heartbeat ----
+  // Observed production from the daemon's JSONL watch: heads-down work with
+  // no chats still counts for the stale-heartbeat check. Ownership-verified
+  // like never-joined — the claiming daemon must own the agent or the beat
+  // is dropped, so one daemon can never hold another daemon's agents alive.
+  // Closed over the connection key: a beat that does not name its daemon is
+  // attributed to the connection it arrived on. Deliberately not
+  // agent-activity: a beat stamps liveness and wakes no detector.
+  if (type === 'heartbeat') {
+    if (!fleetStore) return
+    try {
+      const outcome = await admitDaemonHeartbeat({
+        store: fleetStore,
+        touchActivity,
+        log: console,
+      }, { ...msg, daemon_key: msg.daemon_key || ws._daemonKey || null })
+      if (outcome?.changed && outcome?.agentId) broadcastState([outcome.agentId])
+    } catch (e) {
+      await reportDaemonEventFailure(msg, 'heartbeat-write', e)
+      throw e
     }
     return
   }
