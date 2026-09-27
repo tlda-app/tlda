@@ -24,12 +24,12 @@
  */
 
 import { copyFileSync, existsSync, readFileSync, readlinkSync, writeFileSync, mkdirSync, cpSync, readdirSync, renameSync, rmSync, symlinkSync, lstatSync } from 'fs'
-import { basename, dirname, join, relative } from 'path'
+import { basename, dirname, join, relative, resolve } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { parse as parseYaml } from 'yaml'
 
-import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
+import { scanMarkdownDependencyClosure, scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
 import { createDocumentManifest, readDocumentManifest } from './document-manifest.mjs'
 import { deckPageInfo } from './slides-parser.mjs'
 import { extractHtmlToc } from './html-toc-extractor.mjs'
@@ -757,14 +757,199 @@ export function orderQuartoBookPages(dir, pageInfo) {
   ))
 }
 
-export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
-  const documentRoots = new Set([
+function normalizeChangedPath(file) {
+  return String(file).replace(/\\/g, '/').replace(/^\.?\/+/, '')
+}
+
+function qmdDocumentRootSet(outDir) {
+  return new Set([
     ...quartoBookRoots(outDir),
     ...qmdDeckRenderRoots(outDir),
   ])
-  const changed = [...new Set((changedFiles || []).map(file => String(file).replace(/\\/g, '/').replace(/^\.?\/+/, '')))]
-  if (changed.length === 0 || changed.some(file => !documentRoots.has(file))) return null
-  return changed
+}
+
+/**
+ * Quarto project configuration, as a changed-file path.
+ *
+ * `_quarto.yml`, its profiles and the extensions they load decide titles,
+ * formats, filters and pre-render hooks for EVERY page, so a change to any of
+ * them has book-wide fan-out no dependency closure can bound. That is what
+ * makes them scope-widening rather than merely unrenderable.
+ */
+export function isQuartoConfigFile(rel) {
+  const normalized = String(rel || '').replace(/\\/g, '/').replace(/^\.?\/+/, '')
+  if (/(^|\/)_quarto(-[^/]*)?\.(yml|yaml)$/.test(normalized)) return true
+  if (normalized === '_extensions' || normalized.startsWith('_extensions/')) return true
+  return false
+}
+
+/**
+ * Every document root with the files its render reads, by the narrowed
+ * build-dependency closure plus `source(...)` edges. Computed once per scope
+ * decision; staleness and orphan detection both read it.
+ *
+ * Navigation links excluded: `[text](other.qmd)` never inlines content (see
+ * scanMarkdownDeps). `source(...)` is scanned in every markdown file of the
+ * closure, not just the root: a chapter reaches a script one hop away through
+ * an `{{< include >}}`, and scanning only the root leaves the script with no
+ * dependents. `markdown` contains the root, so this subsumes scanning it.
+ */
+function qmdDocumentDependencyMap(outDir) {
+  const map = new Map()
+  for (const document of qmdDocumentRootSet(outDir)) {
+    const { files, markdown } = scanMarkdownDependencyClosure(document, outDir, { includeNavigationLinks: false })
+    const dependencies = new Set(files)
+    for (const included of markdown) {
+      for (const sourced of chunkSourcedFiles(included, outDir)) dependencies.add(sourced)
+    }
+    dependencies.delete(document)
+    map.set(document, dependencies)
+  }
+  return map
+}
+
+/**
+ * Changed files no document reads: not a root, not config, and in no
+ * dependency closure. A regenerated handout zip is the recurring one — pages
+ * link it, none inlines it, so it needs artifact sync rather than a render.
+ * Returned so the caller can sync and name them; silently dropping them would
+ * be the same green-missing-an-edit failure as dropping a chapter.
+ */
+export function qmdUnplacedChangedFiles(outDir, changedFiles = []) {
+  const documentRoots = qmdDocumentRootSet(outDir)
+  const changed = [...new Set((changedFiles || []).map(normalizeChangedPath))]
+  const candidates = changed.filter(file => !documentRoots.has(file) && !isQuartoConfigFile(file))
+  if (candidates.length === 0) return []
+  const dependencyMap = qmdDocumentDependencyMap(outDir)
+  return candidates.filter(file => {
+    for (const dependencies of dependencyMap.values()) {
+      if (dependencies.has(file)) return false
+    }
+    return true
+  })
+}
+
+/**
+ * Every file any document root references — links, images and includes alike,
+ * followed through include chains. This is the WIDE closure: the question is
+ * "could a reader reach this file from some page", not "does some page inline
+ * it". A handout zip passes here (pages link it) and fails the narrowed
+ * dependency map (none inlines it), which is exactly the split between an
+ * artifact to sync and a render to run. Computed lazily — only change sets
+ * with unplaced files need it, and those are rare.
+ */
+export function qmdFilesReferencedByDocuments(outDir) {
+  const referenced = new Set()
+  const seen = new Set()
+  const queue = [...qmdDocumentRootSet(outDir)]
+  while (queue.length > 0) {
+    const rel = normalizeChangedPath(queue.shift())
+    if (!rel || seen.has(rel)) continue
+    seen.add(rel)
+    const abs = join(outDir, rel)
+    if (!existsSync(abs)) continue
+    let content
+    try { content = readFileSync(abs, 'utf8') } catch { continue }
+    for (const dep of scanMarkdownDeps(content, dirname(abs))) {
+      const ref = String(dep.ref || '').split(/[#?]/)[0].trim().replace(/^<|>$/g, '')
+      if (!ref || /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(ref)) continue
+      const targetRel = relative(outDir, resolve(dirname(abs), ref)).replace(/\\/g, '/')
+      if (!targetRel || targetRel.startsWith('../')) continue
+      referenced.add(targetRel)
+    }
+    // Recurse through includes only: a link names a page, an include inlines a
+    // file whose own references arrive with it.
+    for (const [, included] of content.matchAll(/\{\{<\s*include\s+([^\s>]+)\s*>\}\}/g)) {
+      const targetRel = relative(outDir, resolve(dirname(abs), included)).replace(/\\/g, '/')
+      if (targetRel && !targetRel.startsWith('../')) queue.push(targetRel)
+    }
+  }
+  return referenced
+}
+
+/**
+ * Publish changed files no document renders.
+ *
+ * A regenerated handout zip is the recurring one: pages link it, none inlines
+ * it, so no render is owed — but its published bytes must still move, or the
+ * seed's copy stays and the build reports success on stale artifacts. Copied
+ * at the resource path quarto itself publishes at; a deletion removes the
+ * published copy the same way. A file nothing references and nothing
+ * published (a README) is inert rather than an error — named, not copied,
+ * since copying would publish a file no render path publishes.
+ *
+ * Returns the count synced, so the caller can tell "artifacts moved" from
+ * "nothing needed doing" from "nothing could be done".
+ */
+export function syncUnplacedChangedFiles(outDir, bookDir, orphans, referenced, addLog = () => {}) {
+  let synced = 0
+  for (const rel of orphans) {
+    const from = join(outDir, rel)
+    const to = join(bookDir, rel)
+    if (!existsSync(from)) {
+      if (existsSync(to)) {
+        rmSync(to, { force: true })
+        synced += 1
+        addLog(`[qmd] ${rel}: removed from the published tree (deleted from source)`)
+      } else {
+        addLog(`[qmd] ${rel}: deleted from source and never published — nothing to sync`)
+      }
+      continue
+    }
+    if (!referenced.has(rel) && !existsSync(to)) {
+      addLog(`[qmd] ${rel}: no page reads it and it is not published — nothing to render or sync`)
+      continue
+    }
+    mkdirSync(dirname(to), { recursive: true })
+    cpSync(from, to)
+    synced += 1
+    addLog(`[qmd] ${rel}: synced the published artifact without a render`)
+  }
+  return synced
+}
+
+/**
+ * The documents a change set renders: every changed root plus every document
+ * whose dependencies changed. Null means the whole project; [] means the set
+ * resolved to nothing renderable (artifacts only — the caller syncs those and
+ * renders nothing).
+ *
+ * The rule is total: every changed file maps somewhere, and a set that omits
+ * a changed root is never returned. The old rule returned null on ANY non-root
+ * and let a stale-fallback substitute the wrong set — measured on the course,
+ * chapter + `_quarto.yml` rendered only index.qmd while the chapter edit sat
+ * silently missing from its page and the build reported success. Config still
+ * widens to the whole project (its fan-out is every page), but the widening is
+ * announced with the files that caused it rather than failing over silently.
+ */
+export function qmdIncrementalRenderRoots(outDir, changedFiles = []) {
+  const documentRoots = qmdDocumentRootSet(outDir)
+  const changed = [...new Set((changedFiles || []).map(normalizeChangedPath))]
+  if (changed.length === 0) return null
+  const direct = changed.filter(file => documentRoots.has(file))
+  const nonRoots = changed.filter(file => !documentRoots.has(file))
+  if (nonRoots.some(isQuartoConfigFile)) return null
+  const stale = qmdDocumentsStaleByDependency(outDir, nonRoots)
+  return [...new Set([...direct, ...stale])]
+}
+
+/**
+ * The page sources the post-render loop may rewrite, as a set: this build's
+ * components, plus whatever the book join admitted that the seed did not
+ * already carry. A whole-project render (null scope) admits everything; an
+ * incremental render admits its components and its newly-joined chapters, and
+ * every seeded page passes through byte-identical.
+ */
+export function qmdFreshPageSources(renderedPageInfo, componentPages, seededSources, incrementalRoots) {
+  const fresh = new Set((componentPages || []).map(page => normalizedBookSource(page.source?.file)))
+  if (incrementalRoots === null) {
+    for (const page of renderedPageInfo || []) fresh.add(normalizedBookSource(page.source?.file))
+  } else {
+    for (const page of renderedPageInfo || []) {
+      if (!seededSources.has(normalizedBookSource(page.source?.file))) fresh.add(normalizedBookSource(page.source?.file))
+    }
+  }
+  return fresh
 }
 
 /**
@@ -833,26 +1018,20 @@ function chunkSourcedFiles(documentPath, projectDir) {
  */
 export function qmdDocumentsStaleByDependency(outDir, changedFiles = []) {
   const changed = new Set(
-    (changedFiles || []).map(file => String(file).replace(/\\/g, '/').replace(/^\.?\/+/, '')),
+    (changedFiles || []).map(normalizeChangedPath),
   )
   if (changed.size === 0) return []
 
+  // WITHOUT navigation links (see qmdDocumentDependencyMap): a link
+  // `[text](other.qmd)` is not a build dependency — the linking page renders
+  // byte-identically whatever the linked page contains. Measured on the course:
+  // index.qmd links every chapter, so link-following marked index stale on
+  // every chapter edit and dropped its frozen R results, then rendered nothing
+  // for it. Includes, images and `source(...)` edges stay: those genuinely
+  // change the depending page.
   const stale = []
-  for (const document of new Set([...quartoBookRoots(outDir), ...qmdDeckRenderRoots(outDir)])) {
+  for (const [document, dependencies] of qmdDocumentDependencyMap(outDir)) {
     if (changed.has(document)) continue
-    // Scan every markdown file in the closure for `source(...)`, not just the
-    // root. A chapter reaches a script one hop away: it `{{< include >}}`s a
-    // file, and the `source(...)` is written inside THAT file. Scanning only the
-    // root sees neither the include's chunk nor anything it pulls in, so the
-    // script has no dependents and a change to it marks nothing stale.
-    //
-    // `markdown` contains the root, so this subsumes scanning it directly.
-    const { files, markdown } = scanMarkdownDependencyClosure(document, outDir)
-    const dependencies = new Set(files)
-    for (const included of markdown) {
-      for (const sourced of chunkSourcedFiles(included, outDir)) dependencies.add(sourced)
-    }
-    dependencies.delete(document)
     if ([...dependencies].some(dependency => changed.has(dependency))) stale.push(document)
   }
   return stale
@@ -1124,7 +1303,13 @@ export async function renderDeckSet(quarto, outDir, decks, addLog, { project = n
   for (const deck of decks) {
     clearQmdFreeze(outDir, deck)
     try {
+      const renderStart = process.hrtime.bigint()
       await renderInOutput(quarto, outDir, deck, addLog, { project, profile: DECK_PROFILE })
+      const renderMs = Math.round(Number(process.hrtime.bigint() - renderStart) / 1e6)
+      // Measured per deck, same contract as the chapter line: a fact about
+      // this render, safe for any surface to show.
+      addLog(`[qmd] ${deck}: rendered in ${renderMs}ms`)
+      getBuildOutputSink()?.(project || 'qmd', `${deck}: rendered in ${renderMs}ms`, 0)
     } catch (e) {
       failed.add(deck)
       addLog(`[build] deck ${deck} failed to render; its last good render is still being served: ${e?.message || e}`)
@@ -1462,7 +1647,11 @@ export async function buildIncrementalQmd({
     staleByDependency = qmdDocumentsStaleByDependency(outDir, changedFiles)
     for (const document of staleByDependency) clearQmdFreeze(outDir, document)
     if (staleByDependency.length > 0) {
-      addLog(`[qmd] re-executing ${staleByDependency.length} document(s) whose dependencies changed: ${staleByDependency.join(', ')}`)
+      // Dropping, not re-executing: these records are gone and the documents
+      // re-execute only if the scope below renders them. The old line said
+      // "re-executing" unconditionally, including for documents the render set
+      // then omitted — the log claimed work the build never did.
+      addLog(`[qmd] dropping frozen results for ${staleByDependency.length} document(s) whose dependencies changed (they re-execute when rendered): ${staleByDependency.join(', ')}`)
     }
   }
 
@@ -1479,22 +1668,63 @@ export async function buildIncrementalQmd({
   if (effectiveChangedFiles !== changedFiles) {
     addLog(`[qmd] no prior output to seed from; rendering the whole project instead of incremental ${JSON.stringify(changedFiles)}`)
   }
-  const directIncrementalRoots = nativeTldaProject && !scopedNativeProject
+  // The rule is total — every changed file maps to a render, a sync, or a
+  // widening — so a set that omits a changed root is never built. The old code
+  // returned null on any non-root here and let a stale-fallback below
+  // substitute the wrong set: chapter + `_quarto.yml` rendered only index.qmd
+  // while the chapter edit sat missing from its page, build green. That
+  // substitution is deleted, not repaired: no fallback may narrow past a file
+  // it cannot place.
+  const incrementalRoots = nativeTldaProject && !scopedNativeProject
     ? qmdIncrementalRenderRoots(outDir, effectiveChangedFiles)
     : null
-  const incrementalRoots = directIncrementalRoots
-    || (nativeTldaProject && !scopedNativeProject && effectiveChangedFiles?.length > 0 && staleByDependency.length > 0
-      ? staleByDependency
-      : null)
   addLog(`[qmd] render scope: changed=${JSON.stringify(effectiveChangedFiles)} incremental=${JSON.stringify(incrementalRoots)}`)
+  if (scopedNativeProject) {
+    // The null above reads as whole-project and is not: a scoped project view
+    // renders its one configured root. Said here so the next scope diagnosis
+    // does not chase a widening that never happened.
+    addLog(`[qmd] scoped single-root project view: rendering ${mainFiles.join(', ')}`)
+  }
+  if (nativeTldaProject && !scopedNativeProject && incrementalRoots === null && (effectiveChangedFiles?.length ?? 0) > 0) {
+    const configFiles = effectiveChangedFiles.filter(isQuartoConfigFile)
+    addLog(configFiles.length > 0
+      ? `[qmd] full-project scope because project configuration changed: ${configFiles.join(', ')}`
+      : '[qmd] full-project scope: the change set resolved to no renderable scope')
+  }
   const deckPairs = nativeTldaProject ? qmdDeckChapterPairs(outDir, addLog) : []
   const deckRoots = new Set(deckPairs.map(({ deck }) => deck))
   const chapterRoots = incrementalRoots?.filter((root) => !deckRoots.has(root)) || null
   const incrementalDecks = incrementalRoots?.filter((root) => deckRoots.has(root)) || null
+  // The scope in words, on the live stream as well as in the log. The log's
+  // JSON line above is the record; this is what a watching person reads while
+  // the render runs — including which case this build is, since a whole-book
+  // render after a one-line edit is otherwise indistinguishable from a hang.
+  if (nativeTldaProject && !scopedNativeProject) {
+    const sink = getBuildOutputSink()
+    if (sink) {
+      if (incrementalRoots === null) {
+        const configFiles = (effectiveChangedFiles || []).filter(isQuartoConfigFile)
+        sink(name, `rendering the whole book (${bookRoots.length} chapters, ${deckPairs.length} decks)`
+          + (configFiles.length > 0 ? `: ${configFiles.join(', ')} changed` : ': change set unreported'), 0)
+      } else if (incrementalRoots.length === 0) {
+        sink(name, 'no documents to render — syncing changed artifacts only', 0)
+      } else {
+        sink(name, `rendering ${incrementalRoots.length} document(s): ${incrementalRoots.join(', ')}`, 0)
+      }
+    }
+  }
+  // Changed files no document renders (a regenerated handout zip: linked, never
+  // inlined). Computed only on the incremental path — whole-project renders
+  // republish every artifact themselves — and only when the scope resolved
+  // narrow, since a widened scope has no unplaced files by construction.
+  const unplacedChangedFiles = nativeTldaProject && !scopedNativeProject && incrementalRoots !== null
+    ? qmdUnplacedChangedFiles(outDir, effectiveChangedFiles)
+    : []
   // A direct edit to a declared book component re-renders that component over
   // a private copy of the last complete output. Publication still swaps a
-  // complete output tree. Shared inputs and uncertain changes render the whole
-  // project because their dependency fan-out is not confined to one chapter.
+  // complete output tree. A changed shared input re-renders the documents that
+  // read it; only project configuration and unreported changes render the whole
+  // project, because only their fan-out is unknowable.
   if (scopedNativeProject) {
     for (const root of mainFiles) {
       clearQmdFreeze(outDir, root)
@@ -1514,7 +1744,15 @@ export async function buildIncrementalQmd({
       // check guarding it failed every component build on a render that had
       // already published the page.
       try {
+        const renderStart = process.hrtime.bigint()
         await renderInOutput(quarto, outDir, root, addLog, { project: name })
+        const renderMs = Math.round(Number(process.hrtime.bigint() - renderStart) / 1e6)
+        // Measured, per document, on both channels: this duration is a fact
+        // about this render, safe for any surface to show. Whole-book renders
+        // report per-document lines from quarto instead, whose arrival times
+        // are NOT render durations and must never be shown as such.
+        addLog(`[qmd] ${root}: rendered in ${renderMs}ms`)
+        getBuildOutputSink()?.(name, `${root}: rendered in ${renderMs}ms`, 0)
         publishIncrementalQmdOutput(outDir, root)
         componentPages.push(successfulChapterPage(outDir, root))
       } catch (error) {
@@ -1527,6 +1765,28 @@ export async function buildIncrementalQmd({
     await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: true, project: name })
   } else {
     for (const root of mainFiles) await renderInOutput(quarto, outDir, root, addLog, { project: name })
+  }
+
+  // Publish what no render produces. A second `readTldaManifest` rather than
+  // the tail's: the tail reads after the deck pass, and a deck-profile render
+  // must not move where artifacts land. Component renders never rewrite the
+  // manifest, so both reads agree.
+  if (unplacedChangedFiles.length > 0) {
+    const renderedManifest = readTldaManifest(outDir)
+    const bookDir = renderedManifest ? dirname(renderedManifest.path) : join(outDir, '_book')
+    const referenced = qmdFilesReferencedByDocuments(outDir)
+    const synced = syncUnplacedChangedFiles(outDir, bookDir, unplacedChangedFiles, referenced, addLog)
+    // The refusal: a change set with renderable scope never reaches it (its
+    // roots render above), so arriving here with nothing synced means nothing
+    // in the set maps to anything — a typo'd `--changed` path, not a chapter.
+    // Publishing the seed green would report success on a change that landed
+    // nowhere, which is the failure the scope rule exists to prevent.
+    if ((incrementalRoots?.length ?? 0) === 0 && synced === 0
+      && unplacedChangedFiles.some(file => existsSync(join(outDir, file)))) {
+      throw new Error(
+        `[qmd] refusing scope: ${unplacedChangedFiles.join(', ')} match no chapter, deck, configuration, or referenced artifact — nothing to render or sync`,
+      )
+    }
   }
 
   // The decks, under their own profile, one file at a time.
@@ -1550,14 +1810,13 @@ export async function buildIncrementalQmd({
 
   if (nativeTldaProject && !scopedNativeProject) {
     const renderedProject = readTldaManifest(outDir)
-    const renderedPageInfo = renderedProject
-      ? joinRenderedButUnmanifestedChapters(
-          outDir,
-          resolveQuartoBookPageSources(outDir, renderedProject.pageInfo),
-          dirname(renderedProject.path),
-          addLog,
-        )
+    const seededPageList = renderedProject
+      ? resolveQuartoBookPageSources(outDir, renderedProject.pageInfo)
       : (priorDocumentManifest?.pages || []).filter(page => quartoBookRoots(outDir).includes(normalizedBookSource(page.source?.file)))
+    const seededSources = new Set(seededPageList.map(page => normalizedBookSource(page.source?.file)))
+    const renderedPageInfo = renderedProject
+      ? joinRenderedButUnmanifestedChapters(outDir, seededPageList, dirname(renderedProject.path), addLog)
+      : seededPageList
     for (const page of componentPages) {
       const index = renderedPageInfo.findIndex(existing => normalizedBookSource(existing.source?.file) === normalizedBookSource(page.source?.file))
       if (index === -1) renderedPageInfo.push(page)
@@ -1567,18 +1826,28 @@ export async function buildIncrementalQmd({
       if (renderedPageInfo.some(page => normalizedBookSource(page.source?.file) === normalizedBookSource(root))) continue
       renderedPageInfo.push(failedChapterPage(outDir, root, 'This chapter has not built successfully yet.'))
     }
+    // Pages this build rendered, by source. Everything else rode in on the
+    // seed, already injected, marked and stamped by the build that rendered
+    // it — reprocessing it is not free (JSDOM over every page) and not stable
+    // (source-line marking accretes attributes across passes: measured +184
+    // bytes on an untouched chapter between incremental builds). Seeded pages
+    // pass through byte-identical; only their titles refresh, read-only, from
+    // the page the seed already holds.
+    const freshSources = qmdFreshPageSources(renderedPageInfo, componentPages, seededSources, incrementalRoots)
     orderQuartoBookPages(outDir, renderedPageInfo)
     for (const page of renderedPageInfo) {
       const path = join(outDir, page.file)
-      const sourceFile = page.source.file
-      const source = readFileSync(join(outDir, sourceFile), 'utf8')
-      const withProvenance = injectQuartoOutputProvenance(readFileSync(path, 'utf8'), source, sourceFile)
-      writeFileSync(path, stampFigureUrls(markQuartoSourceLines(withProvenance, source), figureStamp))
+      const html = readFileSync(path, 'utf8')
       // Titles come from the rendered page itself, never from manifest
       // strings alone: a manifest once carried the sidebar's first chapter
       // span onto nine pages, duplicating one label across the TOC.
-      const renderedTitle = manifestTitleFromHtml(withProvenance, page.file)
+      const renderedTitle = manifestTitleFromHtml(html, page.file)
       if (renderedTitle) page.title = renderedTitle
+      if (!freshSources.has(normalizedBookSource(page.source?.file))) continue
+      const sourceFile = page.source.file
+      const source = readFileSync(join(outDir, sourceFile), 'utf8')
+      const withProvenance = injectQuartoOutputProvenance(html, source, sourceFile)
+      writeFileSync(path, stampFigureUrls(markQuartoSourceLines(withProvenance, source), figureStamp))
     }
     // Every deck the profile declares that HAS a render — the ones built just
     // now, and the ones the seeded output already carried. Deriving the set

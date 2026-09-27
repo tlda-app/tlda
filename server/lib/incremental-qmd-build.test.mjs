@@ -35,7 +35,9 @@ const RENDER_CONTROL_SKIP = process.env.TLDA_QUARTO_RENDER_TESTS === '1'
 test('empty destination is the first incremental run: no manifest means whole-project, not a separate path', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-engine-empty-'))
   try {
-    assert.equal(qmdIncrementalRenderRoots(root, ['chapters/a.qmd']), null)
+    // Resolved-empty: the empty tree declares no roots, so nothing reads the
+    // file and nothing renders (the caller syncs it as an artifact).
+    assert.deepEqual(qmdIncrementalRenderRoots(root, ['chapters/a.qmd']), [])
     assert.equal(qmdIncrementalRenderRoots(root, null), null)
   } finally {
     rmSync(root, { recursive: true, force: true })

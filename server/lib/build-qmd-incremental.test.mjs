@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { changedFilesWithSeedFallback, clearQmdFreeze, publishIncrementalQmdOutput, qmdIncrementalRenderRoots } from './build-qmd.mjs'
+import { isQuartoConfigFile, qmdDocumentsStaleByDependency, qmdFreshPageSources, qmdUnplacedChangedFiles } from './incremental-qmd-build.mjs'
 
 test('a direct book-component edit selects only that component', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-incremental-test-'))
@@ -17,11 +18,115 @@ test('a direct book-component edit selects only that component', () => {
     writeFileSync(join(root, 'lectures', 'chapter-calibration-binary-slides.qmd'), '# deck\n')
     assert.deepEqual(qmdIncrementalRenderRoots(root, ['lectures/chapter-calibration-binary.qmd']), ['lectures/chapter-calibration-binary.qmd'])
     assert.deepEqual(qmdIncrementalRenderRoots(root, ['lectures/chapter-calibration-binary-slides.qmd']), ['lectures/chapter-calibration-binary-slides.qmd'])
-    assert.equal(qmdIncrementalRenderRoots(root, ['shared-code.qmd']), null)
+    // Resolved-empty, not unknown: nothing reads it, so nothing renders and
+    // the caller syncs it as an artifact instead of widening to the book.
+    assert.deepEqual(qmdIncrementalRenderRoots(root, ['shared-code.qmd']), [])
     assert.equal(qmdIncrementalRenderRoots(root, []), null)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('a chapter-plus-config edit widens to the whole project', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-scope-config-'))
+  try {
+    writeFileSync(join(root, '_quarto.yml'), `project:\n  type: tlda\nbook:\n  chapters:\n    - index.qmd\n    - chapters/one.qmd\n`)
+    // Config detection is name-based: the files need not exist.
+    assert.equal(qmdIncrementalRenderRoots(root, ['chapters/one.qmd', '_quarto.yml']), null)
+    assert.equal(qmdIncrementalRenderRoots(root, ['chapters/one.qmd', '_quarto-slides.yml']), null)
+    assert.equal(qmdIncrementalRenderRoots(root, ['chapters/one.qmd', '_extensions/tlda/tlda-manifest.lua']), null)
+    assert.equal(qmdIncrementalRenderRoots(root, ['_quarto.yml']), null)
+    assert.deepEqual(qmdIncrementalRenderRoots(root, ['chapters/one.qmd']), ['chapters/one.qmd'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a chapter-plus-orphan edit keeps the chapter', () => {
+  // The dropped-edit regression: chapter + `_quarto.yml` once rendered only
+  // index.qmd while the chapter edit sat missing from its page, build green.
+  // A set that omits a changed root is never returned now.
+  const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-scope-mixed-'))
+  try {
+    writeFileSync(join(root, '_quarto.yml'), `project:\n  type: tlda\nbook:\n  chapters:\n    - index.qmd\n    - chapters/one.qmd\n`)
+    assert.deepEqual(
+      qmdIncrementalRenderRoots(root, ['chapters/one.qmd', 'notes.txt']),
+      ['chapters/one.qmd'],
+    )
+    assert.deepEqual(qmdUnplacedChangedFiles(root, ['chapters/one.qmd', 'notes.txt']), ['notes.txt'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('quarto configuration is the project file, its profiles and its extensions', () => {
+  assert.equal(isQuartoConfigFile('_quarto.yml'), true)
+  assert.equal(isQuartoConfigFile('_quarto.yaml'), true)
+  assert.equal(isQuartoConfigFile('_quarto-slides.yml'), true)
+  assert.equal(isQuartoConfigFile('_extensions/tlda/tlda-manifest.lua'), true)
+  assert.equal(isQuartoConfigFile('chapters/one.qmd'), false)
+  assert.equal(isQuartoConfigFile('homework/handouts/a-handout.zip'), false)
+  assert.equal(isQuartoConfigFile('_quarto.yml.bak'), false)
+})
+
+function writeLinkIncludeFixture(root) {
+  mkdirSync(join(root, 'chapters'), { recursive: true })
+  writeFileSync(join(root, '_quarto.yml'), `project:\n  type: tlda\nbook:\n  chapters:\n    - index.qmd\n    - chapters/one.qmd\n`)
+  // The link is load-bearing: index links the chapter the way the course
+  // schedule page links every chapter. A link is navigation, not a build
+  // dependency, so it must not mark index stale.
+  writeFileSync(join(root, 'index.qmd'), '# Index\n\nRead [chapter one](chapters/one.qmd).\n')
+  writeFileSync(join(root, 'chapters', 'one.qmd'), '# One\n\n{{< include ../shared.qmd >}}\n')
+  writeFileSync(join(root, 'shared.qmd'), 'Shared prose.\n')
+}
+
+test('a chapter edit does not stale the page that links it', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-stale-link-'))
+  try {
+    writeLinkIncludeFixture(root)
+    assert.deepEqual(qmdDocumentsStaleByDependency(root, ['chapters/one.qmd']), [])
+    assert.deepEqual(qmdIncrementalRenderRoots(root, ['chapters/one.qmd']), ['chapters/one.qmd'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a shared-input edit renders the documents that include it', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-stale-include-'))
+  try {
+    writeLinkIncludeFixture(root)
+    assert.deepEqual(qmdDocumentsStaleByDependency(root, ['shared.qmd']), ['chapters/one.qmd'])
+    assert.deepEqual(qmdIncrementalRenderRoots(root, ['shared.qmd']), ['chapters/one.qmd'])
+    assert.deepEqual(qmdUnplacedChangedFiles(root, ['shared.qmd', 'notes.txt']), ['notes.txt'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('only pages this build rendered may be rewritten', () => {
+  // The accretion guard at unit level: source-line marking is not idempotent
+  // across passes (measured +184 bytes on an untouched chapter), so the
+  // post-render loop must not touch seeded pages. The real-build version of
+  // this lives in build-qmd-component-render.test.mjs.
+  const page = (file) => ({ file: `${file}.html`, source: { file } })
+  const rendered = [page('index.qmd'), page('chapters/one.qmd')]
+  const seeded = new Set(['index.qmd', 'chapters/one.qmd'])
+  assert.deepEqual(
+    [...qmdFreshPageSources(rendered, [page('chapters/one.qmd')], seeded, ['chapters/one.qmd'])],
+    ['chapters/one.qmd'],
+  )
+  assert.deepEqual(
+    [...qmdFreshPageSources(rendered, [], seeded, [])].sort(),
+    [],
+  )
+  assert.deepEqual(
+    [...qmdFreshPageSources(rendered, [], seeded, null)].sort(),
+    ['chapters/one.qmd', 'index.qmd'],
+  )
+  assert.deepEqual(
+    [...qmdFreshPageSources([...rendered, page('chapters/two.qmd')], [], seeded, [])].sort(),
+    ['chapters/two.qmd'],
+  )
 })
 
 test('a component render invalidates only that component freeze', () => {

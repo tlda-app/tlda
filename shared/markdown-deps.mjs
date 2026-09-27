@@ -42,7 +42,16 @@ function resolveRef(ref, baseDir) {
 // the rendered body or as the server-side relative push key); `abs` is the
 // resolved absolute path (baseDir-relative), or null when it can't be resolved.
 // External refs (http/data///) are skipped entirely. Deduped by `ref`.
-export function scanMarkdownDeps(content, baseDir) {
+//
+// `includeNavigationLinks` is the build-dependency question, and it defaults
+// to the bundling answer. A link `[text](other.qmd)` must be followed when the
+// closure decides what to UPLOAD (the bundle has to rewrite it), but it is not
+// a build dependency: the linking page renders byte-identically whatever the
+// linked page contains. The Quarto freeze-invalidation pass says false for
+// exactly that reason — measured on the course, index.qmd links every chapter,
+// so link-following marked index stale on every chapter edit and dropped its
+// frozen R results for no render. Includes, images and assets are always kept.
+export function scanMarkdownDeps(content, baseDir, { includeNavigationLinks = true } = {}) {
   if (!content) return []
   const seen = new Set()
   const deps = []
@@ -59,9 +68,13 @@ export function scanMarkdownDeps(content, baseDir) {
     }
   }
   collect(MD_IMAGE_RE)
-  collect(MD_LINK_RE)
+  // Navigation, not dependency: `[text](page.qmd)` and `<a href>` never inline
+  // content, so a build-dependency closure skips them while every bundling
+  // caller keeps following them. Images stay in both modes — an embedded
+  // figure is content of the page.
+  if (includeNavigationLinks) collect(MD_LINK_RE)
   collect(HTML_IMG_RE)
-  collect(HTML_LINK_RE)
+  if (includeNavigationLinks) collect(HTML_LINK_RE)
   collect(QUARTO_INCLUDE_RE)
   return deps
 }
@@ -76,7 +89,7 @@ function isMarkdownPath(file) {
   return /\.(?:md|markdown|qmd)$/i.test(file)
 }
 
-export function scanMarkdownDependencyClosure(mainFile, sourceDir) {
+export function scanMarkdownDependencyClosure(mainFile, sourceDir, { includeNavigationLinks = true } = {}) {
   const root = path.resolve(sourceDir)
   const main = String(mainFile || '').replace(/\\/g, '/').replace(/^\/+/, '')
   const markdown = new Set()
@@ -96,7 +109,7 @@ export function scanMarkdownDependencyClosure(mainFile, sourceDir) {
     }
     markdown.add(rel)
     const content = fs.readFileSync(abs, 'utf8')
-    for (const dep of scanMarkdownDeps(content, path.dirname(abs))) {
+    for (const dep of scanMarkdownDeps(content, path.dirname(abs), { includeNavigationLinks })) {
       const ref = projectRelativeRef(dep.ref)
       if (!ref) continue
       const targetAbs = path.resolve(path.dirname(abs), ref)

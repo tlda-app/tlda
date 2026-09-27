@@ -55,6 +55,38 @@ const publishedPage = (title) => `<!DOCTYPE html>
 const CHAPTER = 'lectures/chapter-calibration-binary.qmd'
 const CHAPTER_HTML = 'lectures/chapter-calibration-binary.html'
 
+// A seeded two-chapter book: real sources, hand-written prior `_book` the way
+// the build instance receives it from the live project (test 1 documents why
+// the seed stays hand-written).
+function writeSeededBook(src, out, { indexSource, chapterSource }) {
+  mkdirSync(join(src, '_extensions'), { recursive: true })
+  cpSync(EXTENSION, join(src, '_extensions', 'tlda'), { recursive: true })
+  mkdirSync(join(src, 'lectures'), { recursive: true })
+  writeFileSync(join(src, '_quarto.yml'), [
+    'project:',
+    '  type: tlda',
+    'book:',
+    '  title: "Scope Fixture"',
+    '  chapters:',
+    '    - index.qmd',
+    `    - ${CHAPTER}`,
+    '',
+  ].join('\n'))
+  writeFileSync(join(src, 'index.qmd'), indexSource)
+  writeFileSync(join(src, CHAPTER), chapterSource)
+  mkdirSync(join(out, '_book', 'lectures'), { recursive: true })
+  writeFileSync(join(out, '_book', 'index.html'), publishedPage('Introduction'))
+  writeFileSync(join(out, '_book', CHAPTER_HTML), publishedPage('Calibration'))
+  writeFileSync(join(out, '_book', 'tlda-manifest.json'), `${JSON.stringify({
+    version: 1,
+    kind: 'tlda',
+    pages: [
+      { file: 'index.html', title: 'Introduction', source: { type: 'project-source', format: 'qmd', file: 'index.qmd' } },
+      { file: CHAPTER_HTML, title: 'Calibration', source: { type: 'project-source', format: 'qmd', file: CHAPTER } },
+    ],
+  }, null, 2)}\n`)
+}
+
 test('a direct chapter edit rebuilds that chapter into the book', { timeout: 900_000, skip: RENDER_CONTROL_SKIP }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-component-render-'))
   const project = 'component-render-fixture'
@@ -171,6 +203,83 @@ test('a first build renders only the declared chapter root', { timeout: 900_000,
     await buildQmdDocument(project, (line) => log.push(String(line)), { changedFiles: [CHAPTER] })
     assert.match(readFileSync(join(out, '_book', CHAPTER_HTML), 'utf8'), /The second edit reached the page\./)
     assert.equal(log.filter((line) => line === `[qmd] quarto render ${CHAPTER}`).length, 2)
+  } finally {
+    await closeProjectStore().catch(() => {})
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a mixed chapter-plus-config edit still rebuilds the chapter', { timeout: 900_000, skip: RENDER_CONTROL_SKIP }, async () => {
+  // The acceptance case: chapter + `_quarto.yml` once rendered only index.qmd
+  // — the stale-fallback substituting the wrong set — while the chapter edit
+  // sat missing from its page and the build reported success. Config widens to
+  // the whole project now, and the widening says which file caused it.
+  // The link in index.qmd is load-bearing: without something stale to
+  // substitute, the old code widened too and this passed anyway.
+  const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-mixed-scope-'))
+  const project = 'mixed-scope-fixture'
+  try {
+    await initProjectStore(join(root, 'projects'))
+    createProject({ name: project, mainFile: 'index.qmd', format: 'qmd', documentRoots: ['index.qmd'] })
+
+    const src = sourceDir(project)
+    const out = outputDir(project)
+    writeSeededBook(src, out, {
+      indexSource: '# Introduction\n\nSee [calibration](lectures/chapter-calibration-binary.qmd).\n',
+      chapterSource: '# Calibration\n\nThe mixed-scope sentence must appear.\n',
+    })
+
+    const log = []
+    await buildQmdDocument(project, (line) => log.push(String(line)), { changedFiles: [CHAPTER, '_quarto.yml'] })
+
+    assert.match(
+      readFileSync(join(out, '_book', CHAPTER_HTML), 'utf8'),
+      /mixed-scope sentence must appear/,
+      'the edited chapter must be republished when config widens the scope',
+    )
+    assert.match(log.join('\n'), /^\[qmd\] quarto render\s*$/m, 'config widens to a whole-project render')
+    assert.match(log.join('\n'), /full-project scope because project configuration changed: _quarto\.yml/)
+  } finally {
+    await closeProjectStore().catch(() => {})
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('repeated incremental builds leave rendered pages byte-identical', { timeout: 900_000, skip: RENDER_CONTROL_SKIP }, async () => {
+  // The accretion guard at build level: the post-render loop reprocessed
+  // seeded pages and source-line marking is not idempotent across passes
+  // (measured +184 bytes on an untouched course chapter), so untouched pages
+  // drifted a little every build. Three builds — render the chapter, then two
+  // edits to index — comparing the chapter page after each. The repeated
+  // phrases stress the multi-pass matcher the way course prose does.
+  const root = mkdtempSync(join(tmpdir(), 'tlda-qmd-seeded-stable-'))
+  const project = 'seeded-stable-fixture'
+  try {
+    await initProjectStore(join(root, 'projects'))
+    createProject({ name: project, mainFile: 'index.qmd', format: 'qmd', documentRoots: ['index.qmd'] })
+
+    const src = sourceDir(project)
+    const out = outputDir(project)
+    writeSeededBook(src, out, {
+      indexSource: '# Introduction\n\nOpening text.\n',
+      chapterSource: '# Calibration\n\n## Binary outcomes\n\nCalibration text one.\n\n## Binary outcomes again\n\nCalibration text one, repeated.\n',
+    })
+
+    const log = []
+    const chapterPath = join(out, '_book', CHAPTER_HTML)
+    await buildQmdDocument(project, (line) => log.push(String(line)), { changedFiles: [CHAPTER] })
+    const renderedOnce = readFileSync(chapterPath, 'utf8')
+
+    writeFileSync(join(src, 'index.qmd'), '# Introduction\n\nOpening text.\n\nSecond paragraph.\n')
+    await buildQmdDocument(project, (line) => log.push(String(line)), { changedFiles: ['index.qmd'] })
+    assert.equal(readFileSync(chapterPath, 'utf8'), renderedOnce, 'the chapter page must survive a second build byte-identical')
+
+    writeFileSync(join(src, 'index.qmd'), '# Introduction\n\nOpening text.\n\nSecond paragraph.\n\nThird paragraph.\n')
+    await buildQmdDocument(project, (line) => log.push(String(line)), { changedFiles: ['index.qmd'] })
+    assert.equal(readFileSync(chapterPath, 'utf8'), renderedOnce, 'the chapter page must survive a third build byte-identical')
+
+    assert.equal(log.filter((line) => line === `[qmd] quarto render ${CHAPTER}`).length, 1)
+    assert.equal(log.filter((line) => line === '[qmd] quarto render index.qmd').length, 2)
   } finally {
     await closeProjectStore().catch(() => {})
     rmSync(root, { recursive: true, force: true })

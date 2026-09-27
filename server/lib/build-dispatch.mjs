@@ -604,6 +604,29 @@ export async function recoverBuildPublications() {
   }
 }
 
+/**
+ * A streamed build-output line, fanned out to whoever is watching the
+ * document. Same `signal:build-progress` the LaTeX path emits and the TOC tab
+ * and progress pill already subscribe to — phase stays `compiling` because
+ * that is one of the three phases the pill displays, and the detail carries
+ * the line (the scope summary, `[12/41] chapter`, `chapter.qmd: rendered in
+ * Nms`). Pure room write behind a try/catch: a signal failure must never fail
+ * the build it reports on.
+ */
+export function relayBuildOutputToRoom(project, line, skipped = 0) {
+  const detail = skipped > 0 ? `${line} (+${skipped} lines)` : String(line || '')
+  try {
+    broadcastSignal(`doc-${project}`, 'signal:build-progress', {
+      phase: 'compiling',
+      detail: detail.length > 160 ? `${detail.slice(0, 157)}…` : detail,
+      timestamp: Date.now(),
+    })
+  } catch (error) {
+    // Best-effort room write: a signal failure must never fail the build it reports on.
+    console.error(`[build:${project}] Failed to send build progress signal: ${error.message}`)
+  }
+}
+
 export function createDispatcherWithOptions(transport, options = {}) {
   const sinks = { ...SINKS, ...(options.sinks || {}) }
   let queue
@@ -636,6 +659,12 @@ export function createDispatcherWithOptions(transport, options = {}) {
         if (message.m === 'buildOutput') {
           const [project, line, skipped] = message.a || []
           console.log(`[build:${project}] ${line}${skipped ? `  (+${skipped} lines)` : ''}`)
+          // The same line, to whoever is watching the document. The Quarto
+          // path streams its scope summary and per-document progress here;
+          // without this fan-out those lines reach the server log only, and a
+          // person with the book open sees nothing until the build lands.
+          // Completion already reloads watchers; this covers the middle.
+          relayBuildOutputToRoom(project, line, skipped)
         }
         return null
       }
