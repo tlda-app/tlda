@@ -324,3 +324,59 @@ test('a publication that throws mid-swap records the failure, its reason and its
     for (const dir of [root, instanceRoot]) rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('publication carries the revision actor from commit trailers into the journal row', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-publish-actor-'))
+  const instanceRoot = mkdtempSync(join(tmpdir(), 'tlda-build-actor-instance-'))
+  const name = 'paper'
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'main.md', format: 'markdown' })
+    const lifecycle = await sourceLifecycleStore(name, { context: { referencedRoots: ['main.md'] } })
+    const git = await lifecycle.gitRepository()
+    const revision = await git.acceptRevision({
+      project: name,
+      files: [{ path: 'main.md', content: 'actor source' }],
+      message: 'stamped proposal\n\nTlda-Actor: fleet:agent-1\nTlda-Daemon: mini:testing',
+    })
+    // The queue admits first and knows no actor; publish fills it in.
+    lifecycle.recordRevisionAdmission(name, revision, 3)
+    const before = lifecycle.listRevisionLifecycles(name).find(r => r.sourceRevision === revision)
+    assert.equal(before.actor, null)
+    assert.equal(before.actorUnknown, null)
+    const published = await publishBuildInstance(name, revision, 3, instance(instanceRoot, name, 'actor artifact'), [])
+    assert.equal(published.published, true)
+    const after = lifecycle.listRevisionLifecycles(name).find(r => r.sourceRevision === revision)
+    assert.equal(after.actor, 'fleet:agent-1')
+    assert.equal(after.actorDaemon, 'mini:testing')
+    assert.equal(after.actorUnknown, null)
+  } finally {
+    await closeProjectStore()
+    for (const dir of [root, instanceRoot]) rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('publication marks a trailerless revision as predating recording', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-publish-predates-'))
+  const instanceRoot = mkdtempSync(join(tmpdir(), 'tlda-build-predates-instance-'))
+  const name = 'paper'
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'main.md', format: 'markdown' })
+    const lifecycle = await sourceLifecycleStore(name, { context: { referencedRoots: ['main.md'] } })
+    const git = await lifecycle.gitRepository()
+    const revision = await git.acceptRevision({
+      project: name,
+      files: [{ path: 'main.md', content: 'old source' }],
+      message: 'a commit from before trailers existed',
+    })
+    const published = await publishBuildInstance(name, revision, 1, instance(instanceRoot, name, 'old artifact'), [])
+    assert.equal(published.published, true)
+    const row = lifecycle.listRevisionLifecycles(name).find(r => r.sourceRevision === revision)
+    assert.equal(row.actor, null)
+    assert.equal(row.actorUnknown, 'predates-recording')
+  } finally {
+    await closeProjectStore()
+    for (const dir of [root, instanceRoot]) rmSync(dir, { recursive: true, force: true })
+  }
+})

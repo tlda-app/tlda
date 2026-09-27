@@ -134,15 +134,37 @@ export function createSourceLifecycleStore({ root, project = 'project', onStatus
         .filter(lifecycle => lifecycle?.project === name)
         .sort((a, b) => (a.acceptSeq ?? 0) - (b.acceptSeq ?? 0))
     },
-    recordRevisionAdmission(name, sourceRevision, acceptSeq) {
+    recordRevisionAdmission(name, sourceRevision, acceptSeq, actor = null) {
       const value = journal()
       const existing = value.revisionLifecycle[sourceRevision]
-      if (existing) return existing
+      // The actor arrives at publish, which runs after admission: an admit-time
+      // row exists without one, and the publish-time call fills it in. First
+      // writer still wins for the row itself; the actor is the one field that
+      // may arrive late. A row with neither actor field predates recording.
+      if (existing) {
+        if (actor && existing.actor == null && existing.actorUnknown == null) {
+          const updatedAt = new Date().toISOString()
+          value.revisionLifecycle[sourceRevision] = {
+            ...existing,
+            actor: actor.actor ?? null,
+            actorDaemon: actor.actorDaemon ?? null,
+            actorUnknown: actor.actorUnknown ?? null,
+            updatedAt,
+          }
+          atomicJson(operationsPath, value)
+          notifyStatus(value, name)
+          return value.revisionLifecycle[sourceRevision]
+        }
+        return existing
+      }
       const updatedAt = new Date().toISOString()
       value.revisionLifecycle[sourceRevision] = {
         project: name,
         sourceRevision,
         acceptSeq,
+        actor: actor?.actor ?? null,
+        actorDaemon: actor?.actorDaemon ?? null,
+        actorUnknown: actor?.actorUnknown ?? null,
         build: { state: 'pending', result: null, updatedAt },
         updatedAt,
       }

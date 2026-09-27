@@ -8,6 +8,7 @@ import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { documentRootsIn } from '../shared/document-roots.mjs'
 import { redactProcessError } from '../shared/redact-url-credentials.mjs'
 import { isQuartoRenderOutput, isSourceFilePath } from '../shared/source-manifest.mjs'
+import { formatActorTrailers } from '../shared/revision-actor-trailers.mjs'
 
 const execFile = promisify(execFileCb)
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
@@ -54,6 +55,7 @@ export function createGitProjectSync({
   onSubmitted = () => {},
   onMirrorArrived = () => {},
   runGit = null,
+  resolveActor = null,
 } = {}) {
   if (!sourceDir || !project || !daemonId || !bindingId) throw new Error('sourceDir, project, daemonId, and bindingId are required')
   const projectPart = safeRefPart(project)
@@ -122,6 +124,30 @@ export function createGitProjectSync({
 
   async function rev(ref) {
     try { return (await git(['rev-parse', '--verify', `${ref}^{commit}`])).stdout.trim() } catch { return null }
+  }
+
+  // The act, stamped on the commit that carries it. `resolveActor` answers
+  // from what the owning process already observed — the daemon's edit records
+  // — and the commit is the only channel that reaches the server with the
+  // revision itself, so the stamp is written here rather than sent alongside.
+  // One actor per revision is lossy by construction: a revision carries a
+  // whole tree and its files can have different authors. This answers "whose
+  // push", never "whose line".
+  //
+  // Never throws and never blocks the commit: a lookup that failed must cost
+  // the name, not the revision. The fallback is an explicit marked unknown,
+  // not a blank — absence means the commit predates recording.
+  function actorMessageBody(members) {
+    try {
+      if (typeof resolveActor !== 'function') return formatActorTrailers({ daemon: daemonId, unknown: 'actor-unresolved' })
+      const resolved = resolveActor(Array.isArray(members) ? members : [])
+      if (resolved?.actor) return formatActorTrailers({ actor: resolved.actor, daemon: daemonId })
+      if (resolved?.unknown) return formatActorTrailers({ daemon: daemonId, unknown: resolved.unknown })
+      return formatActorTrailers({ daemon: daemonId, unknown: 'no-observed-edit' })
+    } catch (error) {
+      log.warn?.(`${project}: revision actor lookup failed: ${error?.message || error}`)
+      return formatActorTrailers({ daemon: daemonId, unknown: 'record-failed' })
+    }
   }
 
   /** The full ref HEAD is on, or null when HEAD is detached. */
@@ -402,7 +428,7 @@ export function createGitProjectSync({
       // own workingCommit is already a parent candidate below.
       const parent = await rev(localRef)
       if (parent && (await git(['rev-parse', `${parent}^{tree}`])).stdout.trim() === tree) return { commit: parent, tree, roots, members: [...members], dropped, changed: false }
-      const args = ['commit-tree', tree, '-m', REVISION_COMMIT_SUBJECT]
+      const args = ['commit-tree', tree, '-m', REVISION_COMMIT_SUBJECT, '-m', actorMessageBody([...members])]
       const remoteParent = await rev('refs/tlda/remote/observed')
       const parents = []
       for (const candidate of [parent, workingCommit, remoteParent, acceptedParent]) {
@@ -487,7 +513,7 @@ export function createGitProjectSync({
       }
       if (head && (await git(['rev-parse', `${head}^{tree}`])).stdout.trim() === tree) return { commit: head, members }
       if (!head && tree === EMPTY_TREE) return null
-      const args = ['commit-tree', tree, '-m', 'tlda settled edit cluster']
+      const args = ['commit-tree', tree, '-m', 'tlda settled edit cluster', '-m', actorMessageBody(members)]
       if (head) args.push('-p', head)
       return { commit: (await git(args)).stdout.trim(), members }
     } finally {
@@ -687,6 +713,7 @@ export function createGitProjectSync({
       const combinedRevision = (await git([
         'commit-tree', merge.tree, '-p', accepted, '-p', revision,
         '-m', `combine ${revision.slice(0, 7)} with accepted ${accepted.slice(0, 7)}`,
+        '-m', actorMessageBody(members),
       ])).stdout.trim()
       return pushRevision(combinedRevision, { forceRebuild, members, combined: true, pushTarget })
     }

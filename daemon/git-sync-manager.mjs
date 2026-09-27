@@ -27,7 +27,7 @@ function bindingId(project, sourceDir) {
   return Buffer.from(`${project}\0${path.resolve(sourceDir)}`).toString('base64url')
 }
 
-export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile: rawExecFile = defaultExecFile, createProjectSync = createGitProjectSync, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {}, onSyncRecovered = async () => {}, onRemotePublishFailed = async () => {} } = {}) {
+export function createGitSyncManager({ bindingsFile, daemonId, server, token = null, log = console, watch = watchSourceTree, execFile: rawExecFile = defaultExecFile, createProjectSync = createGitProjectSync, remoteUrlFor = null, quietMs = 250, onProposalSubmitted = async () => {}, onDocumentsDropped = async () => {}, onSyncRefused = async () => {}, onSyncRecovered = async () => {}, onRemotePublishFailed = async () => {}, resolveProposalActor = null } = {}) {
   if (!bindingsFile || !daemonId || !server) throw new Error('bindingsFile, daemonId, and server are required')
 
   // The project remote carries this daemon's token as URL userinfo, and it is
@@ -166,6 +166,12 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
       // sourceDir rides along because the members in `event` are project-relative
       // and the attribution lookup needs absolute paths.
       onSubmitted: event => onProposalSubmitted({ project: item.project, sourceDir: item.sourceDir, ...event }),
+      // The commit-time actor stamp. Same lookup the post-push admission uses,
+      // moved to where the commit is written so the answer travels with the
+      // revision instead of beside it.
+      resolveActor: typeof resolveProposalActor === 'function'
+        ? members => resolveProposalActor({ project: item.project, sourceDir: item.sourceDir, members })
+        : null,
     })
     const watchedMembers = new Set()
     let watcher
@@ -531,6 +537,10 @@ export function createGitSyncManager({ bindingsFile, daemonId, server, token = n
         documentRoots: item.documentRoots || [],
         log,
         onSubmitted: event => onProposalSubmitted({ project: item.project, sourceDir: item.sourceDir, ...event }),
+        // A projection revision is derived from its owner's; the act is
+        // recorded on the parent, so this stamp names the derivation rather
+        // than re-running a lookup whose paths belong to another checkout.
+        resolveActor: () => ({ unknown: 'projection-derived' }),
       })
       const pushTarget = tokenOverride === undefined && !serverOverride
         ? null

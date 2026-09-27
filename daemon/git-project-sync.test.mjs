@@ -296,3 +296,66 @@ test('a work branch that is really the revision chain is migrated, and its histo
     ['main.tex', 'notes.txt'],
   )
 })
+
+async function actorStampCheckout(name) {
+  const root = mkdtempSync(join(tmpdir(), name))
+  const remote = join(root, 'server.git')
+  const checkout = join(root, 'checkout')
+  await git(root, ['init', '--bare', remote])
+  await git(root, ['init', '-b', 'main', checkout])
+  await git(checkout, ['config', 'user.name', 'fixture'])
+  await git(checkout, ['config', 'user.email', 'fixture@example.test'])
+  writeFileSync(join(checkout, 'main.tex'), 'base\n')
+  await git(checkout, ['add', '.'])
+  await git(checkout, ['commit', '-m', 'base'])
+  return { root, remote, checkout }
+}
+
+test('a settled revision stamps the observed actor on the commit', async () => {
+  const { remote, checkout } = await actorStampCheckout('tlda-project-actor-stamp-')
+  const seen = []
+  const sync = createGitProjectSync({
+    sourceDir: checkout, project: 'paper', daemonId: 'daemon-a', bindingId: 'binding-a', remote,
+    log: { warn() {}, info() {}, error() {} },
+    resolveActor: members => { seen.push(members); return { actor: 'fleet:agent-1' } },
+  })
+  writeFileSync(join(checkout, 'main.tex'), 'edited\n')
+  const result = await sync.submitCurrent()
+  assert.equal(result.ok, true)
+  assert.deepEqual(seen, [['main.tex']])
+  const message = (await git(checkout, ['log', '-1', '--format=%B', result.revision])).stdout
+  assert.match(message, /^Tlda-Actor: fleet:agent-1$/m)
+  assert.match(message, /^Tlda-Daemon: daemon-a$/m)
+  assert.doesNotMatch(message, /^Tlda-Actor-Unknown:/m)
+})
+
+test('a settled revision with no observed actor stamps an explicit unknown', async () => {
+  const { remote, checkout } = await actorStampCheckout('tlda-project-actor-unknown-')
+  const sync = createGitProjectSync({
+    sourceDir: checkout, project: 'paper', daemonId: 'daemon-a', bindingId: 'binding-a', remote,
+    log: { warn() {}, info() {}, error() {} },
+    resolveActor: () => ({ unknown: 'no-observed-edit' }),
+  })
+  writeFileSync(join(checkout, 'main.tex'), 'edited\n')
+  const result = await sync.submitCurrent()
+  assert.equal(result.ok, true)
+  const message = (await git(checkout, ['log', '-1', '--format=%B', result.revision])).stdout
+  assert.match(message, /^Tlda-Actor-Unknown: no-observed-edit$/m)
+  assert.match(message, /^Tlda-Daemon: daemon-a$/m)
+})
+
+test('a throwing actor resolver still commits, stamped record-failed', async () => {
+  const { remote, checkout } = await actorStampCheckout('tlda-project-actor-throw-')
+  const warnings = []
+  const sync = createGitProjectSync({
+    sourceDir: checkout, project: 'paper', daemonId: 'daemon-a', bindingId: 'binding-a', remote,
+    log: { warn: line => warnings.push(line), info() {}, error() {} },
+    resolveActor: () => { throw new Error('ingestor down') },
+  })
+  writeFileSync(join(checkout, 'main.tex'), 'edited\n')
+  const result = await sync.submitCurrent()
+  assert.equal(result.ok, true)
+  assert.equal(warnings.length, 1)
+  const message = (await git(checkout, ['log', '-1', '--format=%B', result.revision])).stdout
+  assert.match(message, /^Tlda-Actor-Unknown: record-failed$/m)
+})

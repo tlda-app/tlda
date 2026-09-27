@@ -276,6 +276,10 @@ function sourceRoomGitManager(project) {
   manager = createGitSyncManager({
     bindingsFile: join(getProjectDir(project), '.source-room', 'git-bindings.json'),
     daemonId: sourceRoomDaemonKey(project),
+    // The browser leg has no observed identity in this pipeline, so its
+    // commits stamp the gap explicitly rather than inventing an actor.
+    // Held work, not unrecorded history.
+    resolveProposalActor: () => ({ unknown: 'browser-actor-unwired' }),
     // The scheme has to be the LISTENER'S. These were hardcoded `http://`, so on
     // a TLS preview -- which is what `tlda-dev serve` stands up -- the server
     // talked to itself over a scheme it was not listening on. The push does not

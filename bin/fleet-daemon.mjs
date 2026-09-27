@@ -648,6 +648,14 @@ const sourceSync = createGitSyncManager({
   server: SERVER,
   token: TOKEN,
   log,
+  // Commit-time actor stamp: the same `resolveProposalEditor` lookup the
+  // admission message uses, run where the revision is written so the answer
+  // is recorded on the commit instead of living only in a chat message.
+  resolveProposalActor: ({ sourceDir, members }) => {
+    if (!Array.isArray(members) || members.length === 0) return { unknown: 'no-members' }
+    const agent = resolveProposalEditor(sourceDir, members)
+    return agent ? { actor: agent } : { unknown: 'no-observed-edit' }
+  },
   onProposalSubmitted: async ({ project, sourceDir, revision, proposalRef, members = null, forceRebuild = false }) => {
     const editedBy = resolveProposalEditor(sourceDir, members)
     const admitted = await sendMsgWithReply({ type: 'source-proposal-admit', project, revision, ref: proposalRef, retry_terminal: forceRebuild, ...(editedBy ? { editedBy } : {}) })

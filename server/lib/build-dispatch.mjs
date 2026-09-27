@@ -29,6 +29,32 @@ import { BuildQueueStore } from './build-queue-store.mjs'
 import { listProposalRefs } from './git-proposals.mjs'
 import { fileURLToPath } from 'node:url'
 import { assemblePreviewCopy, copyBuildOutputToPreview, sendPreviewCopy } from './publish-copy.mjs'
+import { parseActorTrailers } from '../../shared/revision-actor-trailers.mjs'
+
+/**
+ * The actor a revision commit recorded about itself, read at publish.
+ *
+ * Publish-only by design: parsing runs here, after the build, and never in
+ * the pre-receive hook or the admission path. A commit with no trailers
+ * predates recording and is marked so; a commit that cannot be read is
+ * marked unreadable. Either way the publish records an outcome, never a
+ * blank — "answerable" means every revision carries either an actor or a
+ * marked unknown.
+ */
+async function readRevisionActor(git, sourceRevision) {
+  try {
+    const meta = await git.readCommitMeta(sourceRevision)
+    const parsed = parseActorTrailers(meta?.message)
+    if (parsed.actor) return { actor: parsed.actor, actorDaemon: parsed.daemon, actorUnknown: null }
+    return {
+      actor: null,
+      actorDaemon: parsed.daemon,
+      actorUnknown: parsed.unknown || 'predates-recording',
+    }
+  } catch {
+    return { actor: null, actorDaemon: null, actorUnknown: 'trailer-unreadable' }
+  }
+}
 
 /**
  * Put what just built in front of the preview, on the box that built it.
@@ -435,7 +461,8 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
      */
     const recordNotPublished = async (state, detail) => {
       try {
-        lifecycle.recordRevisionAdmission(name, sourceRevision, acceptSeq)
+        const git = await lifecycle.gitRepository()
+        lifecycle.recordRevisionAdmission(name, sourceRevision, acceptSeq, await readRevisionActor(git, sourceRevision))
         lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, { ok: false, ...detail })
       } catch (recordError) {
         // Swallowed deliberately: this runs on the failure path, and its only
@@ -541,7 +568,7 @@ export async function publishBuildInstance(name, sourceRevision, acceptSeq, inst
         const sink = reportSinks[report.method]
         if (sink) await sink(...(report.args || []))
       }
-      lifecycle.recordRevisionAdmission(name, sourceRevision, acceptSeq)
+      lifecycle.recordRevisionAdmission(name, sourceRevision, acceptSeq, await readRevisionActor(git, sourceRevision))
       // The replaced set is the record of what this build produced, so it is
       // also the honest answer to which phase to write: no `output` means
       // nothing rendered, which is `not_required` rather than `built`.
