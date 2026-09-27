@@ -80,7 +80,7 @@ function globToRegex(glob) {
     if (ch === '*') {
       if (input[i + 1] === '*') {
         if (input[i + 2] === '/') {
-          out += '(.*/)?'
+          out += '(?:.*/)?'
           i += 2
         } else {
           out += '.*'
