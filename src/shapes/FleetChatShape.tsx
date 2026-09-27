@@ -2508,6 +2508,27 @@ function browserLocalStorage(): Storage | null {
   }
 }
 
+// TEMPORARY v4 instrumentation — revert after the measurement walk. Records
+// each scroll-restore adoption and decision to a window ring buffer (read via
+// `window.__tldaScrollRestoreTrace`) plus the console. Logging only: it never
+// feeds back into list behaviour.
+function traceScrollRestore(entry: Record<string, unknown>): void {
+  const withTime = { t: Date.now(), ...entry }
+  try {
+    const w = window as unknown as { __tldaScrollRestoreTrace?: Array<Record<string, unknown>> }
+    const buf = (w.__tldaScrollRestoreTrace ??= [])
+    buf.push(withTime)
+    if (buf.length > 120) buf.splice(0, buf.length - 120)
+  } catch {
+    // The trace never breaks the list.
+  }
+  try {
+    console.info('[scroll-restore]', JSON.stringify(withTime))
+  } catch {
+    // Ignore console failures.
+  }
+}
+
 export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProps<AnchoredChatItem>>(function AnchoredChatList({
   items,
   className,
@@ -2757,6 +2778,13 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
       if (previousKeys.length === 0) {
         const adopted = readChatScrollState(browserLocalStorage(), chatScrollStoreKey(persistKey))
         if (adopted && adopted.tail !== true) pendingScrollRestoreRef.current = adopted
+        traceScrollRestore({ // TEMPORARY v4 instrumentation
+          phase: 'adopt',
+          adopted: pendingScrollRestoreRef.current != null,
+          savedPresent: adopted != null,
+          savedTail: adopted?.tail ?? null,
+          anchorKey: adopted?.anchorKey ?? null,
+        })
       }
     }
     const pendingRestore = persistKey ? pendingScrollRestoreRef.current : null
@@ -2773,6 +2801,20 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
         resetKey,
         atTail,
         startOf: (key: string) => chatScrollStartOf(itemKeys, heightOf, key),
+      })
+      traceScrollRestore({ // TEMPORARY v4 instrumentation
+        phase: 'decide',
+        action: decision.action,
+        top: decision.top ?? null,
+        atTail,
+        tailMode: tailModeRef.current,
+        pendingDeparture: pendingDepartureRef.current,
+        savedTail: pendingRestore.tail ?? null,
+        filterMatch: pendingRestore.filterKey === resetKey,
+        resetEmpty: resetKey === '[]' || resetKey === '' || resetKey == null,
+        anchorKey: pendingRestore.anchorKey ?? null,
+        keyResolved: chatScrollStartOf(itemKeys, heightOf, pendingRestore.anchorKey) != null,
+        itemCount: itemKeys.length,
       })
       if (decision.action === 'restore' && decision.top != null) {
         setModelTop(decision.top)
