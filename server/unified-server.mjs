@@ -6048,7 +6048,39 @@ app.get('/{*path}', async (req, res) => {
 
 const TLS_CERT = process.env.TLDA_TLS_CERT || join(homedir(), '.config/tlda/localhost+2.pem')
 const TLS_KEY  = process.env.TLDA_TLS_KEY  || join(homedir(), '.config/tlda/localhost+2-key.pem')
-const useTls = existsSync(TLS_CERT) && existsSync(TLS_KEY)
+
+// Readability, not existence, decides TLS. Under a secrets fence `existsSync`
+// passes on paths `readFileSync` cannot open, so an existence probe boots into
+// an EPERM throw instead of the plain-HTTP branch below. Read both files up
+// front and reuse the bytes: a pair that exists but cannot be read selects
+// HTTP with a loud announcement, never a silent fallback and never a crash.
+// A pair that was never configured (absent files) keeps today's silent HTTP.
+function readTlsPair(certPath, keyPath) {
+  const failures = []
+  let cert = null
+  let key = null
+  try {
+    cert = readFileSync(certPath)
+  } catch (err) {
+    failures.push(`${certPath}: ${err.code || err.message}`)
+  }
+  try {
+    key = readFileSync(keyPath)
+  } catch (err) {
+    failures.push(`${keyPath}: ${err.code || err.message}`)
+  }
+  if (failures.length > 0) return { material: null, failures }
+  return { material: { cert, key }, failures }
+}
+
+const tlsConfigured = existsSync(TLS_CERT) && existsSync(TLS_KEY)
+const { material: tlsMaterial, failures: tlsFailures } = tlsConfigured
+  ? readTlsPair(TLS_CERT, TLS_KEY)
+  : { material: null, failures: [] }
+const useTls = tlsMaterial !== null
+if (tlsConfigured && !useTls) {
+  console.error(`[tls] TLS certificate present but unreadable (${tlsFailures.join('; ')}) — serving plain HTTP instead of HTTPS`)
+}
 
 // Optional second cert pair for off-laptop access. The mkcert cert above is only
 // trusted on machines holding the mkcert root CA (this laptop), so iPad/phone get
@@ -6057,7 +6089,18 @@ const useTls = existsSync(TLS_CERT) && existsSync(TLS_KEY)
 // localhost keeps the mkcert cert — so one server/port answers both links.
 const TLS_CERT_TAILNET = process.env.TLDA_TLS_CERT_TAILNET || join(homedir(), '.config/tlda/tailnet.pem')
 const TLS_KEY_TAILNET  = process.env.TLDA_TLS_KEY_TAILNET  || join(homedir(), '.config/tlda/tailnet-key.pem')
-const hasTailnetCert = existsSync(TLS_CERT_TAILNET) && existsSync(TLS_KEY_TAILNET)
+const tailnetConfigured = existsSync(TLS_CERT_TAILNET) && existsSync(TLS_KEY_TAILNET)
+// The tailnet pair only matters under TLS — without it there is no SNI to
+// feed — so probe it only then. A working primary pair with an unreadable
+// tailnet pair keeps TLS and disables SNI with an announcement, rather than
+// crashing on a secondary cert the way the primary probe used to.
+const { material: tailnetMaterial, failures: tailnetFailures } = (useTls && tailnetConfigured)
+  ? readTlsPair(TLS_CERT_TAILNET, TLS_KEY_TAILNET)
+  : { material: null, failures: [] }
+const hasTailnetCert = tailnetMaterial !== null
+if (useTls && tailnetConfigured && !hasTailnetCert) {
+  console.error(`[tls] tailnet certificate present but unreadable (${tailnetFailures.join('; ')}) — SNI disabled, serving the primary certificate for all hostnames`)
+}
 
 /**
  * How this server reaches itself.
@@ -6079,10 +6122,10 @@ const localServerBaseUrl = () =>
 
 let server
 if (useTls) {
-  const tlsOptions = { cert: readFileSync(TLS_CERT), key: readFileSync(TLS_KEY) }
+  const tlsOptions = { cert: tlsMaterial.cert, key: tlsMaterial.key }
   if (hasTailnetCert) {
-    const localCtx = createSecureContext({ cert: readFileSync(TLS_CERT), key: readFileSync(TLS_KEY) })
-    const tailnetCtx = createSecureContext({ cert: readFileSync(TLS_CERT_TAILNET), key: readFileSync(TLS_KEY_TAILNET) })
+    const localCtx = createSecureContext({ cert: tlsMaterial.cert, key: tlsMaterial.key })
+    const tailnetCtx = createSecureContext({ cert: tailnetMaterial.cert, key: tailnetMaterial.key })
     tlsOptions.SNICallback = (servername, cb) => {
       const isLocal = servername === 'localhost' || servername === '127.0.0.1' || servername === '::1'
       cb(null, isLocal ? localCtx : tailnetCtx)
