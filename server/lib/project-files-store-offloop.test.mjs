@@ -163,6 +163,33 @@ test('document content search obeys since/before on the timestamp its rows carry
   }
 })
 
+test('document content search loops over manifest projects, not volume dirs', async () => {
+  // The searchable set is the file manifest's projects. A cruft dir with a
+  // readable project.json and matching source but no manifest rows must
+  // contribute nothing — and cost no directory scan.
+  const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-document-search-manifest-'))
+  const root = join(tempRoot, 'projects')
+  const write = (name) => {
+    mkdirSync(join(root, name, 'source'), { recursive: true })
+    writeFileSync(join(root, name, 'project.json'), JSON.stringify({ name, title: name }))
+    writeFileSync(join(root, name, 'source', 'main.tex'), 'manifestloopneedle appears in tracked and cruft alike')
+  }
+  write('tracked')
+  write('cruft-unmanifested')
+  const client = new ProjectFilesStoreClient(root)
+  try {
+    await client.ready()
+    await client.replace('tracked', ['main.tex'])
+    const listed = (await client.listProjects()).map(p => p.name).sort()
+    assert.deepEqual(listed, ['cruft-unmanifested', 'tracked'], 'the cruft dir exists on the volume')
+    const names = (await client.searchContent('manifestloopneedle')).map(row => row.project).sort()
+    assert.deepEqual(names, ['tracked'], 'only the manifest-tracked project contributes rows')
+  } finally {
+    await client.close()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('document associations mix primary, materialized, and daemon-fed shared text', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-document-associations-'))
   const root = join(tempRoot, 'projects')

@@ -34,6 +34,7 @@ db.exec(`
 `)
 
 const count = db.prepare('SELECT COUNT(*) AS count FROM project_files WHERE project = ?')
+const distinctProjects = db.prepare('SELECT DISTINCT project AS name FROM project_files')
 const read = db.prepare('SELECT path FROM project_files WHERE project = ? ORDER BY path')
 const remove = db.prepare('DELETE FROM project_files WHERE project = ?')
 const insert = db.prepare('INSERT INTO project_files (project, path) VALUES (?, ?)')
@@ -254,7 +255,14 @@ function searchContent(query, options = {}) {
   const since = String(options.since || '').trim() || null
   const before = String(options.before || '').trim() || null
   const terms = q.toLowerCase().split(/\s+/).filter(Boolean)
-  const projects = listProjects()
+  // The project loop runs off the file manifest, not the filesystem: the
+  // volume holds tens of thousands of dirs (30,862 on the serving box — 418ms
+  // of readdir + project.json parses per search) while the searchable set is
+  // the manifest's projects (21 there). A project with no manifest rows has
+  // no source entries to read, so it contributed no rows under the directory
+  // loop either; the loop below is the only caller this changes.
+  const projects = distinctProjects.all()
+    .map(row => readProject(row.name))
     .filter(p => p?.name && !p.archived)
     // The bound is project-granular, so it is applied before the file reads
     // rather than after: an out-of-window project costs no disk at all.
