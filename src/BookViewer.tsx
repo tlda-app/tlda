@@ -4,6 +4,10 @@
  * Each member doc keeps its own sync room and annotations.
  * The viewer mounts one SvgDocumentEditor at a time; switching tabs
  * unmounts the current editor and mounts the new one.
+ *
+ * A teleport carries the reader's fleet layout into a bare room and records
+ * the departure for back/forward; a chapter the reader already arranged keeps
+ * its own layout and is never touched.
  */
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Tldraw } from 'tldraw'
@@ -21,11 +25,83 @@ import type { SvgDocument } from './loaders/types'
 import type { Editor } from 'tldraw'
 import { cacheProjectsForOffline } from './airplaneMode'
 import type { AirplaneState } from './BookContext'
+import {
+  consumePendingMemberCamera,
+  recordPlaceDeparture,
+  registerPlaceMemberResolver,
+  registerPlaceMemberSwitcher,
+} from './placeStack'
+import {
+  carryFleetLayoutToEditor,
+  snapshotOwnedFleetLayout,
+  type FleetCarrySnapshot,
+} from './bookFleetCarry'
+import { dispatchFleetHudWrap } from './wm/editor-host-bridge'
 
 interface BookViewerProps {
   bookName: string
   members: BookMember[]
   onEditorMount?: (editor: Editor | null) => void
+}
+
+/**
+ * Settle one teleport carry: recreate the outgoing layout around the arrival
+ * chapter, then adopt it with the wrap dispatch. The document reconciles after
+ * the sync handshake, so a not-ready room retries on page-shape arrivals until
+ * the deadline; a room that already holds the session's layout keeps it and
+ * settles silently. Loud on deadline: a dropped carry must not read as a bare
+ * chapter.
+ */
+function attemptFleetCarry(editor: Editor, snapshot: FleetCarrySnapshot) {
+  const deadline = Date.now() + 5000
+  let settled = false
+  let unsub: (() => void) | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const cleanup = () => {
+    unsub?.()
+    unsub = null
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+  }
+  const attempt = () => {
+    if (settled) return
+    const result = carryFleetLayoutToEditor(editor, snapshot)
+    if (result.status === 'carried') {
+      settled = true
+      cleanup()
+      // Adopt, not translate: the panels were just created at their wrapped
+      // positions and the anchor must follow even when the plan did not move
+      // (same-size chapters), so this fires without the moves gate the
+      // same-room path applies.
+      dispatchFleetHudWrap({ dx: result.plan.dx, dy: result.plan.dy })
+      return
+    }
+    if (result.status === 'kept') {
+      settled = true
+      cleanup()
+      return
+    }
+    if (Date.now() >= deadline) {
+      settled = true
+      cleanup()
+      console.warn('[bookFleetCarry] arrival never produced document bounds; layout not carried')
+    }
+  }
+  attempt()
+  if (!settled) {
+    unsub = editor.store.listen(({ changes }) => {
+      const isDocumentPageRecord = (record: unknown): boolean => {
+        if (typeof record !== 'object' || record === null) return false
+        const { typeName, type } = record as { typeName?: unknown; type?: unknown }
+        return typeName === 'shape' && (type === 'svg-page' || type === 'html-page')
+      }
+      const hasPageChange =
+        Object.values(changes.added).some(isDocumentPageRecord) ||
+        Object.values(changes.updated).some((pair) => isDocumentPageRecord(pair[1]))
+      if (hasPageChange) attempt()
+    }, { source: 'all', scope: 'document' })
+    timer = setTimeout(attempt, Math.max(0, deadline - Date.now()))
+  }
 }
 
 export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps) {
@@ -42,6 +118,19 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   const [airplaneError, setAirplaneError] = useState('')
   // Pending cross-member anchor navigation: set before switchTo, consumed after load
   const pendingAnchor = useRef<string | null>(null)
+  // Pending fleet carry: snapshotted from the outgoing editor before switchTo,
+  // consumed by the arrival mount. A traversal switch (place-stack back /
+  // forward) sets neither this nor a departure — its own stack step is the
+  // record, and the arrival camera comes from the place instead.
+  const pendingCarry = useRef<FleetCarrySnapshot | null>(null)
+  const traversalSwitch = useRef(false)
+  // Stable mirrors for the place-stack bridge, which is registered once but
+  // must read the current member, members, and switcher at gesture time.
+  const bookEditorRef = useRef<Editor | null>(null)
+  const activeIndexRef = useRef(activeIndex)
+  const activeMemberKeyRef = useRef<string | null>(null)
+  const membersRef = useRef(members)
+  const switchToRef = useRef<(index: number, variant?: 'slides') => void>(() => {})
 
   const loadMember = useCallback(async (member: BookMember, variant: 'slides' | null) => {
     setLoading(true)
@@ -121,9 +210,49 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
 
   const switchTo = useCallback((index: number, variant?: 'slides') => {
     if (index < 0 || index >= members.length) return
+    // A member change is a departure from the chapter being left: record it
+    // for back/forward and snapshot the reader's fleet layout for the arrival.
+    // Same-member variant switches stay in the room and take neither.
+    if (index !== activeIndex && !traversalSwitch.current) {
+      const outgoing = bookEditorRef.current
+      if (outgoing) {
+        recordPlaceDeparture(outgoing)
+        pendingCarry.current = snapshotOwnedFleetLayout(outgoing)
+      }
+    }
+    traversalSwitch.current = false
     setActiveVariant(variant || null)
     if (index !== activeIndex) setActiveIndex(index)
   }, [members.length, activeIndex])
+
+  // Mirrors for the place-stack bridge. Effects, not render writes: the bridge
+  // reads them at gesture time, strictly between commits.
+  useEffect(() => {
+    activeIndexRef.current = activeIndex
+    activeMemberKeyRef.current = members[activeIndex]?.key ?? null
+    membersRef.current = members
+    switchToRef.current = switchTo
+  }, [members, activeIndex, switchTo])
+
+  // Back/forward across chapters: the stack records member-keyed places (see
+  // switchTo) and this bridge performs the room switch the stack cannot.
+  useEffect(() => {
+    registerPlaceMemberResolver(() => activeMemberKeyRef.current)
+    registerPlaceMemberSwitcher((memberKey: string) => {
+      const idx = membersRef.current.findIndex(member => member.key === memberKey)
+      if (idx < 0 || idx === activeIndexRef.current) return false
+      // A traversal preempts any in-flight anchor teleport: the place camera
+      // is authoritative at arrival, not the abandoned switch's anchor.
+      pendingAnchor.current = null
+      traversalSwitch.current = true
+      switchToRef.current(idx)
+      return true
+    })
+    return () => {
+      registerPlaceMemberResolver(null)
+      registerPlaceMemberSwitcher(null)
+    }
+  }, [])
 
   const toggleAirplaneMode = useCallback(() => {
     if (airplaneState === 'loading') return
@@ -253,8 +382,32 @@ export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps
   // The book's editor, kept so the overlay above it can follow its camera and
   // its tool selection. Passed on to the original caller unchanged.
   const handleEditorMount = useCallback((editor: Editor | null) => {
+    // The remount race the release hook exists for: a teardown's null can land
+    // after the replacement registered, so only arrivals move the mirror.
+    if (editor) bookEditorRef.current = editor
     setBookEditor(editor)
     onEditorMount?.(editor)
+    if (!editor) return
+    // Traversal restore: the place camera a member switch owes this mount. The
+    // room's own session restore runs ~500ms post-mount and would win, so this
+    // waits for its signal, with a fallback in case it never comes.
+    const placeCamera = consumePendingMemberCamera()
+    if (placeCamera) {
+      let applied = false
+      const apply = () => {
+        if (applied) return
+        applied = true
+        editor.setCamera(placeCamera, { animation: { duration: 300 } })
+      }
+      window.addEventListener('camera-restored', apply, { once: true })
+      window.setTimeout(apply, 1200)
+    }
+    // Teleport carry: recreate the outgoing layout around this chapter when
+    // the room has none of its own. Consumed by the first arrival mount, so a
+    // chapter never carries twice.
+    const snapshot = pendingCarry.current
+    pendingCarry.current = null
+    if (snapshot) attemptFleetCarry(editor, snapshot)
   }, [onEditorMount])
 
   // Empty book (no resolvable members): show blank canvas

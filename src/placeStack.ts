@@ -49,6 +49,28 @@ import {
 export type { Place } from './placeStackCore'
 export type PlaceStackDepth = { back: number; forward: number }
 
+/**
+ * Book member plumbing. A book's chapters share one spatial document id, so a
+ * place in a book carries its member key and back/forward across members
+ * means switching rooms, which only the BookViewer can do. Both registrations
+ * are null outside a book and every path below behaves exactly as before.
+ */
+let memberKeyResolver: (() => string | null) | null = null
+export function registerPlaceMemberResolver(fn: (() => string | null) | null) {
+  memberKeyResolver = fn
+}
+let memberSwitcher: ((memberKey: string) => boolean) | null = null
+export function registerPlaceMemberSwitcher(fn: ((memberKey: string) => boolean) | null) {
+  memberSwitcher = fn
+}
+/** A camera a member switch owes its arrival mount. Consumed exactly once. */
+let pendingMemberCamera: { x: number; y: number; z: number } | null = null
+export function consumePendingMemberCamera(): { x: number; y: number; z: number } | null {
+  const next = pendingMemberCamera
+  pendingMemberCamera = null
+  return next
+}
+
 let stack: PlaceStack = emptyPlaceStack
 let restoring = false
 
@@ -77,10 +99,12 @@ function placeHere(editor: Editor): Place | null {
   const document = currentSpatialDocument(editor, spatialWorldDocuments(editor))
   if (!document) return null
   const camera = editor.getCamera()
+  const memberKey = memberKeyResolver?.()
   return {
     documentId: document.id,
     pageId: String(editor.getCurrentPageId()),
     camera: { x: camera.x, y: camera.y, z: camera.z },
+    ...(memberKey ? { memberKey } : null),
   }
 }
 
@@ -101,8 +125,20 @@ export function recordPlaceDeparture(editor: Editor) {
   emit()
 }
 
-function enter(editor: Editor, place: Place): Place | null {
+function enter(editor: Editor, place: Place): { departing: Place | null; moved: boolean } {
   const departing = placeHere(editor)
+  const hereMember = departing?.memberKey ?? null
+  // Cross-member traversal: the target lives in another room. The switch is
+  // the move and the camera follows at arrival; setting it here would land a
+  // chapter's view on the room being left. With no switcher there is no move
+  // at all — falling through would restore into the wrong room.
+  if (place.memberKey && hereMember && place.memberKey !== hereMember) {
+    if (memberSwitcher?.(place.memberKey)) {
+      pendingMemberCamera = place.camera
+      return { departing, moved: true }
+    }
+    return { departing, moved: false }
+  }
   const documents = spatialWorldDocuments(editor)
   const target = documents.find((node: SpatialDocumentNode) => node.id === place.documentId)
   const camera = editor.getCamera()
@@ -121,13 +157,14 @@ function enter(editor: Editor, place: Place): Place | null {
   } finally {
     restoring = false
   }
-  return departing
+  return { departing, moved: true }
 }
 
 export function goBackPlace(editor: Editor) {
   const target = stack.back[stack.back.length - 1]
   if (!target) return
-  const departing = enter(editor, target)
+  const { departing, moved } = enter(editor, target)
+  if (!moved) return
   stack = stepBack(stack, departing).next
   emit()
 }
@@ -135,7 +172,8 @@ export function goBackPlace(editor: Editor) {
 export function goForwardPlace(editor: Editor) {
   const target = stack.forward[stack.forward.length - 1]
   if (!target) return
-  const departing = enter(editor, target)
+  const { departing, moved } = enter(editor, target)
+  if (!moved) return
   stack = stepForward(stack, departing).next
   emit()
 }
@@ -144,5 +182,6 @@ export function goForwardPlace(editor: Editor) {
 export function resetPlaceStack() {
   stack = emptyPlaceStack
   restoring = false
+  pendingMemberCamera = null
   depthSnapshot = { back: 0, forward: 0 }
 }

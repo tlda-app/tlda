@@ -13,6 +13,11 @@ export type Place = {
   documentId: string
   pageId: string
   camera: { x: number; y: number; z: number }
+  /**
+   * The book member (chapter) the place is in. Present only for book places;
+   * every other surface leaves it absent and behaves exactly as before.
+   */
+  memberKey?: string
 }
 
 export type PlaceStack = { back: Place[]; forward: Place[] }
@@ -29,9 +34,19 @@ export const emptyPlaceStack: PlaceStack = { back: [], forward: [] }
  * newer view instead of stacking beside it, and back always lands in a
  * different document. That is `a place is a document` applied, not relaxed.
  */
+/**
+ * Whether two places are consecutive views of the same document. Book chapters
+ * share one spatial document id (`spatial-primary:<book>`), so the member
+ * joins the key: without it ch1 → ch2 → ch1 coalesces to one entry and back
+ * can never cross chapters. Absent members compare equal to absent only.
+ */
+function samePlaceDocument(a: Place, b: Place): boolean {
+  return a.documentId === b.documentId && (a.memberKey ?? null) === (b.memberKey ?? null)
+}
+
 export function departFrom(stack: PlaceStack, here: Place): PlaceStack {
   const top = stack.back[stack.back.length - 1]
-  const back = top && top.documentId === here.documentId
+  const back = top && samePlaceDocument(top, here)
     ? [...stack.back.slice(0, -1), here]
     : [...stack.back, here]
   // Going somewhere new abandons forward history, same as a browser.
