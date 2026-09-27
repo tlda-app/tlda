@@ -51,6 +51,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'getActiveTasks',
   'getActiveTasksByAgent',
   'getActiveTasksByAgentLimited',
+  'getActiveTasksForGoneAgent',
   'getActiveTasksPage',
   'getAgent',
   'getAgentDisplayNames',

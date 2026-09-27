@@ -89,6 +89,20 @@ test('a deadline-exceeded mailbox reads stuck, not slow', async () => {
   assert.equal(status.reason, 'deadline-exceeded')
 })
 
+test('P2: an expired-status mailbox reads stuck, not failed', async () => {
+  const status = await buildSpawnMailboxStatus({
+    id: 'mailbox:1',
+    status: 'expired',
+    startedAt: NOW - 300_000,
+    deadlineAt: NOW - 1_000,
+    meta: { name: 'agent-x', agentId: 'fleet:abc' },
+    error: 'deadline exceeded',
+  }, { nowMs: NOW, findAgent: async () => null })
+  assert.equal(status.status, 'expired')
+  assert.equal(status.expired, true)
+  assert.equal(status.reason, 'deadline-exceeded')
+})
+
 test('an indeterminate mailbox keeps its error and agent', async () => {
   const status = await buildSpawnMailboxStatus({
     id: 'mailbox:1',

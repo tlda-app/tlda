@@ -1,10 +1,18 @@
 // P1: daemon-side never-joined verdicts. A mint row still unjoined past the
 // launch-latency grace gets a process-grounded verdict — never a clock
 // verdict. Process alive -> `leaked-alive` (informational: a live process is
-// never a failure). Process confirmed gone -> `absent` (positive observation
-// by the party that can see it). Probe inconclusive, or no session recorded
-// at all (pre-F2 rows), -> no verdict: not looking is not evidence, and an
-// absent record is not an absent process.
+// never a failure). Session observed absent from the tmux list, or listed
+// but confirmed dead -> `absent` (a positive observation by the party that
+// can see it). An unobserved list, an inconclusive probe, or a row with no
+// recorded session at all (pre-F2 rows) -> no verdict: not looking is not
+// evidence, and an absent record is not an absent process.
+//
+// Absence is read off `list-sessions`, never off a failed per-session probe:
+// `list-panes -t <session>` fails identically for an absent session and an
+// unreachable tmux, so only the list can confirm absence (tmux-target.mjs
+// documents the trap). The recorded name is final (F2 writes it
+// post-uniqueSessionName, spawnTmux never rotates silently), so a missing
+// name is a missing process, not a renamed one.
 
 import { sessionConfirmedDead } from '../agent-launch/tmux.mjs'
 
@@ -18,24 +26,45 @@ export function neverJoinedCutoffIso(nowMs = Date.now(), graceMs = NEVER_JOINED_
 }
 
 // Examine one unjoined mint row. Returns the emitted verdict or null.
+// `listSessions()` answers listSessionNames ({probed, names});
 // `probeSession(session)` answers sessionRuntimeState; `emit(msg)` sends it
 // daemon→server; `emitted` holds `${mint_id}:${verdict}` pairs already sent
 // this daemon lifetime (the server admission is durably idempotent, so this
 // set only spares re-sends, never correctness).
-export async function examineNeverJoinedRow({ facts, probeSession, emit, emitted, daemonKey, source = 'daemon-never-joined-sweep' }) {
+export async function examineNeverJoinedRow({ facts, listSessions, probeSession, emit, emitted, daemonKey, source = 'daemon-never-joined-sweep' }) {
   if (!facts || facts.joinedAt) return null
   const session = facts.processState && typeof facts.processState === 'object' ? facts.processState.tmux_session : null
   if (!session) return null
   const checkedAt = new Date().toISOString()
-  let probe
+  let list
   try {
-    probe = await probeSession(session)
+    list = await listSessions()
   } catch {
     return null
   }
-  const runtime = !!probe?.runtime
-  const verdict = runtime ? 'leaked-alive' : (sessionConfirmedDead(probe) ? 'absent' : null)
-  if (!verdict) return null
+  if (!list || list.probed !== true || !Array.isArray(list.names)) return null
+  let verdict = null
+  let observed = null
+  if (!list.names.includes(session)) {
+    verdict = 'absent'
+    observed = { session, session_listed: false, runtime: false, probed: true, checked_at: checkedAt }
+  } else {
+    let probe
+    try {
+      probe = await probeSession(session)
+    } catch {
+      return null
+    }
+    if (probe?.runtime) {
+      verdict = 'leaked-alive'
+      observed = { session, session_listed: true, runtime: true, probed: !!probe?.probed, checked_at: checkedAt }
+    } else if (sessionConfirmedDead(probe)) {
+      verdict = 'absent'
+      observed = { session, session_listed: true, runtime: false, probed: true, checked_at: checkedAt }
+    } else {
+      return null
+    }
+  }
   const key = `${facts.mintId}:${verdict}`
   if (emitted?.has(key)) return null
   const msg = {
@@ -44,7 +73,7 @@ export async function examineNeverJoinedRow({ facts, probeSession, emit, emitted
     agent_id: facts.fleetId || null,
     mint_id: facts.mintId,
     daemon_key: daemonKey,
-    observed: { session, runtime, probed: !!probe?.probed, checked_at: checkedAt },
+    observed,
     reason: verdict === 'absent' ? 'process confirmed gone for unjoined mint' : 'process alive for unjoined mint',
     source,
     ts: checkedAt,

@@ -21,6 +21,7 @@ import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
 import { transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
+import { emitAgentDiedEvent } from '../lib/agent-died-event.mjs'
 import { projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
 import { parsePermissionMode, permissionModeKeypresses } from '../../agent-runtime/status-classifier.mjs'
 
@@ -521,6 +522,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     try {
       await fleetStore.markDead(req.params.id)
+      // F4: the death emits (actor from the caller when supplied).
+      await emitAgentDiedEvent({
+        share: event => fleetStore.share(event),
+        agentId: req.params.id,
+        path: 'http-mark-dead',
+        actor: req.body?.actor,
+        serverOwnerId: SERVER_OWNER_ID,
+      })
       clearEphemeralState?.(req.params.id)
       broadcastState()
       res.json({ ok: true })

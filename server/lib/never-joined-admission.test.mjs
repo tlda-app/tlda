@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { admitNeverJoinedVerdict } from './never-joined-admission.mjs'
+import { admitNeverJoinedVerdict, notifyOwningDaemonOfFailure } from './never-joined-admission.mjs'
 import { FleetStore } from './fleet-store.mjs'
 
 function liveAgent(overrides = {}) {
@@ -189,6 +189,61 @@ test('changed verdict for the same mint processes', async () => {
   const outcome = await admitNeverJoinedVerdict(deps, verdict())
   assert.equal(outcome.changed, true)
   assert.deepEqual(calls.retired, ['fleet:test'])
+})
+
+test('F3 notice prefers the live route over the spawn key', async () => {
+  const sent = []
+  const agent = liveAgent({ metadata: { shell: true, spawn_daemon_key: 'mini:testing' } })
+  const deps = {
+    store: {
+      getAgent: async () => agent,
+      getAgentDaemonRoute: async () => ({ agent_id: agent.id, daemon_key: 'air:testing' }),
+    },
+    send: async (...args) => { sent.push(args) },
+    log: { warn: () => {} },
+  }
+  assert.equal(await notifyOwningDaemonOfFailure(deps, agent.id, 'launch-failed'), true)
+  assert.deepEqual(sent, [['air:testing', 'launch-failed-server-side', { agent_id: agent.id, reason: 'launch-failed' }]])
+})
+
+test('F3 notice falls back to the spawn key without a route', async () => {
+  const sent = []
+  const agent = liveAgent({ metadata: { shell: true, spawn_daemon_key: 'mini:testing' } })
+  const deps = {
+    store: { getAgent: async () => agent, getAgentDaemonRoute: async () => null },
+    send: async (...args) => { sent.push(args) },
+    log: { warn: () => {} },
+  }
+  assert.equal(await notifyOwningDaemonOfFailure(deps, agent.id, 'cap-refused'), true)
+  assert.equal(sent[0][0], 'mini:testing')
+})
+
+test('F3 notice with no resolvable daemon sends nothing', async () => {
+  const sent = []
+  const agent = liveAgent({ metadata: { shell: true } })
+  const deps = {
+    store: { getAgent: async () => agent, getAgentDaemonRoute: async () => null },
+    send: async (...args) => { sent.push(args) },
+    log: { warn: () => {} },
+  }
+  assert.equal(await notifyOwningDaemonOfFailure(deps, agent.id, 'x'), false)
+  assert.deepEqual(sent, [])
+})
+
+test('F3 notice never rejects: send and store failures return false', async () => {
+  const agent = liveAgent()
+  const throwingSend = {
+    store: { getAgent: async () => agent, getAgentDaemonRoute: async () => ({ daemon_key: 'mini:testing' }) },
+    send: async () => { throw new Error('daemon down') },
+    log: { warn: () => {} },
+  }
+  assert.equal(await notifyOwningDaemonOfFailure(throwingSend, agent.id, 'x'), false)
+  const throwingStore = {
+    store: { getAgent: async () => { throw new Error('db locked') } },
+    send: async () => {},
+    log: { warn: () => {} },
+  }
+  assert.equal(await notifyOwningDaemonOfFailure(throwingStore, agent.id, 'x'), false)
 })
 
 test('findAgentByDaemonMintId resolves the shell row on a real store', () => {

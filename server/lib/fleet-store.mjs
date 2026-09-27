@@ -3339,6 +3339,19 @@ export class FleetStore {
         if (before?.dead && !agent.dead) {
           this._reseedMandatoryDeliverySlots(agent.id);
         }
+        // P3 creation hook: a task delegated to a not-yet-existing name sits
+        // verbatim-keyed (normalizeTaskAgentKey cannot invent the id). The
+        // moment the row appears the key becomes resolvable — re-resolve those
+        // tasks now, so no task sits verbatim-keyed past resolvability and
+        // death cleanup (which matches by id) cannot miss it. One name, one
+        // write path, inside the same transaction: the row and the re-keying
+        // commit together. The normalize guard keeps it self-consistent: only
+        // keys that now resolve to this row move.
+        if (!before && agent.friendly_name && !String(agent.friendly_name).startsWith('fleet:')) {
+          if (this.normalizeTaskAgentKey(agent.friendly_name) === agent.id) {
+            this.db.prepare('UPDATE tasks SET agent = ? WHERE agent = ?').run(agent.id, agent.friendly_name);
+          }
+        }
       })();
       this._bustAgentsCache();
       this._syncAgentRegistry(agent.id);
@@ -4892,13 +4905,34 @@ export class FleetStore {
    * agents that were dead or whose row was gone.
    */
   retireTasksForGoneAgent(id, why) {
-    const open = this.getActiveTasksByAgent(id);
+    const open = this.getActiveTasksForGoneAgent(id);
     const retired = [];
     for (const task of open) {
       const result = this.retireTask(task, { reason: `${why} — task closed with its agent`, retiredBy: 'system' });
       if (result) retired.push(result.task_id);
     }
     return retired;
+  }
+
+  // P3 belt: the open tasks that MEAN this agent — by id, plus any still
+  // verbatim-keyed by a name that normalizes to this row now. Catches tasks
+  // the creation hook never saw (row deleted, name rotated while dead). One
+  // predicate shared by retireTasksForGoneAgent and failServerMintShell's
+  // retract loop — no per-path special cases. A verbatim key that now
+  // resolves to a DIFFERENT live agent is not caught: the name's current
+  // holder owns it.
+  getActiveTasksForGoneAgent(id) {
+    const open = new Map();
+    for (const task of this.getActiveTasksByAgent(id)) open.set(task.id, task);
+    const row = this._getAgent.get(id);
+    const name = row?.friendly_name || null;
+    if (name && !String(name).startsWith('fleet:')) {
+      for (const task of this.getActiveTasksByAgent(name)) {
+        if (open.has(task.id)) continue;
+        if (this.normalizeTaskAgentKey(task.agent) === id) open.set(task.id, task);
+      }
+    }
+    return [...open.values()];
   }
 
   updateHeartbeat(id) {

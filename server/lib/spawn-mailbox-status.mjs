@@ -41,12 +41,15 @@ export async function buildSpawnMailboxStatus(entry, { findAgent = null, nowMs =
       live,
     }
   }
-  const expired = entry.status === 'failed' && entry.error === MAILBOX_DEADLINE_EXCEEDED
+  // P2: expiry is its own status now; the failed+deadline shape is kept for
+  // entries that expired before the deploy (memory-only, so it vanishes on
+  // restart — the disjunct costs nothing and misreads nothing).
+  const expired = entry.status === 'expired' || (entry.status === 'failed' && entry.error === MAILBOX_DEADLINE_EXCEEDED)
   return {
     ...base,
     error: entry.error || null,
     reason: expired ? 'deadline-exceeded' : (result.reason || null),
-    expired: entry.status === 'failed' ? expired : false,
+    expired: (entry.status === 'failed' || entry.status === 'expired') ? expired : false,
   }
 }
 

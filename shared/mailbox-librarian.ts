@@ -1,6 +1,6 @@
 import { createLiveStore } from './live-store.ts'
 
-export type MailboxStatus = 'pending' | 'completed' | 'failed' | 'indeterminate'
+export type MailboxStatus = 'pending' | 'completed' | 'failed' | 'indeterminate' | 'expired'
 
 export interface MailboxEntry<TMeta extends Record<string, unknown> = Record<string, unknown>> {
   id: string
@@ -70,7 +70,10 @@ export class MailboxLibrarian {
       const timer = this.setTimer(() => {
         const current = this.entries.get(entry.id)
         if (!current || current.status !== 'pending') return
-        const expired = { ...current, status: 'failed' as const, error: 'deadline exceeded' }
+        // P2: expiry is a visible non-verdict, not a failure (C1). It marks
+        // `expired` and — crucially — does not consume the once-only settle:
+        // a late real verdict overwrites it and delivers normally.
+        const expired = { ...current, status: 'expired' as const, error: 'deadline exceeded' }
         this.entries.upsert(expired)
         this.timers.delete(entry.id)
         this.onExpire?.(expired)
@@ -98,13 +101,18 @@ export class MailboxLibrarian {
 
   private settle(id: string, status: MailboxStatus, patch: { result?: Record<string, unknown>; error?: string }): MailboxEntry | null {
     const current = this.entries.get(id)
-    if (!current || current.status !== 'pending') return null
+    // P2: `expired` settles like `pending` — the late verdict is late, not
+    // lost. True terminals (completed/failed/indeterminate) stay once-only.
+    if (!current || (current.status !== 'pending' && current.status !== 'expired')) return null
     const timer = this.timers.get(id)
     if (timer) {
       this.clearTimer(timer)
       this.timers.delete(id)
     }
     const settled = { ...current, status, ...patch }
+    // An expired entry carries error 'deadline exceeded'; a verdict that
+    // names no error (complete) must not inherit it.
+    if (patch.error === undefined) delete settled.error
     this.entries.upsert(settled)
     return settled
   }

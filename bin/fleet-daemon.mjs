@@ -1433,6 +1433,7 @@ const neverJoinedEmitted = new Set()
 function examineOneNeverJoinedRow(facts, source) {
   return examineNeverJoinedRow({
     facts,
+    listSessions: () => listSessionNames({ tmuxSocket: TMUX_SOCKET }),
     probeSession: session => sessionRuntimeState(session, { tmuxSocket: TMUX_SOCKET }),
     emit: msg => sendMsg(msg),
     emitted: neverJoinedEmitted,

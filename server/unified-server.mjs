@@ -121,7 +121,8 @@ import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { createAgentRuntimeStatusStore, RUNTIME_KIND, RUNTIME_STATUS } from './lib/agent-runtime-status.mjs'
 import { createHumanPresenceTracker } from './lib/human-presence.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
-import { admitNeverJoinedVerdict } from './lib/never-joined-admission.mjs'
+import { admitNeverJoinedVerdict, notifyOwningDaemonOfFailure } from './lib/never-joined-admission.mjs'
+import { emitAgentDiedEvent } from './lib/agent-died-event.mjs'
 import { buildSpawnMailboxStatus } from './lib/spawn-mailbox-status.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { spawnCallerId } from './lib/spawn-caller.mjs'
@@ -1996,6 +1997,9 @@ const mailboxLibrarian = new MailboxLibrarian({
     // spawn that never came up is indistinguishable from one nobody requested.
     // hw3-writer expired through here leaving no trace at all.
     console.error(spawnMailboxExpiryLine(entry, Date.now()))
+    // P2: "not a failure" is not "not worth recording" — the expiry writes
+    // its spawn_mailbox record (still no shell fail, no retract, no push).
+    deliverSpawnMailboxCompletion(entry, 'expired', { reason: 'deadline-exceeded', label: entry.meta?.name || entry.meta?.agentId || 'mint' })
   },
 })
 const _contextState = new Map()    // agentId → { percent, inputTokens }
@@ -2458,10 +2462,20 @@ async function failServerMintShell(agentId, reason) {
   // two-call form got this for free by refusing to send leg 2 after a join
   // failure; composing the operation moves that guard here, where it also covers
   // a caller that stopped listening.
-  for (const task of await fleetStore.getActiveTasksByAgent?.(agentId) || []) {
+  for (const task of await fleetStore.getActiveTasksForGoneAgent?.(agentId) || []) {
     await fleetStore.retractTask?.(task.id, { retractedBy: 'mint-launch-failed' })
   }
   await fleetStore.markDead(agentId)
+  // F3(a): the launch failed server-side — tell the owning daemon so it can
+  // examine its mint row now (a live process emits the P1 leaked-alive
+  // verdict) rather than waiting for the sweep. Unawaited by design: the
+  // death is recorded above, and the loud path must not wait on a daemon.
+  // The helper is total (never rejects), so floating it is safe.
+  void notifyOwningDaemonOfFailure({
+    store: fleetStore,
+    send: (daemonKey, op, params) => sendDaemonDurable(daemonKey, op, params, launchRpcOptions()),
+    log: console,
+  }, agentId, reason)
   broadcastState()
 }
 
@@ -7493,6 +7507,14 @@ async function dispatchFleetWsMessage(ws, msg) {
     if (!agentId) { error('mark-dead requires agent'); return }
     try {
       await fleetStore.markDead(agentId)
+      // F4: the death emits (actor from the caller when supplied).
+      await emitAgentDiedEvent({
+        share: event => fleetStore.share(event),
+        agentId,
+        path: 'ws-mark-dead',
+        actor: msg.actor,
+        serverOwnerId: SERVER_OWNER_ID,
+      })
       clearEphemeralState(agentId)
       broadcastState()
       reply({ ok: true })

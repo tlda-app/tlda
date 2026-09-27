@@ -21,6 +21,38 @@
 // waiter), else a live mailbox's owner; with neither, the verdict is
 // recorded but no notice is addressed.
 
+// F3(a) send leg: after the server declares a launch failed, tell the owning
+// daemon so it can examine its mint row now (a live process emits the P1
+// leaked-alive verdict through the normal path) rather than waiting for the
+// sweep. Routing prefers the live agent-daemon route and falls back to the
+// spawn-target key recorded at mint; with neither there is no daemon to tell.
+// Fire-and-forget by contract: the death is already recorded, a lost notice
+// only delays the daemon's own examination, and a send failure must never
+// fail the loud path. Returns true when a notice was sent.
+export async function notifyOwningDaemonOfFailure(deps, agentId, reason) {
+  const { store, send, log } = deps
+  const warn = message => { try { log?.warn?.(message) } catch { /* log sink is best-effort */ } }
+  try {
+    if (!agentId) return false
+    const agent = await store.getAgent?.(agentId)
+    if (!agent) return false
+    const route = await store.getAgentDaemonRoute?.(agentId)
+    const daemonKey = route?.daemon_key || agent.metadata?.spawn_daemon_key || null
+    if (!daemonKey) {
+      warn(`launch-failed notice for ${agentId} dropped: no owning daemon resolvable`)
+      return false
+    }
+    await send(daemonKey, 'launch-failed-server-side', { agent_id: agentId, reason: reason || 'launch-failed' })
+    return true
+  } catch (error) {
+    // Total by contract: the notice reconciles, it is not the death, so no
+    // failure here — store, route, or send — may propagate to the loud path.
+    // Swallowing is the design (F3 notice-only), not a fallback.
+    warn(`launch-failed notice for ${agentId} failed: ${error?.message || error}`)
+    return false
+  }
+}
+
 export async function admitNeverJoinedVerdict(deps, msg) {
   const { store, mailbox, chat, completeMailbox, log } = deps
   // Logging must never break admission: a warn sink throwing would turn a
@@ -48,6 +80,13 @@ export async function admitNeverJoinedVerdict(deps, msg) {
     if (recordedKey) {
       owned = claimKey === recordedKey
     } else {
+      // Rollout stage (AGENTS.md: temporary, not permanent): rows minted
+      // before the spawn-key write deployed carry no key, so verify against
+      // the live agent-daemon route instead. Retire this branch by
+      // backfilling spawn_daemon_key from the live route for all pre-deploy
+      // rows that have one; unrouted old rows reject identically either
+      // way, so once the backfill lands this branch is dead code. Delete it
+      // then — do not let it become permanent by nobody's decision.
       const route = await store.getAgentDaemonRoute?.(agent.id)
       owned = !!route && claimKey === route.daemon_key
     }
