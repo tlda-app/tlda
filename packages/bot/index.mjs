@@ -16,7 +16,7 @@
 // TLDA_BOT_TMUX_SESSION wire it into normal fleet lifecycle machinery.
 
 import WebSocket from 'ws';
-import { writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
+import { appendFileSync, writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { getServerUrl } from '../../shared/config.mjs';
@@ -63,11 +63,15 @@ export function createBot({
   reconnectInitialMs = 500, reconnectMaxMs = 5000, subscriptionFilter = undefined,
   livenessProbeIntervalMs = 30_000, livenessProbeTimeoutMs = 10_000,
   canonicalRefreshIntervalMs = 30_000, canonicalRefreshTimeoutMs = 10_000,
+  heartbeatFile = null,
 } = {}) {
   const key = (process.env.TLDA_BOT_NAME || name).toLowerCase();
   const SERVER = server || process.env.TLDA_SERVER || getServerUrl();
   const WS_URL = SERVER.replace(/^http/, 'ws') + '/ws/fleet';
   const PID_FILE = process.env.TLDA_BOT_PIDFILE || pidFile || join(homedir(), '.config', 'tlda', `${key}.pid`);
+  // Option first, unlike PID_FILE: tests pass an explicit file and must not
+  // inherit an ambient supervisor path.
+  const HEARTBEAT_FILE = heartbeatFile || process.env.TLDA_BOT_HEARTBEAT || null;
   const MACHINE_ID = process.env.TLDA_BOT_MACHINE_ID || null;
   const ENV_NAME = process.env.TLDA_ENV || null;
   const DAEMON_KEY = process.env.FLEET_DAEMON_KEY || null;
@@ -293,7 +297,36 @@ export function createBot({
   }
 
   function connect() { rws.connect(); }
-  function sendRaw(msg) { if (rws.connected) rws.send({ id: msgId++, ...msg }); }
+  // Send-path state edges. The fire-and-forget send drops silently when the
+  // socket is down, so the transition — and only the transition — is logged
+  // and appended to the heartbeat file the supervisor already watches. The
+  // edge rides an existing heartbeat instrument and never creates one: a bot
+  // with no heartbeat file surveys as unmonitored, and a file holding only
+  // ancient edges would later read as a stopped bot. Both call sites are
+  // canonical-gated upstream, so a non-canonical instance stays silent.
+  let sendUp = true;
+  function sendStateEdge(up) {
+    if (!HEARTBEAT_FILE) return;
+    try {
+      if (!existsSync(HEARTBEAT_FILE)) return;
+      appendFileSync(HEARTBEAT_FILE, JSON.stringify({ ts: Date.now(), reason: up ? 'send-up' : 'send-down', sendUp: up }) + '\n');
+    } catch { /* telemetry — never crash the bot */ }
+  }
+  function sendRaw(msg) {
+    const ok = rws.connected;
+    if (!ok && sendUp) {
+      sendUp = false;
+      log('send path down: dropping message, socket not connected');
+      sendStateEdge(false);
+      return;
+    }
+    if (ok && !sendUp) {
+      sendUp = true;
+      log('send path recovered');
+      sendStateEdge(true);
+    }
+    if (ok) rws.send({ id: msgId++, ...msg });
+  }
   function send(msg) { if (isCanonical()) sendRaw(msg); }
   function requestRaw(msg, timeoutMs = 10_000) {
     return new Promise((resolve, reject) => {

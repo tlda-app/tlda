@@ -48,6 +48,32 @@ function lastEntry(file, readFile) {
   }
 }
 
+// The latest send-path statement in the tail, newest first. Writers emit
+// `{ reason: 'send-down' | 'send-up', sendUp }` edges on state change, and a
+// single-writer bot may also stamp `sendUp` on every entry. Ticks without the
+// field are not statements and are skipped, so one writer's ticks can never
+// bury another writer's edge. Malformed lines are skipped, not fatal.
+function lastSendStatement(file, readFile) {
+  let text
+  try {
+    text = readFile(file)
+  } catch {
+    return null
+  }
+  const lines = text.trimEnd().split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (!line) continue
+    try {
+      const entry = JSON.parse(line)
+      if (entry && Object.hasOwn(entry, 'sendUp')) return entry
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
 // Reads the last ~64KB rather than the file: these grow to tens of megabytes.
 function tailText(file) {
   const handle = fs.openSync(file, 'r')
@@ -71,6 +97,9 @@ function tailText(file) {
  *   living agent is inert by design and is not a failure. See `AGENTS.md`
  *   §"A renamed mint and an inert bot are both the design".
  * `deaf` is writing heartbeats without hearing a fleet event — alive, not working.
+ * `sendDown` is beating while its last send-path statement says down — alive,
+ *   polling, and dropping every fire-and-forget send. Down sticks until a send
+ *   succeeds, so the verdict speaks about attempts, not the wire.
  * `unmonitored` is declared with no heartbeat instrument at all; it degrades the
  *   survey rather than alarming, because it means "cannot say", not "is down".
  * `undeclared` has a heartbeat file and no declaration — it was running, so
@@ -107,6 +136,7 @@ export function surveyBotHeartbeats({
   const stopped = []
   const quieted = []
   const deaf = []
+  const sendDown = []
   const unmonitored = []
 
   for (const name of declared) {
@@ -134,7 +164,28 @@ export function surveyBotHeartbeats({
       const entry = { name, file, staleMin: Math.round(staleMsActual / 60_000) }
       if (isQuieted(name)) quieted.push(entry)
       else stopped.push(entry)
-    } else beating.push(name)
+      continue
+    }
+    // A bot whose last send-path statement says down is beating but dropping
+    // its sends — the fire-and-forget send fails silently by design, so without
+    // this verdict the outage is invisible.
+    //
+    // Restraint (PM ruling 2026-09-27, upheld by the chief): this verdict
+    // notifies watchers. Never message the sendDown bot about it, never reap,
+    // restart, or otherwise act on the bot. The notice goes to awake & on-call
+    // staff only.
+    const sendStatement = lastSendStatement(file, readFile)
+    if (sendStatement && sendStatement.sendUp === false) {
+      // Writers disagree on ts shape (epoch ms vs ISO string); the notice does
+      // arithmetic on it, so normalize to ms-or-null here.
+      const rawTs = sendStatement.ts
+      const ts = typeof rawTs === 'number' ? rawTs
+        : typeof rawTs === 'string' && Number.isFinite(Date.parse(rawTs)) ? Date.parse(rawTs)
+        : null
+      sendDown.push({ name, file, reason: sendStatement.reason || null, ts })
+      continue
+    }
+    beating.push(name)
   }
 
   const undeclared = undeclaredNames.map(name => {
@@ -148,5 +199,5 @@ export function surveyBotHeartbeats({
     return { name, file, staleMin }
   })
 
-  return { beating, stopped, quieted, deaf, unmonitored, undeclared }
+  return { beating, stopped, quieted, deaf, sendDown, unmonitored, undeclared }
 }
