@@ -1415,6 +1415,8 @@ export async function cmdPw(args, repoRoot) {
         '  tlda-dev pw status            session state + my tab + URL',
         '  tlda-dev pw sweep             park stale/error tabs in my assigned browser',
         '  tlda-dev pw reap              close my assigned shared browser',
+        '  tlda-dev pw reap-cold [--dry-run] [--window-minutes N]',
+        '                            reap cold per-agent MCP browsers box-wide',
         '  tlda-dev pw center <region>   bring into the pointer viewport: doc | fleet',
         '                            | chat | agents | search | inbox | docview',
         '  tlda-dev pw console [level]   print console messages; supports --lines N',
@@ -1446,8 +1448,8 @@ export async function cmdPw(args, repoRoot) {
   }
 
   // While locked, refuse anything that could open or drive the browser. Only
-  // status / unlock / reap / help / lock are allowed through.
-  if (isDisabled() && !['status', 'unlock', 'reap', 'help', '--help', 'lock'].includes(verb)) {
+  // status / unlock / reap / reap-cold / help / lock are allowed through.
+  if (isDisabled() && !['status', 'unlock', 'reap', 'reap-cold', 'help', '--help', 'lock'].includes(verb)) {
     const info = disableInfo()
     const ago = info.ts ? `${Math.round((Date.now() - info.ts) / 1000)}s ago` : 'unknown when'
     console.error(
@@ -1458,8 +1460,31 @@ export async function cmdPw(args, repoRoot) {
     process.exit(3)
   }
 
-  if (!['status', 'reap', 'sweep', 'help', '--help', 'lock', 'unlock'].includes(verb)) {
+  if (!['status', 'reap', 'reap-cold', 'sweep', 'help', '--help', 'lock', 'unlock'].includes(verb)) {
     enforceCanonicalSession()
+  }
+
+  if (verb === 'reap-cold') {
+    // Box-wide, session-independent: evaluated from ps + roster, never from
+    // my tab or session. Takes no lock: it only ever SIGTERMs a browser main
+    // that re-verified cold past its owner window, and the pool lock governs
+    // verbs on shared browsers, which this verb refuses by scope.
+    const { runReapCold, formatReport } = await import('./pw-reap-cold.mjs')
+    const dryRun = rest.includes('--dry-run')
+    const stateIdx = rest.indexOf('--state-file')
+    const windowIdx = rest.indexOf('--window-minutes')
+    const windowMinutes = windowIdx === -1 ? null : Number(rest[windowIdx + 1])
+    if (windowIdx !== -1 && !(windowMinutes > 0)) {
+      console.error('reap-cold: --window-minutes needs a positive number of minutes')
+      process.exit(2)
+    }
+    const result = await runReapCold({
+      ...(stateIdx === -1 ? {} : { stateFile: rest[stateIdx + 1] }),
+      dryRun,
+      windowMinutes,
+    })
+    console.log(formatReport(result))
+    process.exit(result.decisions.some((d) => d.verdict === 'still-alive') ? 1 : 0)
   }
 
   if (verb === 'console') {
