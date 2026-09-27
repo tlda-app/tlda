@@ -7324,6 +7324,31 @@ export class FleetStore {
     const ftsQuery = textExpression
       ? anyTermFtsQuery(positiveTextTerms.join(' '))
       : allTermFtsQuery(query);
+    // Phrase top-up query. The candidate pool below is FTS-rank-ordered, and
+    // JS ranking's largest term bonus (+300) is exact-query containment — but
+    // phrase matches scatter through FTS order, so a rank-cut pool drops most
+    // of them (measured on the live store: 48/50 → 14/50 exact-phrase rows on
+    // `drag chip` at a 10x pool). The top-up re-fetches up to a page of phrase
+    // matches per branch so the bonus has something to rank. Single-term
+    // queries need none (the bonus is uniform over an AND pool) and expression
+    // queries narrow in JS instead. Four terms and up are excluded: trigram
+    // phrase intersections grow with phrase length while exact long phrases
+    // vanish, so past three words the top-up is all cost (measured: 1.4s for
+    // a 7-word phrase, zero rows) and the containment bonus almost never fires.
+    const topUpTerms = !textExpression ? ftsQueryTerms(query) : [];
+    const phraseTopUpQuery = topUpTerms.length > 1 && topUpTerms.length <= 3 ? `"${topUpTerms.join(' ')}"` : null;
+    const normalizedTopUpQuery = phraseTopUpQuery ? String(query || '').trim().toLowerCase() : null;
+    // The pool may already hold a page of exact-phrase rows — a rare phrase,
+    // or a small corpus — in which case the top-up can add nothing to the
+    // page and is skipped. Counted the way the ranker counts it.
+    const poolExactCount = (rows) => {
+      if (!normalizedTopUpQuery) return limit;
+      let n = 0;
+      for (const row of rows) {
+        if (String(row.text || '').toLowerCase().includes(normalizedTopUpQuery)) n++;
+      }
+      return n;
+    };
 
     // Normalize agent to array for multi-ID lineage search
     const agentIds = Array.isArray(agent) ? agent : agent ? [agent] : [];
@@ -7354,7 +7379,13 @@ export class FleetStore {
     const explicitActivitySearch = eventTypes?.includes('activity') || false;
     const includeEvents = !sessionRole;
     const includeSessions = !eventTypes || !!sessionRole;
-    const candidateLimit = Math.min(Math.max(Number(limit || 50) * 100, 1000), 10000);
+    // The FTS branches below materialize every candidate — join, recipients
+    // subquery, full text, hydrate, JSON.parse — and JS ranking then keeps
+    // `limit`. 100x headroom made a limit-100 search hydrate 10,000 rows per
+    // branch on the live store (events 728–3169ms, sessions 254–4671ms quiet).
+    // 10x keeps the ranking approximation while cutting that 10x; snippet is
+    // attached afterwards to the page only (see attachSnippets below).
+    const candidateLimit = Math.min(Math.max(Number(limit || 50) * 10, 200), 2000);
 
     // `idCol` is the events alias's id column: recipient membership is a row in
     // `recipients`, not a column on the event, so an agent matches as a
@@ -7399,6 +7430,68 @@ export class FleetStore {
       if (hasAgent && !agentSpansCover(searchSpans, row.agentId, row.timestamp)) return false;
       return true;
     }
+
+    // FTS5 ignores a rowid constraint combined with MATCH when the constraint
+    // is a single bound parameter (`rowid = ?`, or `IN (?)` which SQLite folds
+    // to it): measured on the live store, both returned all 33,028 matches of
+    // `"search"` instead of the one requested row, while a two-element bound
+    // IN and any literal form filter correctly. Every IN + MATCH below pads a
+    // lone id to a pair; the Map keys dedupe it.
+    const paddedInIds = (ids) => (ids.length === 1 ? [ids[0], ids[0]] : ids);
+
+    // Up to a page of rowids matching the whole query as a phrase, for the
+    // top-up below. No ORDER BY: ranking happens in JS over pool + top-up, so
+    // this stops at the first page of matches instead of ranking every phrase
+    // occurrence. Fails soft — a missed top-up is pool-only ranking, never an
+    // error.
+    const phraseTopUpIds = (table, rowidClauses, rowidParams) => {
+      if (!phraseTopUpQuery) return [];
+      try {
+        const where = [`${table} MATCH ?`, ...rowidClauses].join(' AND ');
+        return this.db.prepare(
+          `SELECT rowid FROM ${table} WHERE ${where} LIMIT ?`
+        ).all(phraseTopUpQuery, ...rowidParams, limit).map(r => r.rowid);
+      } catch {
+        return [];
+      }
+    };
+
+    // Snippets for the page only. The candidate queries above select NULL for
+    // the snippet; this runs one rowid-IN lookup per source over the rows that
+    // survived ranking, with the same MATCH and window the inline snippet used,
+    // so the highlight is identical. FTS5 answers the IN + MATCH by lookup, not
+    // by walking the posting list (measured: 35ms for a 100-row page over a
+    // 100k-row trigram table where the inline shape paid ~1.8ms per row). A
+    // survivor missing from the lookup — a concurrent write landing between
+    // the two reads on a live store — falls back to the text head.
+    const attachSnippets = (rows) => {
+      if (!rows.length) return rows;
+      const eventsTable = explicitActivitySearch ? 'activity_events_fts' : 'events_fts';
+      const byTable = new Map();
+      for (const row of rows) {
+        const table = row.source === 'fleet' ? eventsTable : row.source === 'session' ? 'session_entries_fts' : null;
+        if (table && row.id != null) {
+          if (!byTable.has(table)) byTable.set(table, []);
+          byTable.get(table).push(row.id);
+        }
+      }
+      const snippets = new Map();
+      for (const [table, ids] of byTable) {
+        const inIds = paddedInIds(ids);
+        const found = this.db.prepare(
+          `SELECT rowid, snippet(${table}, 0, '<<', '>>', '...', 40) AS snippet FROM ${table} WHERE rowid IN (${inIds.map(() => '?').join(',')}) AND ${table} MATCH ?`
+        ).all(...inIds, ftsQuery);
+        for (const r of found) snippets.set(`${table}:${r.rowid}`, r.snippet);
+      }
+      for (const row of rows) {
+        const table = row.source === 'fleet' ? eventsTable : row.source === 'session' ? 'session_entries_fts' : null;
+        const raw = table ? snippets.get(`${table}:${row.id}`) : null;
+        row.snippet = raw != null
+          ? raw.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩')
+          : row.text?.slice(0, 120) ?? null;
+      }
+      return rows;
+    };
 
     // 1. Fleet events
     let eventRows = [];
@@ -7488,7 +7581,11 @@ export class FleetStore {
         // reads retain their dedicated sender/recipient plans.
         const eventHistoryIndex = effectiveHistoryMode && !hasAgent && !eFilter ? 'INDEXED BY idx_events_ts' : '';
         const searchTable = explicitActivitySearch ? 'activity_events_fts' : 'events_fts';
-        const snippetCol = effectiveHistoryMode ? 'substr(e.text, 1, 120) as snippet' : `snippet(${searchTable}, 0, '<<', '>>', '...', 40) as snippet`;
+        // Text-mode candidates carry no snippet: snippet() over the trigram
+        // index per candidate row was the single biggest per-row cost, and the
+        // page keeps at most `limit` of them. attachSnippets below computes the
+        // same snippet for the survivors only.
+        const snippetCol = effectiveHistoryMode ? 'substr(e.text, 1, 120) as snippet' : 'NULL as snippet';
         // A `since`/`before` bound cannot stop the FTS walk. The bound is tested
         // after the matched row is joined, so LIMIT no longer terminates the
         // scan: SQLite reads the term's entire posting list — 400,862 rows for
@@ -7520,6 +7617,20 @@ export class FleetStore {
           eRowidParams.push(before);
         }
         const hasEventPreFilter = !effectiveHistoryMode && eClauses.length > 0;
+        // The pool cut keeps the ORDER BY's head, so the head must look like
+        // the JS ranking's verdict, not FTS rank alone: the ranker's type
+        // bonuses (chat +90 over task_done +55) dwarf bm25 differences, and a
+        // rank-cut pool drops chat rows the ranker would place top-20
+        // (measured: a JS-#2 chat row at FTS position past 200, cut from the
+        // page). This mirrors rankUnifiedSearchRows' type constants exactly —
+        // source is uniform within a branch — so for single-term queries,
+        // where the text bonuses are uniform over an AND pool, the pool order
+        // IS the rank order and the cut keeps exactly the ranker's top rows.
+        const eventBonusOrder = `CASE e.type WHEN 'chat' THEN 90 WHEN 'delegate' THEN 75 WHEN 'report' THEN 75 WHEN 'task_update' THEN 55 WHEN 'task_done' THEN 55 WHEN 'activity' THEN ${explicitActivitySearch ? 15 : -1000} ELSE 0 END DESC`;
+        // Expression (OR) pools keep FTS-rank order: their rare disjuncts
+        // float on bm25, and bonus-ordering would bury a rare-delegate match
+        // under common-chat rows before JS narrowing ever sees it.
+        const eventPoolOrder = textExpression ? `${searchTable}.rank` : `${eventBonusOrder}, ${searchTable}.rank`;
         const eventPreWhere = [...eClauses, ...eRowidClauses].join(' AND ');
         const eventSql = effectiveHistoryMode ? `
         SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.text, e.metadata, e.agent_id,
@@ -7535,7 +7646,7 @@ export class FleetStore {
         FROM ${searchTable}
         JOIN events e ON e.id = ${searchTable}.rowid
         WHERE ${eventPreWhere} AND ${searchTable} MATCH ?
-        ORDER BY ${searchTable}.rank
+        ORDER BY ${eventPoolOrder}
         LIMIT ?
       ` : `
         SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.text, e.metadata, e.agent_id,
@@ -7548,7 +7659,6 @@ export class FleetStore {
           ORDER BY rank
           LIMIT ?
         ) f
-        JOIN ${searchTable} ON ${searchTable}.rowid = f.rowid
         JOIN events e ON e.id = f.rowid
         ${eventWhere}
         LIMIT ?
@@ -7571,13 +7681,45 @@ export class FleetStore {
           snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
           ftsRank: r.fts_rank ?? 0,
         })).filter(row => (effectiveHistoryMode || eventRowMatches(row)) && textMatchesSearchExpression(row, textExpression));
+        if (!effectiveHistoryMode && phraseTopUpQuery && poolExactCount(eventRows) < limit) {
+          const have = new Set(eventRows.map(r => r.id));
+          const ids = phraseTopUpIds(searchTable, eRowidClauses, eRowidParams).filter(id => !have.has(id));
+          if (ids.length) {
+            // The branch prefilters apply here too: a phrase match outside the
+            // window or the agent set is not a candidate. eParams' trailing
+            // entry is the pool LIMIT, not a filter param.
+            const inIds = paddedInIds(ids);
+            const clauses = [...eClauses, `${searchTable}.rowid IN (${inIds.map(() => '?').join(',')})`, `${searchTable} MATCH ?`];
+            const topUp = this.db.prepare(`
+              SELECT DISTINCT e.id, e.type, e.timestamp, e.from_id as "from", e.text, e.metadata, e.agent_id,
+                     (SELECT json_group_array(agent_id) FROM recipients WHERE event_id = e.id) as "to_json",
+                     NULL as snippet, ${searchTable}.rank as fts_rank
+              FROM ${searchTable}
+              JOIN events e ON e.id = ${searchTable}.rowid
+              WHERE ${clauses.join(' AND ')}
+            `).all(...eParams.slice(0, -1), ...inIds, phraseTopUpQuery).map(r => ({
+              source: 'fleet',
+              id: r.id,
+              type: r.type,
+              timestamp: r.timestamp,
+              from: r.from,
+              recipients: FleetStore.hydrateEvent(r).recipients,
+              text: r.text,
+              agentId: r.agent_id,
+              metadata: r.metadata ? JSON.parse(r.metadata) : null,
+              snippet: null,
+              ftsRank: r.fts_rank ?? 0,
+            })).filter(row => eventRowMatches(row) && textMatchesSearchExpression(row, textExpression));
+            eventRows.push(...topUp);
+          }
+        }
       }
     }
 
     if (eventOnly) {
       return effectiveHistoryMode
         ? eventRows.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, limit)
-        : rankUnifiedSearchRows(eventRows, { terms, query, explicitActivitySearch }).slice(0, limit);
+        : attachSnippets(rankUnifiedSearchRows(eventRows, { terms, query, explicitActivitySearch }).slice(0, limit));
     }
 
     // 2. Session JSONL entries
@@ -7603,7 +7745,8 @@ export class FleetStore {
       if (sFilter) { sClauses.push(`(${sFilter.sql})`); sParams.push(...sFilter.params); }
       sParams.push(effectiveHistoryMode ? limit : candidateLimit);
       const sessionWhere = sClauses.length ? `WHERE ${sClauses.join(' AND ')}` : '';
-      const sSnippetCol = effectiveHistoryMode ? 'substr(s.text, 1, 120) as snippet' : "snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet";
+      // Same deferral as the events branch: no snippet per candidate.
+      const sSnippetCol = effectiveHistoryMode ? 'substr(s.text, 1, 120) as snippet' : 'NULL as snippet';
       // The same rowid bound as the events branch above, for the same reason.
       // Gated on the index existing, because without it the floor lookup is
       // itself the scan this is removing.
@@ -7645,7 +7788,6 @@ export class FleetStore {
           ORDER BY rank
           LIMIT ?
         ) f
-        JOIN session_entries_fts ON session_entries_fts.rowid = f.rowid
         JOIN session_entries s ON s.id = f.rowid
         ${sessionWhere}
         LIMIT ?
@@ -7666,6 +7808,32 @@ export class FleetStore {
         snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
         ftsRank: r.fts_rank ?? 0,
       })).filter(row => (effectiveHistoryMode || sessionRowMatches(row)) && textMatchesSearchExpression(row, textExpression));
+      if (!effectiveHistoryMode && phraseTopUpQuery && poolExactCount(sessionRows) < limit) {
+        const have = new Set(sessionRows.map(r => r.id));
+        const ids = phraseTopUpIds('session_entries_fts', sRowidClauses, sRowidParams).filter(id => !have.has(id));
+        if (ids.length) {
+          const inIds = paddedInIds(ids);
+          const clauses = [...sClauses, `session_entries_fts.rowid IN (${inIds.map(() => '?').join(',')})`, 'session_entries_fts MATCH ?'];
+          const topUp = this.db.prepare(`
+            SELECT DISTINCT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
+                   NULL as snippet, session_entries_fts.rank as fts_rank
+            FROM session_entries_fts
+            JOIN session_entries s ON s.id = session_entries_fts.rowid
+            WHERE ${clauses.join(' AND ')}
+          `).all(...sParams.slice(0, -1), ...inIds, phraseTopUpQuery).map(r => ({
+            source: 'session',
+            id: r.id,
+            agentId: r.agent_id,
+            sessionId: r.session_id,
+            role: r.role,
+            timestamp: r.timestamp,
+            text: r.text,
+            snippet: null,
+            ftsRank: r.fts_rank ?? 0,
+          })).filter(row => sessionRowMatches(row) && textMatchesSearchExpression(row, textExpression));
+          sessionRows.push(...topUp);
+        }
+      }
     }
 
     if (effectiveHistoryMode) {
@@ -7674,7 +7842,7 @@ export class FleetStore {
         .slice(0, limit);
     }
 
-    return rankUnifiedSearchRows([...eventRows, ...sessionRows], { terms, query, explicitActivitySearch }).slice(0, limit);
+    return attachSnippets(rankUnifiedSearchRows([...eventRows, ...sessionRows], { terms, query, explicitActivitySearch }).slice(0, limit));
   }
 
   getSearchStats() {
