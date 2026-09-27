@@ -121,6 +121,7 @@ import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { createAgentRuntimeStatusStore, RUNTIME_KIND, RUNTIME_STATUS } from './lib/agent-runtime-status.mjs'
 import { createHumanPresenceTracker } from './lib/human-presence.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
+import { buildSpawnMailboxStatus } from './lib/spawn-mailbox-status.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { spawnCallerId } from './lib/spawn-caller.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
@@ -7949,6 +7950,23 @@ async function dispatchFleetWsMessage(ws, msg) {
       return
     }
     reply({ task: await fleetStore.getTask(msg.task_id) || null })
+    return
+  }
+
+  // The mint wait handle: poll the spawn mailbox the mint result names. An
+  // unknown id is a status, not an error — polling a wrong or expired id is
+  // normal use, and mailboxes are in-memory so a restart orphans them.
+  if (type === 'spawn-mailbox') {
+    if (!msg.mailbox_id) {
+      error('spawn-mailbox requires mailbox_id')
+      return
+    }
+    const entry = mailboxLibrarian.get(msg.mailbox_id) || null
+    reply({
+      ok: true,
+      ...(await buildSpawnMailboxStatus(entry, { findAgent: (id) => fleetStore.findAgent(id) })),
+      ...(!entry ? { mailbox_id: msg.mailbox_id } : {}),
+    })
     return
   }
 

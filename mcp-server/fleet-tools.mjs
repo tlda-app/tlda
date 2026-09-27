@@ -2181,6 +2181,17 @@ export function getFleetTools() {
       },
     },
     {
+      name: 'spawn-mailbox',
+      description: 'Poll a mint launch verdict by the mint_mailbox_id the delegate result names. Pending (still launching, with the bound on waiting), completed (joined and addressable), failed (launch failed — re-mint rather than wait), indeterminate (daemon restarted mid-launch), or unknown (wrong id, or the server restarted and the in-memory record is gone).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          mailbox_id: { type: 'string', description: 'The mint_mailbox_id from the delegate result.' },
+        },
+        required: ['mailbox_id'],
+      },
+    },
+    {
       name: 'tasks',
       description: 'List a page of active (non-done) tasks, plus registered agents. Call at session start. Paginated: the reply always states the whole-fleet total, and gives a cursor to pass back when more pages remain.',
       inputSchema: {
@@ -3662,10 +3673,13 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       const rotationNotice = assignedName !== agentName
         ? `⚠️ "${agentName}" was taken — this agent is "${assignedName}". Address them as ${assignedName} (${shellAgentId}); "${agentName}" names someone else.\n`
         : '';
+      const waitHint = spawnResult.mailbox_id
+        ? `\nWait on the join: spawn-mailbox ${spawnResult.mailbox_id}.`
+        : '';
       return {
         content: [{
           type: 'text',
-          text: `${rotationNotice}${mintWarnings.map(line => `${line}\n`).join('')}Minted ${assignedName} and delegated [${spawnResult.task_id}] to ${shellAgentId}: ${description}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${assignedName}\nThe task is attached now; the agent is still starting and is notified when it joins. A launch failure retracts the task.`,
+          text: `${rotationNotice}${mintWarnings.map(line => `${line}\n`).join('')}Minted ${assignedName} and delegated [${spawnResult.task_id}] to ${shellAgentId}: ${description}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${assignedName}\nThe task is attached now; the agent is still starting and is notified when it joins. A launch failure retracts the task.${waitHint}`,
         }],
       };
     }
@@ -4122,6 +4136,24 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     }
   }
 
+
+  // ---- spawn-mailbox ----
+  if (name === 'spawn-mailbox') {
+    const mailboxId = args.mailbox_id;
+    if (!mailboxId || typeof mailboxId !== 'string') {
+      return { content: [{ type: 'text', text: 'spawn-mailbox requires mailbox_id — the mint_mailbox_id from the delegate result.' }], isError: true };
+    }
+    let data;
+    try {
+      data = await mcpFleetTransport.ephemeral('spawn-mailbox', { mailbox_id: mailboxId });
+    } catch (e) {
+      return { content: [{ type: 'text', text: `spawn-mailbox transport failed for "${mailboxId}": ${e.message}` }], isError: true };
+    }
+    if (!data || typeof data !== 'object' || !('status' in data)) {
+      return { content: [{ type: 'text', text: `spawn-mailbox got no usable response for "${mailboxId}" — retry shortly.` }], isError: true };
+    }
+    return { content: [{ type: 'text', text: formatSpawnMailboxStatus(data) }], ...(spawnMailboxIsError(data) ? { isError: true } : {}) };
+  }
 
   // ---- tasks ----
   if (name === 'tasks') {
@@ -6537,6 +6569,39 @@ export function pendingRefusalNote({ recipients = [], rows = [], delivery = null
     + `so ${plural ? 'they cannot' : 'it cannot'} receive chat. This message was not stored and will not arrive later. `
     + `Resend after ${plural ? 'they join' : 'it joins'} — the roster will show ${plural ? 'them' : 'it'} — `
     + `and hold any follow-up until ${plural ? 'they report' : 'it reports'}.`;
+}
+
+export function formatSpawnMailboxStatus(data) {
+  const label = spawnMailboxLabel(data);
+  switch (data.status) {
+    case 'pending': {
+      const waited = data.waited_ms != null ? `${Math.round(data.waited_ms / 1000)}s in` : 'launching';
+      const bound = data.remaining_ms != null
+        ? `verdict due within ~${Math.round(data.remaining_ms / 1000)}s (bounded: this id stops being pending at ${data.deadline_at || 'its deadline'})`
+        : 'poll again for the verdict';
+      return `⏳ ${label} still launching — ${waited}, ${bound}. Poll spawn-mailbox ${data.mailbox_id} again, or wait for its report. Do not chat it yet — it cannot receive until it joins.`;
+    }
+    case 'completed': {
+      if (data.live && data.live.state !== 'live') {
+        return `⚠️ Mailbox ${data.mailbox_id} says the launch completed, but the agent row for ${data.agent_id} is ${data.live.state === 'dead' ? 'dead' : 'gone'}. Do not trust this handle — the launch record and the store disagree. Check the roster; re-mint rather than briefing a ghost.`;
+      }
+      const task = data.task_id ? ` It took task [${data.task_id}].` : '';
+      const renamed = data.name_changed ? ` (asked for ${data.requested_name}.)` : '';
+      return `✅ ${label} joined.${task}${renamed} Addressable now — chat or delegate to ${data.agent_id}.`;
+    }
+    case 'failed': {
+      if (data.expired) {
+        const waited = data.waited_ms != null ? ` in ${Math.round(data.waited_ms / 1000)}s` : '';
+        return `❌ No launch verdict for ${label}${waited}: stuck, not slow — the mailbox deadline passed with no answer from the launch. Check the daemon/box; re-mint rather than wait.`;
+      }
+      return `❌ Launch of ${label} failed: ${data.error || data.reason || 'no reason recorded'}. This will not resolve — re-mint rather than wait. The minted task is retracted; verify in tasks().`;
+    }
+    case 'indeterminate':
+      return `❓ Launch of ${label} is indeterminate: ${data.error || 'the daemon restarted mid-launch'}. Check the roster for ${data.agent_id} before re-minting — a blind re-mint may double the agent.`;
+    case 'unknown':
+    default:
+      return `❓ No record of mailbox ${data.mailbox_id} — wrong id, or the server restarted since the mint (launch records are in-memory and do not survive a restart). If the mint was recent, the record is gone: check the roster for the agent instead of polling this id.`;
+  }
 }
 
 export function durableDelivery(row) {

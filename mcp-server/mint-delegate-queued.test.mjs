@@ -117,6 +117,24 @@ test('a mint that rotated names says what was asked and what was assigned', asyn
   assert.match(result.content[0].text, /Minted agent-under-test-jr and delegated \[task-1\] to fleet:minted-abc/)
 })
 
+test('a mint that names a mailbox tells the caller how to wait on the join', async () => {
+  installTransportStub({
+    ok: true,
+    agent_id: 'fleet:minted-abc',
+    assigned_name: 'agent-under-test',
+    task_id: 'task-1',
+    mailbox_id: 'mailbox:1',
+  })
+
+  const result = await handleFleetTool('delegate', {
+    mint: { name: 'agent-under-test' },
+    message: 'do the thing',
+  })
+
+  assert.equal(result.isError, undefined)
+  assert.match(result.content[0].text, /Wait on the join: spawn-mailbox mailbox:1\./)
+})
+
 test('a mint whose server returns no task id is reported as not attached', async () => {
   installTransportStub({ ok: true, agent_id: 'fleet:minted-abc', assigned_name: 'agent-under-test' })
 
