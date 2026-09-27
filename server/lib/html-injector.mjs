@@ -769,6 +769,22 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
     function activateTabPaneForAnchor(anchorId) {
       if (!anchorId || !document.getElementById) return false;
       var el = document.getElementById(anchorId);
+      // Quarto xref tooltips clone the target (id included) into the link's
+      // vicinity on click, ahead of the original in document order — so
+      // getElementById returns the clone (measured: an IMG in the link's LI
+      // while the real figure sits in its tab pane) and the pane lookup
+      // below finds nothing. Walk every copy to the one outside tooltips.
+      if (el && el.closest && el.closest('[data-tippy-root], .tippy-box, .tippy-content')) {
+        var copies = document.querySelectorAll('[id]');
+        el = null;
+        for (var i = 0; i < copies.length; i++) {
+          if (copies[i].id === anchorId
+            && !(copies[i].closest && copies[i].closest('[data-tippy-root], .tippy-box, .tippy-content'))) {
+            el = copies[i];
+            break;
+          }
+        }
+      }
       var pane = el && el.closest ? el.closest('.tab-pane:not(.active)') : null;
       if (!pane || !pane.id) return false;
       return openTabPaneById(pane.id, true);
@@ -1008,6 +1024,10 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
     elements.forEach(function(el) {
       var id = el.id;
       if (!id) return;
+      // Tooltip clones carry the target's id (see activateTabPaneForAnchor);
+      // duplicates overwrite by document order, so measuring one replaces
+      // the real position with the tooltip's. Skip tooltip subtrees.
+      if (el.closest && el.closest('[data-tippy-root], .tippy-box, .tippy-content')) return;
       positions[id] = measureWithHiddenPanesShown(el, function() {
         var y = 0;
         var node = el;

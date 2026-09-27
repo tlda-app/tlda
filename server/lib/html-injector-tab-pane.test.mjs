@@ -73,6 +73,30 @@ test('hidden-pane measurement parks the active sibling, not stacked alongside', 
   assert.ok(body.includes('entry.active'), 'exact classes restored afterwards')
 })
 
+test('pane activation skips quarto tooltip clones of the anchor', () => {
+  // Quarto xref tooltips clone the target (id included) into the link's LI
+  // on click, ahead of the original in document order — so getElementById
+  // returns the clone (measured: an IMG in the LI) and the pane lookup finds
+  // nothing. The resolver walks every copy to the one outside tooltips.
+  const html = injectBridge('<html><body><main></main></body></html>')
+  const defn = html.indexOf('function activateTabPaneForAnchor(anchorId)')
+  const end = html.indexOf('if (tabSyncChannel)', defn)
+  const body = html.slice(defn, end)
+  assert.ok(body.includes('[data-tippy-root]'), 'tooltip subtrees are excluded')
+  assert.ok(body.includes("querySelectorAll('[id]')"), 'every id copy is walked')
+  assert.ok(body.includes('copies[i].id === anchorId'), 'copies match by id string')
+})
+
+test('heading positions skip tooltip clones', () => {
+  // Duplicate ids overwrite by document order in the positions map, so
+  // measuring a tooltip clone replaces the real position with the tooltip's.
+  const html = injectBridge('<html><body><main></main></body></html>')
+  const defn = html.indexOf('function reportHeadings()')
+  const end = html.indexOf('function reportHeight()', defn)
+  const body = html.slice(defn, end)
+  assert.ok(body.includes('[data-tippy-root]'), 'tooltip subtrees are skipped')
+})
+
 test('pane activation goes through the tab, not a synthetic click', () => {
   // A synthetic tab.click() would bubble back into this same interceptor and
   // post a second navigation, so the bridge manipulates tab classes directly.
