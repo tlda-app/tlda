@@ -46,6 +46,20 @@ repository, and requires it to be an ancestor of the `testing` ref. The
 `testing/deploy-state/last-successful-sha` marker is written after Git accepts
 the ref, so it is status, not the authority for promotion.
 
+## Testing moves its server and build executor together
+
+The testing server (`fly.live.toml`) builds on the pic-dev box's executor, and
+refuses a remote build unless the executor reports the server's own revision.
+Two separate pushes left a window where every build failed with a revision
+mismatch, so one testing push deploys both boxes from the same sha: the
+testing wrapper sets `DEPLOY_COUPLED_DEPLOYS` to the additional
+`fly.pic-dev.toml=https://tlda-pic-dev.example-tailnet.ts.net` pair, the hook
+builds once, deploys the server first and the executor second, and verifies
+each box serves the pushed sha before the ref moves. Either box failing to
+serve rejects the push. The published (pic) runtime is deliberately not
+coupled: publication owns that update, so a testing push never moves
+student-serving code.
+
 The deploy repositories reject pushes with:
 
 - conflict markers in the pushed tree;
