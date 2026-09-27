@@ -45,6 +45,7 @@ const result = await launchMintProcess({
       throw new Error('durable bot wake must not allocate a different tmux name')
     },
     resolveDnsAlias: async () => null,
+    recordPreSpawnSession: async () => {},
     spawnTmux: async (tmuxSession, cwd, cmd, options) => {
       captured = { tmuxSession, cwd, cmd, options }
       return true

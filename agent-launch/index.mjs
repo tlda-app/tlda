@@ -377,6 +377,18 @@ export async function launchMintProcess(params) {
   const tmuxSession = params.exactTmuxSession
     ? requestedTmuxSession
     : await (params._deps?.uniqueSessionName || uniqueSessionName)(requestedTmuxSession, { tmuxSocket: params.tmuxSocket })
+  // F2 record-at-creation: the session name is final here and nothing has
+  // spawned yet — record it in the mint row now, so a later bind failure can
+  // never lose the process record. The recorder is required, never skipped:
+  // mint-core binds it to its own store; tests stub it via _deps. A record
+  // failure throws before any session exists — a clean launch failure,
+  // never an orphan.
+  const recordPreSpawn = params._deps?.recordPreSpawnSession || params.recordPreSpawnSession
+  if (typeof recordPreSpawn !== 'function') throw new Error('launchMintProcess requires recordPreSpawnSession (F2 record-at-creation)')
+  await recordPreSpawn({
+    tmuxSession,
+    daemonKey: params.machineId && params.activeEnvName ? `${params.machineId}:${params.activeEnvName}` : null,
+  })
   const dnsAlias = await (params._deps?.resolveDnsAlias || resolveDnsAlias)(api)
   const launchPolicy = resolveLaunchPolicy({
     permissionGrant: params.permissionGrant,

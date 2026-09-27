@@ -1296,6 +1296,17 @@ terminalRpc = createTerminalRpc({
       return row?.daemonKey === `${MACHINE_ID}:${ACTIVE_ENV}` ? row : null
     })()
   ),
+  // F2 mint-row kill fallback: when no ledger binding exists, kill-session
+  // resolves the target from the durable mint row. Ownership is checked
+  // against the row's own daemon_key at the kill site.
+  daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+  resolveMintSession: ({ agentId }) => {
+    if (!agentId) return null
+    const facts = mintStore.getByFleetId(agentId)
+    const state = facts?.processState
+    if (!state || typeof state !== 'object') return null
+    return { tmuxSession: state.tmux_session || null, daemonKey: state.daemon_key || null }
+  },
 })
 
 gooseSupervisor = createGooseSupervisor({
@@ -1746,6 +1757,9 @@ const wakeMint = createDaemonWakeCore({
       machineId: MACHINE_ID,
       tmuxSocket: TMUX_SOCKET,
       exactTmuxSession: true,
+      // F2 record-at-creation, same invariant as mint: a relaunched process
+      // names its session before spawning (no-op when unchanged).
+      recordPreSpawnSession: ({ tmuxSession, daemonKey }) => mintStore.recordPreSpawnSession(facts.mintId, tmuxSession, daemonKey),
     })
     await bindMintSeatAndPublishRoute({ ...facts, processState: processFact }, processFact, 'daemon-wake')
     return processFact

@@ -248,6 +248,10 @@ export function createDaemonMintCore({
         fleet_id: suppliedFleetId,
         name,
         ...launch,
+        // F2 record-at-creation, bound to this core's own store (no second
+        // connection): the launcher calls it once the session name is final
+        // and before anything spawns.
+        recordPreSpawnSession: ({ tmuxSession, daemonKey }) => store.recordPreSpawnSession(id, tmuxSession, daemonKey),
       }))
       .then(async process => {
         // recordProcess joins through recordSession as soon as both facts exist.

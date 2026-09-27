@@ -193,6 +193,27 @@ export class MintStore {
     return this.get(mintId)
   }
 
+  // F2 record-at-creation: write the final {tmux_session, daemon_key} into
+  // the mint row before the process spawns. Merge-preserving — first write
+  // sets the fact, a retry under a new session replaces it, an identical
+  // retry leaves it — so the later full process_state write composes (it
+  // replaces via updateProcessState) and a failed bind can never leave a
+  // live session on a bare row. Throws on failure: pre-spawn there is no
+  // session yet, so the launch fails clean.
+  recordPreSpawnSession(mintId, tmuxSession, daemonKey = null, now = new Date().toISOString()) {
+    if (!mintId) throw new Error('mint_id is required')
+    if (!tmuxSession) throw new Error('tmux_session is required')
+    const existing = this.get(mintId)?.processState
+    const names = { tmux_session: tmuxSession, ...(daemonKey ? { daemon_key: daemonKey } : {}) }
+    if (existing == null) {
+      return this.setFact(mintId, 'process_state', names, now)
+    }
+    if (typeof existing !== 'object' || existing.tmux_session !== tmuxSession) {
+      return this.updateProcessState(mintId, { ...(typeof existing === 'object' ? existing : {}), ...names }, now)
+    }
+    return this.get(mintId)
+  }
+
   // A restart is a new process under the same identity, so its session is new.
   // `setFact` would call the previous session a conflict, which is what it is for
   // an identity fact and wrong for a per-launch one. Same reasoning as

@@ -125,6 +125,7 @@ await launchMintProcess({
   _deps: {
     resolveApi: () => ({ base: 'https://example.invalid' }),
     // spawnTmux(session, cwd, cmd) -- the command is the third argument.
+    recordPreSpawnSession: async () => {},
     spawnTmux: async (_session, _cwd, cmd) => { captured = cmd; return true },
     sessionRuntimeState: async () => ({ runtime: false, mcp: false, probed: true }),
     uniqueSessionName: name => name,
@@ -181,6 +182,7 @@ async function launchWith(params) {
     mintStorePath: join(configDir, 'launch-mints-3.sqlite'),
     _deps: {
       resolveApi: () => ({ base: 'https://example.invalid' }),
+      recordPreSpawnSession: async () => {},
       spawnTmux: async (_session, _cwd, produced) => { cmd = produced; return true },
       sessionRuntimeState: async () => ({ runtime: false, mcp: false, probed: true }),
       uniqueSessionName: name => name,

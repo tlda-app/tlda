@@ -5961,9 +5961,29 @@ export async function dismissAgent(name, {
     log.log(`${label} is already dismissed.`)
     return { ok: true, already: true, agent }
   }
-  await apiImpl('POST', `/api/agents/${encodeURIComponent(agent.id)}/mark-dead`)
+  // Kill-first: reap the process before the row dies (pre-Jul-28 shape;
+  // c8343e1b6 deleted the kill along with the route lookup). No route lookup
+  // here — kill-session resolves the route server-side now. Refuse on any
+  // unverified kill: transport/HTTP failure, or ok-but-terminal_unresolved
+  // (the daemon did nothing and the process is very likely still running —
+  // see resolveTerminalEndpoint in daemon/terminal-rpc.mjs). A
+  // confirmed-absent session proceeds: nothing left to reap.
+  let killResult = null
+  try {
+    killResult = await apiImpl('POST', '/api/kill-session', { agent: agent.id })
+  } catch (e) {
+    log.error(`Failed to kill ${label}; not marking it dismissed: ${e?.message || e}`)
+    exitImpl(1)
+    return { ok: false, error: 'kill-failed' }
+  }
+  if (killResult?.terminal_unresolved) {
+    log.error(`Failed to kill ${label}; not marking it dismissed: terminal unresolved (${killResult?.reason || 'daemon could not resolve a terminal'})`)
+    exitImpl(1)
+    return { ok: false, error: 'kill-unresolved' }
+  }
+  await apiImpl('POST', `/api/agents/${encodeURIComponent(agent.id)}/mark-dead`, { actor: 'tlda-agent-dismiss' })
   log.log(`Dismissed ${label} (${agent.id}) — marked dead and removed from the live roster.`)
-  return { ok: true, agent }
+  return { ok: true, agent, killed: !killResult?.already_unavailable }
 }
 
 // The profile list in help is DERIVED from daemon.yaml — never hardcoded — so it

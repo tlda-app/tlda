@@ -90,6 +90,8 @@ export function createTerminalRpc({
   resolveAgentRoute,
   validateTmuxOwner,
   resolveTerminalAgent,
+  daemonKey = null,
+  resolveMintSession = null,
   resolveMuseServeSend = null,
   terminalInputAllowed = false,
   execFileImpl = execFileP,
@@ -498,10 +500,30 @@ export function createTerminalRpc({
   // Callers that mark an agent hibernating on the strength of this reply need to
   // tell those apart, so the unresolved case says so in its own field.
   async function rpcKillSession(args = {}) {
-    const { tmuxSession, unavailable, reason } = resolveTerminalEndpoint(args, { allowUnavailable: true })
+    const endpoint = resolveTerminalEndpoint(args, { allowUnavailable: true })
+    const { unavailable, reason, agentId } = endpoint
+    let tmuxSession = endpoint.tmuxSession
+    let resolvedViaMintRow = false
     if (unavailable) {
-      await onSessionInventoryChanged('kill-session-unavailable')
-      return { ok: true, already_unavailable: true, terminal_unresolved: true, reason }
+      // F2 mint-row fallback, kill only: no ledger binding — resolve the
+      // target from the durable mint row instead of answering unresolved.
+      // Ownership is the row's own daemon_key, the check the ledger normally
+      // provides; a row for another daemon, or no row, stays unresolved.
+      // Conventional names are never guessed — recorded session or nothing.
+      const mint = typeof resolveMintSession === 'function'
+        ? resolveMintSession({ agentId: agentId || args?.agent_id || args?.agentId })
+        : null
+      const mintSession = mint?.tmuxSession || null
+      if (!mintSession) {
+        await onSessionInventoryChanged('kill-session-unavailable')
+        return { ok: true, already_unavailable: true, terminal_unresolved: true, reason }
+      }
+      if (!daemonKey || mint?.daemonKey !== daemonKey) {
+        await onSessionInventoryChanged('kill-session-unavailable')
+        return { ok: true, already_unavailable: true, terminal_unresolved: true, reason: 'mint row belongs to another daemon' }
+      }
+      tmuxSession = mintSession
+      resolvedViaMintRow = true
     }
     checkSession(tmuxSession)
     try {
@@ -514,7 +536,7 @@ export function createTerminalRpc({
     }
     alivenessCache.set(tmuxSession, false)
     await onSessionInventoryChanged('kill-session')
-    return { ok: true }
+    return resolvedViaMintRow ? { ok: true, resolved_via: 'mint-row' } : { ok: true }
   }
 
   async function getPty() {
