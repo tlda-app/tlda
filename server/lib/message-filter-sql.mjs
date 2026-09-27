@@ -26,7 +26,13 @@
  * `message-filter-sql.test.mjs` is what holds them together: it evaluates both
  * against the same rows. Compilation is all-or-nothing — an unsupported node
  * returns null for the whole filter and the caller falls back to the old
- * prefilter — so a future node type degrades to slow rather than to wrong.
+ * prefilter. That fallback is exact about the rows it returns and silent
+ * about the rows it never reads: the page is spent pre-filter and the
+ * post-filter pass discards without refilling, so a declined filter comes
+ * back short with no sign of what was cut — worst in history mode, which is
+ * what a filter-only `model:` query is. Neither call site compensates:
+ * `fleet-store.mjs:7642` (events) and `:7812` (sessions) add the predicate
+ * when compilation succeeds and widen nothing when it does not.
  *
  * NULL columns follow the evaluator, which asks set membership of a possibly
  * missing value: `agent_id IN (…)` is NULL when `agent_id` is, so every
