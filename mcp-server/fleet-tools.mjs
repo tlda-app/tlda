@@ -3821,6 +3821,21 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       // transport-level distinction in `sendFleetRequestAttempt` stays, since
       // every other ephemeral op can still hit it.
       if (rosterUnavailable) return { content: [{ type: 'text', text: `⚠ Message NOT sent — could not resolve "${args.to}" to recipients (transient). ${rosterUnavailableReason || 'no reason reported'}. Retry shortly; addressing a single bare fleet:<id> needs no resolution and works while this is down.` }], isError: true };
+      // A single literal that resolved to nothing may still name a real agent
+      // that cannot receive yet: a pending shell is excluded from resolution.
+      // Check before blaming the name — the name may be right and the cause
+      // time. (Expressions cannot be attributed to one agent; they keep the
+      // generic report.)
+      if (filterAst?.t === 'lit' && typeof filterAst.v === 'string' && filterAst.v) {
+        try {
+          const found = await resolveAgent(filterAst.v);
+          if (isPendingShellRow(found)) {
+            return { content: [{ type: 'text', text: `⚠ Message NOT sent — "${args.to}" names ${pendingRecipientLabel(found)}, which is still starting (pending): it exists but its process has not logged in yet, so it cannot receive chat. The name is right; the cause is time. Resend after it joins — the roster will show it — and hold any follow-up until it reports.` }], isError: true };
+          }
+        } catch {
+          // Resolution already failed once; fall through to the generic report.
+        }
+      }
       return { content: [{ type: 'text', text: `⚠ Message NOT sent — no agent matched "${args.to}". Check the name/label.` }], isError: true };
     }
     const maxRecipients = args.max_recipients ?? 5;
@@ -3937,6 +3952,22 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       const d = durableDelivery(row);
       sendFailure = describeDurableOutcome('chat', d, { waitedMs: e.waitedMs })
         || e.message;
+      if (d.delivery === 'not delivered' && recipients.length) {
+        // A refusal whose recipients are all known-pending shells is not a
+        // "re-sending will not help" failure — the cause is time, and
+        // re-sending later is exactly the fix. Say that instead.
+        try {
+          const known = new Map((agents || []).map(a => a?.id && [a.id, a]).filter(Boolean));
+          const missing = recipients.filter(id => !known.has(id));
+          if (missing.length && recipients.length <= 20) {
+            const fetched = (await mcpFleetTransport.ephemeral('store-agents-by-ids', { ids: missing })) || [];
+            for (const a of fetched) if (a?.id) known.set(a.id, a);
+          }
+          sendFailure = pendingRefusalNote({ recipients, rows: [...known.values()], delivery: d.delivery }) || sendFailure;
+        } catch {
+          // The lookup is advisory; the refusal text above still stands.
+        }
+      }
       if (d.delivery === 'unknown' && d.queued) {
         sent = recipients;
         queuedOperationId = chatBody._tempId;
@@ -6456,6 +6487,46 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
 // the server answered — and it is safe, because every durable operation carries
 // an operation_id the server dedupes on, so a resend replays the first result
 // rather than acting twice.
+// A pending shell: the row exists and is alive, but login never completed, so
+// chat resolution excludes it and any send to it is refused. `metadata.shell`
+// is written true at reservation and cleared (null) only by login; accept the
+// SQLite-extracted 1 as well as boolean true.
+export function isPendingShellRow(row) {
+  if (!row || row.dead) return false;
+  const shell = row.metadata?.shell;
+  return shell === true || shell === 1;
+}
+
+function pendingRecipientLabel(row) {
+  return row.friendly_name ? `${row.friendly_name} (${row.id})` : String(row.id);
+}
+
+// The time-honest refusal for a send whose recipients are all known-pending
+// shells. Pure: recipient ids, candidate agent rows, and the delivery outcome
+// the transport already reported. Returns the replacement text, or null when
+// this is not the pending case and the existing wording stands.
+//
+// Gated on an observed refusal ('not delivered'), never on a guess: a queued
+// or unknown send may still land if the agent joins before the retry, and
+// claiming non-delivery then would be false the other way.
+export function pendingRefusalNote({ recipients = [], rows = [], delivery = null } = {}) {
+  if (delivery !== 'not delivered' || recipients.length === 0) return null;
+  const byId = new Map((rows || []).map(row => row?.id && [row.id, row]).filter(Boolean));
+  const pending = [];
+  for (const id of recipients) {
+    const row = byId.get(id);
+    if (!isPendingShellRow(row)) return null;
+    pending.push(row);
+  }
+  const labels = pending.map(pendingRecipientLabel).join(', ');
+  const plural = pending.length > 1;
+  return `⚠ chat NOT DELIVERED — ${labels} ${plural ? 'are' : 'is'} still starting (pending): `
+    + `${plural ? 'they exist' : 'it exists'} but ${plural ? 'their processes have' : 'its process has'} not logged in yet, `
+    + `so ${plural ? 'they cannot' : 'it cannot'} receive chat. This message was not stored and will not arrive later. `
+    + `Resend after ${plural ? 'they join' : 'it joins'} — the roster will show ${plural ? 'them' : 'it'} — `
+    + `and hold any follow-up until ${plural ? 'they report' : 'it reports'}.`;
+}
+
 export function durableDelivery(row) {
   switch (row?.status) {
     case 'accepted':
