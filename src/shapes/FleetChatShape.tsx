@@ -50,7 +50,7 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
-import { anchorChatScrollPosition, anchoredTailTop, chatScrollStartOf, chatScrollStoreKey, decideScrollRestore, isReaderInputInFlight, nextEarlierChatHistoryWindow, readChatScrollState, shouldPrefetchEarlierChatHistory, writeChatScrollState, CHAT_SCROLL_STORE_VERSION } from './chatViewportAnchor.mjs'
+import { anchorChatScrollPosition, anchoredTailTop, chatScrollStartOf, chatScrollStoreKey, collapseLandingScrollTop, decideScrollRestore, isReaderInputInFlight, nextEarlierChatHistoryWindow, readChatScrollState, shouldPrefetchEarlierChatHistory, writeChatScrollState, CHAT_SCROLL_STORE_VERSION } from './chatViewportAnchor.mjs'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 // @ts-ignore — vanilla JS module
 import {
@@ -2160,6 +2160,37 @@ function rememberThreadHtml(key: string, html: string) {
 // reconcileViewportGeometry, and it never touches `scrollTop`. Keep it that
 // way -- the moment this control affects layout it becomes a participant in
 // the re-entrancy map rather than a passenger.
+//
+// The collapse LANDING is the one sanctioned scrollTop write on this path,
+// and it lives here rather than in either handler so thread and card share
+// one rule. Callers capture the control's viewport Y BEFORE hiding (the
+// button unmounts/hides with the collapse), then call this after: it
+// measures the shrunken remnant and, only if the remnant is not fully
+// visible, moves the scroller so the remnant's top lands where the control
+// was. Synchronous, so the anchored list's height-change pass preserves
+// the written offset rather than the stale one.
+function landCollapsedRemnant(scroller: HTMLElement | null, remnant: HTMLElement | null, controlViewportY: number | null) {
+  if (!scroller || !remnant || controlViewportY == null) return
+  const s = scroller.getBoundingClientRect()
+  const r = remnant.getBoundingClientRect()
+  const next = collapseLandingScrollTop({
+    remnantTop: r.top - s.top,
+    remnantBottom: r.bottom - s.top,
+    viewportHeight: scroller.clientHeight,
+    controlViewportY,
+    scrollTop: scroller.scrollTop,
+    maxScrollTop: Math.max(0, scroller.scrollHeight - scroller.clientHeight),
+  })
+  if (next != null) scroller.scrollTop = next
+}
+
+function collapseControlY(control: HTMLElement | null): number | null {
+  if (!control || control.offsetParent === null) return null
+  const scroller = control.closest('.fleet-chat-log') as HTMLElement | null
+  if (!scroller) return null
+  return control.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+}
+
 function useFloatingCollapse(host: HTMLElement) {
   const ref = useRef<HTMLButtonElement>(null)
   useLayoutEffect(() => {
@@ -2293,6 +2324,9 @@ function ThreadChatOperationView({
     stopEventPropagation(event)
     const root = viewRef.current
     if (!root) return
+    const shell = root.closest('.thread-shell') as HTMLElement | null
+    const scroller = shell?.closest('.fleet-chat-log') as HTMLElement | null
+    const controlY = collapseControlY(collapseRef.current)
     root.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach((moreRows, index) => {
       // The row-height change re-renders the anchored list; clear the remembered
       // fold first so its restore pass does not immediately reopen this middle.
@@ -2305,6 +2339,7 @@ function ThreadChatOperationView({
       }
     })
     root.closest('.thread-shell')?.classList.remove('thread-middle-open')
+    landCollapsedRemnant(scroller, shell, controlY)
   }, [forgetExpansion])
 
   return (
@@ -3158,9 +3193,12 @@ const ChatMessageRow = memo(function ChatMessageRow({
           host={card}
           onCollapse={(event: any) => {
             stopEventPropagation(event)
+            const scroller = card.closest('.fleet-chat-log') as HTMLElement | null
+            const controlY = collapseControlY(shell.querySelector('.semantic-operation-collapse') as HTMLElement | null)
             const more = card.querySelector('.lc-more') as HTMLElement | null
             if (more) more.style.display = 'none'
             card.classList.remove('lc-open')
+            landCollapsedRemnant(scroller, card, controlY)
             const itemRow = shell.closest('[data-item-key]') as HTMLElement | null
             if (itemRow && more) {
               const allMores = Array.from(itemRow.querySelectorAll('.lc-more'))

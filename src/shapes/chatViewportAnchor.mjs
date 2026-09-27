@@ -191,6 +191,32 @@ export function writeChatScrollState(storage, key, state) {
   }
 }
 
+// Where a collapse lands the reader, or null for "do not move".
+//
+// The floating collapse control sits at the gaze point by construction
+// (viewport middle, clamped to the card), so after the card shrinks the
+// collapsed remnant's top goes where the control was: the reader's eyes
+// stay still and some part of the acted-on card is on screen. Skip,
+// 2026-09-27: "when you hit collapse... you should wind up with the card
+// on your screen." Measured before this existed: collapsing a 479px card
+// from a control at viewport y=81 left scrollTop unchanged and the 73px
+// remnant spanning -346 to -273 -- entirely off-screen above.
+//
+// Null when the remnant is already fully visible: no gratuitous motion on
+// small cards. All rect inputs are viewport-relative (top - scroller.top).
+export function collapseLandingScrollTop({
+  remnantTop,
+  remnantBottom,
+  viewportHeight,
+  controlViewportY,
+  scrollTop,
+  maxScrollTop,
+}) {
+  if (remnantTop >= 0 && remnantBottom <= viewportHeight) return null
+  const delta = remnantTop - controlViewportY
+  return Math.min(Math.max(scrollTop + delta, 0), maxScrollTop)
+}
+
 export function preserveChatViewportAcrossArrival({
   scrollTop,
   scrollHeight,

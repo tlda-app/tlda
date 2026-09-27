@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  collapseLandingScrollTop,
   isReaderInputInFlight,
   nextEarlierChatHistoryWindow,
   preserveChatViewportAcrossArrival,
@@ -140,4 +141,46 @@ test('reader state, not input, decides whether a viewport is preserved at all', 
   // The distinction `7430200ad` collapsed: input never decides WHETHER the
   // reader's position is held, only WHEN the correction may be written.
   assert.equal(shouldPreserveChatViewport({ scrolledUp: true, hardLocked: false, hasAnchor: true }), true)
+})
+
+test('a collapse that leaves the remnant fully visible does not move', () => {
+  assert.equal(collapseLandingScrollTop({
+    remnantTop: 10, remnantBottom: 83, viewportHeight: 390,
+    controlViewportY: 81, scrollTop: 9999470, maxScrollTop: 9999900,
+  }), null)
+})
+
+test('a collapse from deep scroll lands the remnant top at the control', () => {
+  // Measured 2026-09-27: 479px card, control parked at viewport y=81,
+  // remnant spanning -346 to -273 after the shrink. The landing scrolls
+  // up by 427 so the remnant top sits where the control was.
+  assert.equal(collapseLandingScrollTop({
+    remnantTop: -346, remnantBottom: -273, viewportHeight: 390,
+    controlViewportY: 81, scrollTop: 9999470, maxScrollTop: 9999900,
+  }), 9999470 - 427)
+})
+
+test('a remnant below the viewport scrolls down to the control', () => {
+  assert.equal(collapseLandingScrollTop({
+    remnantTop: 420, remnantBottom: 493, viewportHeight: 390,
+    controlViewportY: 195, scrollTop: 1000, maxScrollTop: 5000,
+  }), 1000 + 225)
+})
+
+test('the landing clamps to the scroll range', () => {
+  assert.equal(collapseLandingScrollTop({
+    remnantTop: -346, remnantBottom: -273, viewportHeight: 390,
+    controlViewportY: 81, scrollTop: 200, maxScrollTop: 5000,
+  }), 0)
+  assert.equal(collapseLandingScrollTop({
+    remnantTop: 420, remnantBottom: 493, viewportHeight: 390,
+    controlViewportY: 195, scrollTop: 4900, maxScrollTop: 5000,
+  }), 5000)
+})
+
+test('a remnant taller than the viewport still lands its top at the control', () => {
+  assert.equal(collapseLandingScrollTop({
+    remnantTop: -100, remnantBottom: 500, viewportHeight: 390,
+    controlViewportY: 195, scrollTop: 2000, maxScrollTop: 9000,
+  }), 2000 - 295)
 })
