@@ -204,8 +204,8 @@ models:
             low: {}
             medium: {}
             high: {}
-    luna:
-      id: gpt-5.6-luna
+    sol56:
+      id: gpt-5.6-sol
       harness:
         kind: codex
         required:
@@ -219,8 +219,23 @@ models:
             low: {}
             medium: {}
             high: {}
-    terra:
-      id: gpt-5.6-terra
+    sol6:
+      id: gpt-6-sol
+      harness:
+        kind: codex
+        required:
+          - "--dangerously-bypass-approvals-and-sandbox"
+        preferences: []
+        controls: false
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
+    luna:
+      id: gpt-6-luna
       harness:
         kind: codex
         required:

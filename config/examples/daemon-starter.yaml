@@ -58,8 +58,42 @@ models:
             low: {}
             medium: {}
             high: {}
+    sol56:
+      id: gpt-5.6-sol
+      harness:
+        kind: codex
+        required: []
+        preferences: []
+        controls: true
+      group: codex
+      level: 2
+      description: Codex Sol 5.6
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
+    sol6:
+      id: gpt-6-sol
+      harness:
+        kind: codex
+        required: []
+        preferences: []
+        controls: true
+      group: codex
+      level: 2
+      description: Codex Sol 6
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
     luna:
-      id: gpt-5.6-luna
+      id: gpt-6-luna
       harness:
         kind: codex
         required: []
@@ -75,24 +109,6 @@ models:
             low: {}
             medium: {}
             high: {}
-    terra:
-      id: gpt-5.6-terra
-      harness:
-        kind: codex
-        required: []
-        preferences: []
-        controls: true
-      group: codex
-      level: 4
-      description: Codex Terra
-      options:
-        effort:
-          default: medium
-          values:
-            low: {}
-            medium: {}
-            high: {}
-
 regions: {}
 profiles: {}
 grants: {}
