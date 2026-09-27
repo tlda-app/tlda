@@ -594,10 +594,21 @@ export function renderChatLine(m, ctx) {
     const criteriaHtml = criteria.length > 0
       ? `<div class="lc-criteria">${criteria.map(c => `<div class="lc-criterion">\u2610 ${esc(c)}</div>`).join('')}</div>`
       : ''
-    // Show the full delegation message so the user can see what was actually asked
+    // The full delegation message lives behind the expand toggle: the header
+    // (description + routing + schedule) is the readable summary, and the
+    // toggle reveals what was actually asked. Skip, 2026-09-26: the always-
+    // open card wrapped its title a letter per line on his phone, and the
+    // old tap-the-message toggle did nothing (its class had no CSS at all).
     const message = m._message || ''
     const messageHtml = message
       ? `<div class="lc-message">${linkifyCodeUrls(renderMarkdown(message))}</div>`
+      : ''
+    const hasBody = Boolean(message || criteria.length)
+    const toggleHtml = hasBody
+      ? `<button type="button" class="lc-expand-btn" data-lc-collapsed-label="show full task">show full task</button>`
+      : ''
+    const moreHtml = hasBody
+      ? `<div class="lc-more" style="display:none">${messageHtml}${criteriaHtml}</div>`
       : ''
     const scheduleHtml = m._taskNextFireAt
       ? `<div class="lc-task-schedule" data-timer-until="${esc(m._taskNextFireAt)}"><span class="timer-msg">${esc(absoluteTime(m._taskNextFireAt))} · in <span class="ticker-countdown">${esc(countdownLabel(m._taskNextFireAt))}</span>${m._taskRepeatSeconds ? ` · every ${esc(durationLabel(m._taskRepeatSeconds))}` : ''}</span></div>`
@@ -607,8 +618,8 @@ export function renderChatLine(m, ctx) {
         <div class="drag-handle" title="Drag"></div>
         <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(toId)}">${esc(toLabel)}</span></span></div>
         ${scheduleHtml}
-        ${messageHtml}
-        ${criteriaHtml}
+        ${toggleHtml}
+        ${moreHtml}
       </div></div>`
   }
   if (m._evType === 'task_done') {

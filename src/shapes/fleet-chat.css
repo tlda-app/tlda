@@ -1010,6 +1010,80 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-dim);
 }
 .fleet-chat-shape .lifecycle-card .lc-criterion { padding: 1px 0; }
+/* --- Task cards (delegate / done / bounced) ---
+   Shaped like the search/thread pretty cards: a left spine plus a faint wash,
+   not a bordered box. The old inline-block + nowrap-routing flex squeezed the
+   title to a few px on a phone, wrapping it a letter per line (Skip,
+   2026-09-26). Block layout with a wrapping header: one line on desktop, the
+   routing drops below the title where it doesn't fit. Attention/terminal/
+   plan-approval cards keep the base .lifecycle-card box. */
+.fleet-chat-shape .lifecycle-card.lc-delegate,
+.fleet-chat-shape .lifecycle-card.lc-done,
+.fleet-chat-shape .lifecycle-card.lc-bounced {
+  display: block;
+  border: none;
+  border-left: 2px solid var(--green, #7ab87a);
+  border-radius: 0 4px 4px 0;
+  background: rgba(122, 184, 122, 0.04);
+  padding: 4px 8px 4px 16px;
+  max-width: none;
+}
+.fleet-chat-shape .lifecycle-card.lc-done {
+  border-left-color: rgba(122, 184, 160, 0.5);
+  background: rgba(122, 184, 160, 0.03);
+}
+.fleet-chat-shape .lifecycle-card.lc-bounced {
+  border-left-color: var(--orange, #e8a838);
+  background: rgba(232, 168, 56, 0.04);
+}
+.fleet-chat-shape .lifecycle-card.lc-delegate .lc-header,
+.fleet-chat-shape .lifecycle-card.lc-done .lc-header,
+.fleet-chat-shape .lifecycle-card.lc-bounced .lc-header {
+  flex-wrap: wrap;
+  row-gap: 0;
+  column-gap: 6px;
+}
+.fleet-chat-shape .lifecycle-card.lc-delegate .lc-title,
+.fleet-chat-shape .lifecycle-card.lc-done .lc-title,
+.fleet-chat-shape .lifecycle-card.lc-bounced .lc-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* .chat-line sets word-break: break-word; inside a squeezed flex item that
+     breaks mid-word. Wrap at spaces, break only the unbreakable. */
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+.fleet-chat-shape .lifecycle-card.lc-delegate .lc-routing,
+.fleet-chat-shape .lifecycle-card.lc-done .lc-routing,
+.fleet-chat-shape .lifecycle-card.lc-bounced .lc-routing {
+  flex-shrink: 1;
+}
+.fleet-chat-shape .lifecycle-card .lc-task-schedule {
+  margin-top: 2px;
+  font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
+}
+.fleet-chat-shape .lifecycle-card .lc-expand-btn {
+  border: none;
+  background: none;
+  padding: 2px 0 0;
+  font: inherit;
+  font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
+  color: var(--accent, #7a9ec8);
+  cursor: pointer;
+  opacity: var(--ui-tone-active);
+}
+.fleet-chat-shape .lifecycle-card .lc-expand-btn:hover { opacity: var(--ui-tone-full); }
+.fleet-chat-shape .lifecycle-card .lc-more {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--glass-3);
+}
+.fleet-chat-shape .lifecycle-card .lc-more .lc-message {
+  margin-top: 0;
+}
+.fleet-chat-shape .lifecycle-card .lc-more .lc-criteria {
+  border-top: none;
+}
 .fleet-chat-shape .lifecycle-card.lc-attention {
   border-color: rgba(255, 170, 0, 0.3);
   background: rgba(255, 170, 0, 0.05);

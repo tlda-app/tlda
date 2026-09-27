@@ -3040,6 +3040,17 @@ const ChatMessageRow = memo(function ChatMessageRow({
       )
       semanticRoots.push(root)
     })
+    // Restore delegation-body expand state (each card keyed by index within the row)
+    el.querySelectorAll('.lc-more').forEach((more, i) => {
+      if (expanded.has(`${itemKey}:lc:${i}`)) {
+        (more as HTMLElement).style.display = ''
+        const btn = (more as HTMLElement).closest('.lifecycle-card')?.querySelector('.lc-expand-btn') as HTMLElement | null
+        if (btn) {
+          if (!btn.dataset.collapsedLabel) btn.dataset.collapsedLabel = btn.textContent || 'show full task'
+          btn.textContent = 'hide full task'
+        }
+      }
+    })
     // Restore code-block expand state (each block keyed by index within the row)
     el.querySelectorAll('.code-block-wrap').forEach((wrap, i) => {
       if (expanded.has(`${itemKey}:code:${i}`)) {
@@ -5145,10 +5156,29 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
         return
       }
-      // Expand/collapse delegation message
-      const lcMsg = (e.target as HTMLElement).closest('.lc-message') as HTMLElement
-      if (lcMsg) {
-        lcMsg.classList.toggle('lc-message-collapsed')
+      // Expand/collapse delegation body (full message + criteria). The old
+      // tap-the-message toggle flipped a class with no CSS, so it did nothing;
+      // the card now carries an explicit button instead (Skip, 2026-09-26).
+      const lcExpand = (e.target as HTMLElement).closest('.lc-expand-btn') as HTMLElement | null
+      if (lcExpand) {
+        const card = lcExpand.closest('.lifecycle-card') as HTMLElement | null
+        const more = card?.querySelector('.lc-more') as HTMLElement | null
+        if (more) {
+          const wasExpanded = more.style.display !== 'none'
+          if (!lcExpand.dataset.collapsedLabel) {
+            lcExpand.dataset.collapsedLabel = lcExpand.textContent || 'show full task'
+          }
+          more.style.display = wasExpanded ? 'none' : ''
+          lcExpand.textContent = wasExpanded ? (lcExpand.dataset.collapsedLabel || 'show full task') : 'hide full task'
+          const itemRow = lcExpand.closest('[data-item-key]') as HTMLElement | null
+          const itemKey = itemRow?.getAttribute('data-item-key')
+          if (itemRow && itemKey) {
+            const allMores = Array.from(itemRow.querySelectorAll('.lc-more'))
+            const key = `${itemKey}:lc:${Math.max(0, allMores.indexOf(more))}`
+            if (wasExpanded) expandedRowsRef.current.delete(key)
+            else expandedRowsRef.current.add(key)
+          }
+        }
         return
       }
       // Approve/deny buttons on permission prompt cards
