@@ -7,6 +7,17 @@
  */
 export const ANCHOR_RESOLVE_TIMEOUT_MS = 60000
 
+/**
+ * Whether an iframe element serves a given shape's document. Every instance
+ * of an html-page shape — the main mount and each docview's nested mount —
+ * carries the same `_tldaShape` param (measured), so the parent addresses
+ * late joiners through it without DOM archaeology.
+ */
+export function iframeServesShapeId(iframeSrc: string | null | undefined, shapeId: string): boolean {
+  if (!iframeSrc || !shapeId) return false
+  return iframeSrc.includes(`_tldaShape=${shapeId}`)
+}
+
 export function htmlPageReloadUrl(url: string, timestamp: number) {
   const [base, hash = ''] = url.split('#', 2)
   const [path, query = ''] = base.split('?', 2)

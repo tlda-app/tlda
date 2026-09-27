@@ -49,10 +49,14 @@ test('a link-opened pane broadcasts to same-document instances', () => {
   assert.ok(body.includes('openTabPaneById(msg.pane, false)'), 'remote apply does not rebroadcast')
 })
 
-test('a mounting instance queries peers for open panes', () => {
+test('a late joiner converges through the parent post, not a peer query', () => {
+  // Peer queries never observed firing on late mounts; the parent posts
+  // tlda-activate-pane to the target's iframes as load signals arrive.
   const html = injectBridge('<html><body><main></main></body></html>')
-  assert.ok(html.includes('queryTabSyncPeers();'), 'queries on load')
-  assert.ok(html.includes("t: 'tlda-tab-query'"), 'query message shape')
+  assert.ok(!html.includes('queryTabSyncPeers'), 'no peer query mechanism')
+  assert.ok(!html.includes('tlda-tab-query'), 'no query message shape')
+  assert.ok(html.includes("msg.type !== 'tlda-activate-pane'"), 'parent post handled')
+  assert.ok(html.includes("activateTabPaneForAnchor(msg.anchor)"), 'parent post activates the pane')
 })
 
 test('pane activation goes through the tab, not a synthetic click', () => {

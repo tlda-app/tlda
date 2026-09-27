@@ -14,7 +14,7 @@ import { useContext, useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken, canPresent, isPresentPermissionKnown, subscribeCanPresent } from '../authToken'
 import { isClassroomDocumentWorkspace } from '../classroom/classroomDocumentWorkspace'
 import { createMeasuredGeometryWriter } from '../measuredGeometryWrite'
-import { ANCHOR_RESOLVE_TIMEOUT_MS, createLinkPeekTracker, docviewInLayoutExtent, findNavigateTargetShape } from '../html-page-navigation-helpers'
+import { ANCHOR_RESOLVE_TIMEOUT_MS, createLinkPeekTracker, docviewInLayoutExtent, findNavigateTargetShape, iframeServesShapeId } from '../html-page-navigation-helpers'
 import { isMyFleetShape } from './fleet-ownership'
 import { isDocumentPageShape } from './document-pages'
 import { htmlIframeElements, noteHtmlIframeLoaded, disposeHtmlIframeLoadWaiters } from '../htmlIframeRegistry'
@@ -48,6 +48,37 @@ export const htmlHeadingPositions = new Map<string, Record<string, number>>()
 // Last link peek, for the second-click-commits rule: a repeated click on the
 // same link, with no docview interaction in between, navigates the main view.
 const linkPeekTracker = createLinkPeekTracker()
+
+// Anchors awaiting tab-pane activation in late-mounting iframes, keyed by
+// shape ID. A peek's click-path broadcast only reaches live instances; a
+// docview iframe mounting after the click converges when its own load
+// signals (headings, resize) arrive and re-fire the activation post.
+const pendingPaneActivations = new Map<string, { anchor: string; until: number }>()
+
+/** How long after a peek a load signal still re-fires pane activation. */
+const PANE_ACTIVATION_RETRY_MS = 10000
+
+function postPaneActivationToShapeIframes(shapeId: string, anchor: string) {
+  if (typeof document === 'undefined' || !anchor) return
+  document.querySelectorAll('iframe').forEach((iframe) => {
+    if (!iframeServesShapeId(iframe.getAttribute('src'), shapeId)) return
+    try {
+      iframe.contentWindow?.postMessage({ type: 'tlda-activate-pane', anchor }, '*')
+    } catch {
+      // A detached or cross-origin frame: the live instances still converge.
+    }
+  })
+}
+
+function retryPendingPaneActivation(shapeId: string) {
+  const pending = pendingPaneActivations.get(shapeId)
+  if (!pending) return
+  if (Date.now() > pending.until) {
+    pendingPaneActivations.delete(shapeId)
+    return
+  }
+  postPaneActivationToShapeIframes(shapeId, pending.anchor)
+}
 
 /** Get the Y offset of a heading anchor within an HTML page shape, or undefined if not found. */
 export function getHtmlHeadingY(shapeId: string, anchor: string): number | undefined {
@@ -1079,6 +1110,10 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             setTimeout(() => clearInterval(poll), ANCHOR_RESOLVE_TIMEOUT_MS)
           }
           linkPeekTracker.recordPeek(String(editor.getCurrentPageId()), peekKey)
+          if (anchor) {
+            postPaneActivationToShapeIframes(targetShape.id, anchor)
+            pendingPaneActivations.set(targetShape.id, { anchor, until: Date.now() + PANE_ACTIVATION_RETRY_MS })
+          }
           return
         }
         // The place stack records where the reader was, on the path where a
@@ -1216,6 +1251,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
       if (e.data?.type === 'tlda-headings' && e.data.shapeId === shape.id) {
         htmlHeadingPositions.set(shape.id, e.data.positions)
         if (Array.isArray(e.data.outline)) setHtmlHeadingOutline(shape.id, e.data.outline)
+        retryPendingPaneActivation(shape.id)
         return
       }
       if (e.data?.type === 'tlda-scrolly-regions' && e.data.shapeId === shape.id) {
@@ -1340,6 +1376,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
       if (e.data?.type === 'tlda-resize' && e.data.shapeId === shape.id) {
         const current = editor.store.get(shape.id) as any
         if (!current) return
+        retryPendingPaneActivation(shape.id)
         // A deck's size is its strip, set from the layout above. The bridge's
         // own height reports measure ONE slide, so letting them through would
         // fight the strip — and that path only ever climbs (minH = current h).

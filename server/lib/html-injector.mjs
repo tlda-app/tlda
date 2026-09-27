@@ -703,8 +703,9 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
     // the clicked instance, so the docview's copy keeps default tabs and shows
     // the wrong figure in the right slot (measured: Figure 3.1 in the Figure
     // 3.4 slot). Instances sync open panes over a BroadcastChannel keyed by
-    // document path: the click path broadcasts, and a late joiner queries on
-    // load so a docview opened after the click still converges.
+    // document path: the click path broadcasts to live instances, and the
+    // parent posts tlda-activate-pane to the target's iframes as load
+    // signals arrive so late joiners converge too.
     var tabSyncChannel = null;
     try {
       tabSyncChannel = ('BroadcastChannel' in window) ? new BroadcastChannel('tlda-tab-panes') : null;
@@ -778,19 +779,21 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
         if (!msg || msg.doc !== tabSyncDocKey()) return;
         if (msg.t === 'tlda-tab-open') {
           openTabPaneById(msg.pane, false);
-        } else if (msg.t === 'tlda-tab-query') {
-          document.querySelectorAll('.tab-pane.active[id]').forEach(function(p) {
-            broadcastOpenPane(p.id);
-          });
         }
       };
     }
-    function queryTabSyncPeers() {
-      if (!tabSyncChannel) return;
-      // Best-effort like the broadcast: a failed query just leaves this
-      // instance on default tabs until a later query or click-path message.
-      try { tabSyncChannel.postMessage({ t: 'tlda-tab-query', doc: tabSyncDocKey() }); } catch (e) { /* sync is advisory */ }
-    }
+    // Late joiners (a docview iframe mounting after the click missed the
+    // broadcast) converge through the parent instead: on a peek the parent
+    // posts tlda-activate-pane to every iframe serving the target document,
+    // immediately and again as load signals arrive. A peer query was tried
+    // first and removed: late mounts never observed asking, while the
+    // addressed post reaches exactly the instances showing the target.
+    window.addEventListener('message', function(ev) {
+      var msg = ev && ev.data;
+      if (!msg || msg.type !== 'tlda-activate-pane' || !msg.anchor) return;
+      if (msg.doc && msg.doc !== tabSyncDocKey()) return;
+      activateTabPaneForAnchor(msg.anchor);
+    });
     // Intercept link clicks — route navigation through parent canvas
     document.addEventListener('click', function(e) {
       var docLink = e.target.closest && e.target.closest('.doc-link');
@@ -1287,10 +1290,6 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
       setTimeout(reportMermaidDiagrams, 500);
       setTimeout(reportMermaidDiagrams, 2000);
       setTimeout(reportMermaidDiagrams, 5000);
-      // Late joiner: a docview iframe mounting after a link click asks live
-      // instances which panes they have open, twice in case a peer is mid-load.
-      queryTabSyncPeers();
-      setTimeout(queryTabSyncPeers, 2000);
     });
   } else {
     stripNav();
@@ -1305,8 +1304,6 @@ ${RENDERED_LINE_MEASUREMENT_BRIDGE}
     setTimeout(reportFigures, 2000);
     setTimeout(reportMermaidDiagrams, 500);
     setTimeout(reportMermaidDiagrams, 2000);
-    queryTabSyncPeers();
-    setTimeout(queryTabSyncPeers, 2000);
   }
 
   // Observe DOM mutations (webR output, MathJax rendering, etc.)

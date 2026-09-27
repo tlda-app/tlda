@@ -6,6 +6,7 @@ import {
   docviewInLayoutExtent,
   findNavigateTargetShape,
   htmlPageUrlMatchesTargetFile,
+  iframeServesShapeId,
 } from '../src/html-page-navigation-helpers.ts'
 
 // A navigation that resolves to nothing is silent: no error, no motion, and a
@@ -134,4 +135,16 @@ test('committing clears the peek, so the next click peeks again', () => {
   assert.equal(tracker.shouldCommit('page:one', 'shape:book-page-1::fig-a'), true)
   tracker.clear()
   assert.equal(tracker.shouldCommit('page:one', 'shape:book-page-1::fig-a'), false)
+})
+
+test('an iframe serves a shape when its src carries the shape param', () => {
+  const src = `${CHAPTER_URL}?_tldaShape=shape:book-page-1&_tldaDoc=book`
+  assert.equal(iframeServesShapeId(src, 'shape:book-page-1'), true)
+  assert.equal(iframeServesShapeId(src, 'shape:book-page-2'), false)
+})
+
+test('an iframe without a src serves no shape', () => {
+  assert.equal(iframeServesShapeId(null, 'shape:book-page-1'), false)
+  assert.equal(iframeServesShapeId(undefined, 'shape:book-page-1'), false)
+  assert.equal(iframeServesShapeId(CHAPTER_URL, ''), false)
 })
