@@ -173,7 +173,7 @@ test('schedule parity merges only the static schedule slice by date', () => {
   ].join('\n')
   const declared = new Set(['chapters/one.html', 'homework/hw.html', 'homework/handouts/hw-handout.zip', 'decks/one-slides.html'])
   const { html, augmented } = mergeStaticScheduleLinks(appHtml, staticHtml, href => declared.has(href))
-  assert.equal(augmented, 4)
+  assert.equal(augmented, 5)
   assert.equal((html.match(/id=["']schedule["']/g) || []).length, 1)
   assert.match(html, /href="homework\/hw\.html"/)
   assert.match(html, /href="homework\/handouts\/hw-handout\.zip"/)
@@ -187,6 +187,10 @@ test('schedule parity merges only the static schedule slice by date', () => {
   assert.equal(html.includes('href="chapters/missing.html"'), false)
   assert.match(html, /Missing/)
   assert.equal((html.match(/chapters\/one/g) || []).length, 1)
+  // Same stem in different forms substitutes rather than skipping or doubling:
+  // the authored `.qmd` source link takes the static rendered `.html` href.
+  assert.match(html, /href="chapters\/one\.html"/)
+  assert.equal(html.includes('href="chapters/one.qmd"'), false)
 })
 
 test('schedule parity leaves non-schedule indexes untouched', () => {

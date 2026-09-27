@@ -159,10 +159,15 @@ function anchorsIn(cellHtml) {
  * static `div.row#schedule` carries, matched row-by-row on date. Only the
  * static schedule slice is read: its wrapper, head, chrome, and sibling
  * sections never enter the app tree. A static link the app row already
- * carries (same stem) is skipped; a static link whose member or asset is
- * declared present is appended as a link rebased to the app book root;
- * anything else degrades to bare text, never a 404 link. App-only rows
- * (later dates with no static counterpart) are untouched.
+ * carries in the same form is skipped; a static rendered (`.html`) link whose
+ * stem the app row carries only as an authored (`.qmd`) source link takes over
+ * that anchor's href, keeping the authored text — the source form cannot serve
+ * from `book/` (sources ship at the output root), so the publication's
+ * missing-link unwrap would otherwise strip it to bare text and the skip would
+ * delete the chapter's navigation rather than dedupe it. A static link whose
+ * member or asset is declared present is otherwise appended as a link rebased
+ * to the app book root; anything else degrades to bare text, never a 404 link.
+ * App-only rows (later dates with no static counterpart) are untouched.
  */
 export function mergeStaticScheduleLinks(appHtml, staticHtml, isDeclaredMember) {
   const unchanged = () => ({ html: appHtml, augmented: 0 })
@@ -188,15 +193,32 @@ export function mergeStaticScheduleLinks(appHtml, staticHtml, isDeclaredMember) 
     const matches = staticCells.get(scheduleDateKey(cells[0][1]))
     if (!matches) return whole
     const have = new Set()
+    const appAnchorsByStem = new Map()
     for (const anchor of anchorsIn(cells[cells.length - 1][1])) {
       const parsed = rebaseScheduleHref(anchor[2])
-      if (parsed) have.add(parsed.stem)
+      if (!parsed) continue
+      have.add(parsed.stem)
+      if (!appAnchorsByStem.has(parsed.stem)) {
+        appAnchorsByStem.set(parsed.stem, { full: anchor[0], href: anchor[2], quote: anchor[1], rebased: parsed.rebased })
+      }
     }
+    const substitutions = new Map()
     const additions = []
     for (const body of matches) {
       for (const anchor of anchorsIn(body)) {
         const parsed = rebaseScheduleHref(anchor[2])
-        if (!parsed || have.has(parsed.stem)) continue
+        if (!parsed) continue
+        if (have.has(parsed.stem)) {
+          const app = appAnchorsByStem.get(parsed.stem)
+          if (app && app.rebased !== parsed.rebased && !substitutions.has(app.full) && isDeclaredMember(parsed.rebased)) {
+            substitutions.set(app.full, app.full.replace(
+              `href=${app.quote}${app.href}${app.quote}`,
+              `href=${app.quote}${parsed.rebased}${app.quote}`,
+            ))
+            augmented += 1
+          }
+          continue
+        }
         have.add(parsed.stem)
         const text = anchor[3].replace(/<[^>]*>/g, '').trim()
         if (!text) continue
@@ -204,10 +226,12 @@ export function mergeStaticScheduleLinks(appHtml, staticHtml, isDeclaredMember) 
         augmented += 1
       }
     }
-    if (!additions.length) return whole
-    const bodyFull = cells[cells.length - 1][0]
+    if (!additions.length && !substitutions.size) return whole
+    const cellFull = cells[cells.length - 1][0]
+    let bodyFull = cellFull
+    for (const [full, next] of substitutions) bodyFull = bodyFull.replace(full, () => next)
     const patched = bodyFull.replace(/<\/td\s*>$/i, () => `${additions.join('')}</td>`)
-    return whole.replace(bodyFull, () => patched)
+    return whole.replace(cellFull, () => patched)
   })
   return { html: appHtml.slice(0, appSection.innerStart) + merged + appHtml.slice(appSection.innerEnd), augmented }
 }
