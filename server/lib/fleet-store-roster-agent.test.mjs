@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { FleetStore } from './fleet-store.mjs'
+import { FLEET_STORE_METHODS } from './fleet-store-methods.mjs'
 
 function insertAgent(store, row) {
   store.db.prepare(`
@@ -104,4 +105,43 @@ test('alive-agent pages keep native families whole and sort by descendant activi
     store.close()
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// Dead discovery (tail-11): the dead-table read behind the roster union.
+// Rows come back hydrated and projected like the alive reads, stamped dead.
+test('getDeadAgents returns exactly the dead rows, stamped dead', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-fleet-roster-dead-'))
+  const dbPath = join(dir, 'fleet.db')
+  const store = new FleetStore(dbPath, { taskDoc: false })
+  try {
+    insertAgent(store, {
+      id: 'fleet:real',
+      friendlyName: 'real-agent',
+      registeredAt: '2026-07-27T10:00:00.000Z',
+      lastSeen: '2026-07-27T10:10:00.000Z',
+    })
+    insertAgent(store, {
+      id: 'fleet:gone',
+      friendlyName: 'gone-agent',
+      registeredAt: '2026-07-27T10:01:00.000Z',
+      lastSeen: '2026-07-27T10:11:00.000Z',
+    })
+    store.markDead('fleet:gone')
+
+    const dead = await store.getDeadAgents()
+    assert.deepEqual(dead.map(agent => agent.id), ['fleet:gone'])
+    assert.equal(dead[0].dead, true)
+    assert.equal(dead[0].runtime_status?.status, 'dead')
+    assert.deepEqual((await store.getAliveAgents()).map(agent => agent.id), ['fleet:real'])
+  } finally {
+    store.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('getDeadAgents is proxied to the worker', () => {
+  // A method absent from this list is simply missing on the client, and the
+  // route calls it with `?.()` — so the failure would be an empty dead union
+  // and a 200, not an error.
+  assert.ok(FLEET_STORE_METHODS.includes('getDeadAgents'))
 })

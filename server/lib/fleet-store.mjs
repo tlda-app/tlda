@@ -1938,6 +1938,10 @@ export class FleetStore {
     // row that no roster read returns. Selected separately rather than by widening the
     // query above, which the agents panel and the descendant walks also use.
     this._getPendingShellAgents = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND COALESCE(json_extract(agents.metadata, '$.shell'), 0) = 1 ORDER BY agents.last_seen DESC`);
+    // Dead discovery (tail-11): the dead table for roster routes whose filter
+    // can match a dead row. Read only on that path — the live roster never
+    // pays for it. Indexed the same way as the alive read.
+    this._getDeadAgents = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 1 ORDER BY agents.last_seen DESC`);
     // id→friendly_name only — for labeling chat history without hydrating all
     // ~1300 agents (parsing labels/metadata/session JSON per row).
     this._getAgentNames = this.db.prepare(`SELECT id, friendly_name FROM agents`);
@@ -4681,6 +4685,17 @@ export class FleetStore {
     // broadcastState). Serve the maintained alive view instead of re-querying
     // and re-hydrating the full live set under churn.
     return this._aliveAgentRosterView?.list || [];
+  }
+
+  // Dead discovery (tail-11): every dead agent row, hydrated and projected
+  // exactly like the alive reads. Called only by roster routes whose filter
+  // can match a dead row — never on the live-roster path — so it queries
+  // rather than maintaining a second registry view. Death is terminal, so no
+  // churn argument applies; staleness within a request is impossible (one
+  // query) and across requests is bounded by reanimate-then-relist, which
+  // re-queries anyway.
+  getDeadAgents() {
+    return this._getDeadAgents.all().map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)));
   }
 
   // The three reads `/api/fleet-table` needs, in one crossing of the worker

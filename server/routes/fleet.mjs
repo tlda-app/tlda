@@ -235,6 +235,20 @@ export function collectFilterNameTokens(node, out = [], negated = false) {
   return out
 }
 
+// Dead discovery (tail-11): can this filter match a dead row? True for a
+// `dead` literal under an even number of negations — `dead`, `awake | dead`,
+// `!!dead` — and false for `!dead`, where the alive-only candidate set
+// already answers correctly and must not pay for the dead-table read.
+export function filterMentionsDead(node, negated = false) {
+  if (!node) return false
+  switch (node.t) {
+    case 'lit': return !negated && String(node.v || '').toLowerCase() === 'dead'
+    case 'not': return filterMentionsDead(node.x, !negated)
+    case 'and': case 'or': return filterMentionsDead(node.l, negated) || filterMentionsDead(node.r, negated)
+    default: return false
+  }
+}
+
 // The roster filter folds case because the name resolver it would otherwise
 // disagree with does: `resolveAgentSpans` documents "Names match EXACTLY,
 // case-insensitively", but this path membership-tested the raw token against
@@ -709,7 +723,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       if (req.query.filter) {
         try { filterAst = parseFilter(req.query.filter) } catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
       }
-      const page = filteredFleetRosterPage(filterAst ? [...roster, ...pendingShells] : roster, {
+      // Dead discovery (tail-11): the candidate set gains the dead table when
+      // — and only when — the filter can match a dead row. Unfiltered reads
+      // stay the live fleet; `filter=dead` lists the dead.
+      const deadRoster = filterMentionsDead(filterAst) ? await fleetStore.getDeadAgents?.() || [] : []
+      const servedRoster = [...roster, ...deadRoster]
+      const page = filteredFleetRosterPage(filterAst ? [...servedRoster, ...pendingShells] : roster, {
         filterAst,
         labelsForRow: fleetTableLabelsForAgent,
         limit,
@@ -732,7 +751,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         }
       }
 
-      const summary = summarizeFleetRosterTruth({ roster, matched: page.rows, limit, now })
+      const summary = summarizeFleetRosterTruth({ roster: servedRoster, matched: page.rows, limit, now })
       res.json({
         resolved_elsewhere: resolvedElsewhere,
         totals: { ...summary.totals, pending: pendingShells.length },
@@ -774,7 +793,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       if (req.query.filter) {
         try { filterAst = parseFilter(req.query.filter) } catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
       }
-      const page = filteredFleetRosterPage(roster, {
+      // Dead discovery (tail-11): same union as /api/fleet-table — the dead
+      // table joins the candidate set only when the filter can match one.
+      const deadRoster = filterMentionsDead(filterAst) ? await fleetStore.getDeadAgents?.() || [] : []
+      const servedRoster = [...roster, ...deadRoster]
+      const page = filteredFleetRosterPage(servedRoster, {
         filterAst,
         labelsForRow: labelsForAgent,
         limit,
@@ -790,7 +813,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
           machineSessions[machineId] = []
         }
       }))
-      const summary = summarizeFleetRosterTruth({ roster, matched: page.rows, limit, machineSessions, now })
+      const summary = summarizeFleetRosterTruth({ roster: servedRoster, matched: page.rows, limit, machineSessions, now })
       res.json({
         ...summary,
         matched: page.matched,

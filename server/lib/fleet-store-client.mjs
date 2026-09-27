@@ -32,6 +32,7 @@ const AGENT_RESULT_SHAPE = {
   getLiveAgentsByFriendlyName: 'many',
   getAliveAgents: 'many',
   getPendingShellAgents: 'many',
+  getDeadAgents: 'many',
   getLineageRoster: 'many',
   getAliveAgentsPage: 'page',
   // Two agent arrays in one result. It is listed with its own shape rather than
