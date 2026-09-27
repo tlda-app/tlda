@@ -145,10 +145,11 @@ export type LinkPeekTracker = ReturnType<typeof createLinkPeekTracker>
  * canvas render it (measured: four mounts of one chapter, two per canvas) —
  * and every mount's listener hears the same postMessage. Without this the
  * first mount peeks and the second reads the fresh peek as a repeat click
- * and commits, so every first click also goes. Sibling dispatches run
- * synchronously in the same task, so a microtask clears the guard before any
- * real second click can arrive — no timestamp window a fast double-click
- * could fall into.
+ * and commits, so every first click also goes. The guard clears on a
+ * zero-delay timer: a microtask does NOT survive sibling dispatch (measured:
+ * listener, microtask, listener — the checkpoint runs between listeners),
+ * while a timer fires after the whole dispatch yet long before any real
+ * second click can arrive.
  */
 export function createNavigateDedupe() {
   let handling: string | null = null
@@ -157,9 +158,9 @@ export function createNavigateDedupe() {
     shouldHandle(msgKey: string): boolean {
       if (handling === msgKey) return false
       handling = msgKey
-      queueMicrotask(() => {
+      setTimeout(() => {
         if (handling === msgKey) handling = null
-      })
+      }, 0)
       return true
     },
   }

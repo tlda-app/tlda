@@ -163,10 +163,20 @@ test('a different post still handles while one is claimed', () => {
   assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-b::0'), true)
 })
 
-test('a real second click after the microtask clears handles again', async () => {
+test('a real second click after the clear timer fires handles again', async () => {
   const dedupe = createNavigateDedupe()
   assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), true)
   assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), false)
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), true)
+})
+
+test('the guard survives a microtask checkpoint between siblings', async () => {
+  // Measured in Chromium: for one post the order is listener, microtask,
+  // listener — so a microtask-cleared guard releases before the sibling runs.
+  const dedupe = createNavigateDedupe()
+  assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), true)
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(dedupe.shouldHandle('navigate::shape:1::::fig-a::0'), false)
 })
