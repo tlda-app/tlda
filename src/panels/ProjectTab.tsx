@@ -1,6 +1,5 @@
-import { useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { useEditor, useValue, type Editor } from 'tldraw'
-import { CanvasClipPanel } from '../CanvasClipPanel'
+import { useCallback, useContext, useEffect, useState } from 'react'
+import { useEditor, useValue } from 'tldraw'
 import { ProjectContext } from '../PanelContext'
 import { recordPlaceDeparture } from '../placeStack'
 import {
@@ -18,7 +17,6 @@ import {
 import { selectSpatialWorldNode } from '../spatialDocumentWorldUi'
 import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 import { readingPositionStore } from '../readingPositionStore'
-import { isProjectMapShape } from './project-map-shape-predicate'
 
 type ProjectDocument = { sourceFile: string; outputFile: string; title: string; format: string }
 export function ProjectTab({ query = '' }: { query?: string }) {
@@ -117,12 +115,12 @@ export function ProjectTab({ query = '' }: { query?: string }) {
 
   return (
     <div className="doc-panel-content project-tab">
-      <ProjectMapViewport
-        editor={editor}
-        bounds={spatialWorldBounds(nodes)}
-        returning={zoom <= SPATIAL_MAP_ZOOM && !!getSavedSpatialMapView(editor)}
-        onNavigate={toggleMap}
-      />
+      {nodes.length > 0 && (
+        <ProjectMapButton
+          returning={zoom <= SPATIAL_MAP_ZOOM && !!getSavedSpatialMapView(editor)}
+          onNavigate={toggleMap}
+        />
+      )}
       {visibleProjectRows.length === 0 && <div className="panel-empty">No documents found</div>}
       {visibleProjectRows.map(row => (
         <button
@@ -141,71 +139,36 @@ export function ProjectTab({ query = '' }: { query?: string }) {
   )
 }
 
-function ProjectMapViewport({
-  editor,
-  bounds,
+// The live-canvas minimap rendered only the current tldraw page, and a book's
+// chapters have lived on one page each since 9f24bd343 — so the "project map"
+// was one chapter's rectangle in a grey box. A labelled button until a
+// multi-page minimap exists.
+function ProjectMapButton({
   returning,
   onNavigate,
 }: {
-  editor: Editor
-  bounds: { x: number; y: number; w: number; h: number } | null
   returning: boolean
   onNavigate: () => void
 }) {
-  const hostRef = useRef<HTMLDivElement>(null)
-  const [width, setWidth] = useState(0)
-
-  useEffect(() => {
-    const host = hostRef.current
-    if (!host) return
-    const measure = () => setWidth(Math.max(1, Math.floor(host.getBoundingClientRect().width)))
-    measure()
-    const observer = new ResizeObserver(measure)
-    observer.observe(host)
-    return () => observer.disconnect()
-  }, [])
-
-  if (!bounds) return null
   return (
-    <div ref={hostRef} className="project-map-viewport">
-      {width > 0 && (
-        <CanvasClipPanel
-          mainEditor={editor}
-          bounds={bounds}
-          panelWidth={width}
-          maxHeightFraction={0.22}
-          className="project-map-viewport-clip"
-          readOnly
-          shapePredicate={isProjectMapShape}
-          interactionMode="pinned"
-          fitBounds
-          // The fit-bounds camera sits near z=0.02, where fork-viewport
-          // visibility math (absolute screen origin divided by zoom) misses
-          // content by tens of thousands of units and unmounts every iframe
-          // (measured: vp x=54965 vs content at x=0). Culling a fit-bounds
-          // overview is pointless anyway — everything is visible by
-          // construction — so keep it all mounted.
-          disableCulling
+    <button
+      type="button"
+      className="project-map-navigate project-map-navigate-labelled"
+      aria-label={returning ? 'Return to document view' : 'zoom out to project map'}
+      title={returning ? 'Return to document view' : 'zoom out to project map'}
+      onClick={onNavigate}
+    >
+      <svg width="14" height="14" viewBox="0 0 250 250" aria-hidden="true">
+        <path
+          d={returning ? 'M238 125 H12 M80 12 L12 125 L80 238' : 'M12 125 H238 M170 12 L238 125 L170 238'}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="48"
+          strokeLinecap="square"
+          strokeLinejoin="miter"
         />
-      )}
-      <button
-        type="button"
-        className="project-map-navigate"
-        aria-label={returning ? 'Return to document view' : 'Open project map'}
-        title={returning ? 'Return to document view' : 'Open project map'}
-        onClick={onNavigate}
-      >
-        <svg width="72" height="72" viewBox="0 0 250 250" aria-hidden="true">
-          <path
-            d={returning ? 'M238 125 H12 M80 12 L12 125 L80 238' : 'M12 125 H238 M170 12 L238 125 L170 238'}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="48"
-            strokeLinecap="square"
-            strokeLinejoin="miter"
-          />
-        </svg>
-      </button>
-    </div>
+      </svg>
+      <span>{returning ? 'Return to document view' : 'zoom out to project map'}</span>
+    </button>
   )
 }

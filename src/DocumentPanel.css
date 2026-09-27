@@ -1337,6 +1337,19 @@ html[data-theme="dark"] .toc-row-center--alarm { color: #a855f7; }
   color: rgba(70, 70, 70, 0.9);
 }
 
+.project-map-navigate-labelled {
+  position: static;
+  display: flex;
+  width: 100%;
+  height: auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  font: inherit;
+  text-align: left;
+}
+
 .project-document-row {
   display: block;
   width: 100%;
