@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { createAgentRuntimeStatusStore } from '../server/lib/agent-runtime-status.mjs'
 import { summarizeFleetRosterTruth } from '../server/lib/fleet-roster-truth.mjs'
-import { runtimeStatusForAgent } from '../shared/fleet-runtime-status.mjs'
+import { fleetRosterCategory, runtimeStatusForAgent } from '../shared/fleet-runtime-status.mjs'
 
 test('runtimeStatusForAgent preserves a valid discriminated state', () => {
   const state = { kind: 'human', status: 'here', activity: 'viewing' }
@@ -113,4 +113,21 @@ test('fleet-table summary rows preserve hydrated runtime_status', () => {
 
   assert.equal(summary.agents[0].status, 'hibernating')
   assert.deepEqual(summary.agents[0].runtime_status, runtimeStatus)
+})
+
+test('fleetRosterCategory counts a dead human as dead, not hibernating', () => {
+  // The runtime pair cannot say human→dead, so without the dead-first branch
+  // the 860 dead humans on the live fleet total as hibernating (tail-11).
+  assert.equal(fleetRosterCategory({ id: 'fleet:ex', human: true, dead: true }), 'dead')
+  assert.equal(
+    fleetRosterCategory({ id: 'fleet:ex', human: true, dead: true, runtime_status: { kind: 'human', status: 'away', activity: 'unknown' } }),
+    'dead',
+  )
+  // Controls: the living keep their categories.
+  assert.equal(
+    fleetRosterCategory({ id: 'fleet:skip', human: true, runtime_status: { kind: 'human', status: 'here', activity: 'viewing' } }),
+    'awake',
+  )
+  assert.equal(fleetRosterCategory({ id: 'fleet:skip', human: true }), 'hibernating')
+  assert.equal(fleetRosterCategory({ id: 'fleet:ai', runtime_status: { kind: 'ai', status: 'awake', activity: 'unknown' } }), 'awake')
 })

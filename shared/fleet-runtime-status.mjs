@@ -61,6 +61,11 @@ export function isRuntimeAwake(agent) {
 }
 
 export function fleetRosterCategory(agent) {
+  // Death outranks kind: a dead human is dead, not hibernating. The runtime
+  // pair below cannot say that — human→here|away has no dead — so without
+  // this branch the 860 dead humans on the live fleet categorize (and total)
+  // as hibernating. Measured 2026-09-27; tail-11 dead discovery.
+  if (agent?.dead) return 'dead'
   const runtime = runtimeStatusForAgent(agent)
   if (runtime.kind === RUNTIME_KIND.HUMAN) {
     return runtime.status === RUNTIME_STATUS.HERE ? 'awake' : 'hibernating'

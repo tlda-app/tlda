@@ -196,6 +196,18 @@ function mintFleetId() {
 function fleetTableLabelsForAgent(agent) {
   const labels = labelsForAgent(agent)
   if (agent?.metadata?.model) labels.push(`model:${agent.metadata.model}`)
+  if (agent?.dead && !labels.includes('dead')) labels.push('dead')
+  return labels
+}
+
+// Dead discovery (tail-11): the roster-truth twin of the dead label above.
+// The shared label set derives status from the runtime pair, which projects
+// dead HUMANS as away — so without this, filter=dead misses the 860 dead
+// humans on the live fleet. Said here, at the roster boundary, never in the
+// shared delivery semantics.
+function rosterTruthLabelsForAgent(agent) {
+  const labels = labelsForAgent(agent)
+  if (agent?.dead && !labels.includes('dead')) labels.push('dead')
   return labels
 }
 
@@ -799,7 +811,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const servedRoster = [...roster, ...deadRoster]
       const page = filteredFleetRosterPage(servedRoster, {
         filterAst,
-        labelsForRow: labelsForAgent,
+        labelsForRow: rosterTruthLabelsForAgent,
         limit,
         cursor: req.query.cursor || null,
       })

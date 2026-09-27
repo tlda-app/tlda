@@ -96,6 +96,27 @@ test('a negated dead filter does not pay for the dead-table read', async (t) => 
   })
 })
 
+test('filter=dead matches a dead human and totals it as dead', async (t) => {
+  // The runtime pair projects dead humans as away, so the shared label set
+  // carries no 'dead' for them — the roster boundary says it explicitly.
+  const deadHuman = {
+    id: 'fleet:ex', friendly_name: 'ex', labels: [], dead: true, human: true,
+    last_seen: seen, registered_at: seen, metadata: {},
+    runtime_status: { kind: 'human', status: 'away', activity: 'unknown' },
+  }
+  const store = stubStore({ dead: [deadHuman] })
+  await withRoute(t, store, async (base) => {
+    const res = await fetch(`${base}/api/fleet-table?filter=${encodeURIComponent('dead')}`)
+    assert.equal(res.status, 200)
+    const data = await res.json()
+    assert.equal(data.matched, 1)
+    assert.equal(data.agents[0].id, 'fleet:ex')
+    assert.equal(data.agents[0].status, 'dead')
+    assert.equal(data.totals.dead, 1)
+    assert.equal(data.totals.hibernating, 0)
+  })
+})
+
 test('a name filter matching a dead agent returns the row, not resolved_elsewhere', async (t) => {
   // `dead & gone` mentions dead, so the union runs and the name resolves to
   // a row. (A bare-name sweep across the dead table is deliberately NOT the
