@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { getServerUrl } from '../../shared/config.mjs';
 import { ResilientWS } from '../../shared/resilient-ws.mjs';
 import { createCommandRegistry } from './commands.mjs';
+import { createMuteState } from './mute.mjs';
 
 // A bot carries `bot`, and it is not the caller's to leave off. Skip, 2026-08-13:
 // "I think all bots should probably carry the bot label … obviously it's the
@@ -89,6 +90,11 @@ export function createBot({
   const cbs = { command: [], message: [], open: [], close: [] };
 
   const log = (...a) => console.log(`[${key}]`, ...a);
+  // Per-recipient `shut-up-<key>` suppression state. Fed by every roster input
+  // below (login, agents-delta, canonical refresh) plus background warming of
+  // cache misses — the filter itself is sync, so `chat()` keeps its same-tick
+  // write and the send-state suite keeps passing.
+  const mute = createMuteState({ botKey: key, server: SERVER, log });
   const fire = (ev, data) => {
     for (const cb of cbs[ev]) {
       try {
@@ -158,7 +164,10 @@ export function createBot({
   // one; only an answer moves the flag.
   async function refreshAssignedName() {
     const agent = await confirmRegisteredFromRoster(SERVER, id, canonicalRefreshTimeoutMs);
-    if (agent) await noteAssignment(agent);
+    if (agent) {
+      mute.noteAgents([agent]);
+      await noteAssignment(agent);
+    }
     return isCanonical();
   }
 
@@ -373,6 +382,7 @@ export function createBot({
       result = { ok: true, agent };
     }
     updateAssignedNameFromAgent(result?.agent);
+    mute.noteAgents([result?.agent]);
     if (isCanonical()) await subscribeCanonical();
     if (!isCanonical()) log(`inert: requested "${key}", assigned "${assignedName || '(none)'}"`);
     return result;
@@ -389,7 +399,18 @@ export function createBot({
       window: 0,
     });
   }
-  function chat(to, message) { send({ type: 'chat', from: id, to, message }); }
+  // Per-recipient `shut-up-<key>` suppression, filtered against the label cache
+  // on the calling tick — the write below stays synchronous, which is what
+  // the send-state suite pins. A recipient that carries the label is
+  // dropped with a log line; when every recipient drops, nothing is sent.
+  // Unknown ids deliver and are warmed in the background for next time.
+  function chat(to, message) {
+    if (!isCanonical()) return;
+    const { deliver } = mute.filter(to);
+    mute.warm(to);
+    if (!deliver.length) return;
+    send({ type: 'chat', from: id, to: Array.isArray(to) ? deliver : deliver[0], message });
+  }
 
   // Strip an optional leading "<name>[,:]" address; return the remaining command
   // text, or null if the message neither targets this bot's id nor opens with its
@@ -423,10 +444,12 @@ export function createBot({
       return;
     }
     if (msg.agents && !msg.event) {
+      mute.noteAgents(msg.agents);
       noteAssignment((msg.agents || []).find(a => a.id === id)).catch(e => log('assignment error:', e.message));
       return;
     }
     if (msg.event === 'agents-delta') {
+      mute.noteAgents(msg.data?.changed);
       noteAssignment((msg.data?.changed || []).find(a => a.id === id)).catch(e => log('assignment error:', e.message));
       return;
     }
@@ -510,6 +533,7 @@ export function runBot(opts) { return createBot(opts).start(); }
 export { createCommandRegistry, generateCommandMarkdown } from './commands.mjs';
 export { configTypes, defineConfig, generateConfigMarkdown, parseConfig } from './config.mjs';
 export { createTransportFixture } from './fixture.mjs';
+export { createMuteState, fetchLabelsById, isMutedByLabels, shutUpLabel } from './mute.mjs';
 // dev's worktree sweep. Re-exported rather than imported by subpath because
 // package.json restricts `exports` to ".", so `@tlda/bot/worktree-content.mjs`
 // fails with ERR_PACKAGE_PATH_NOT_EXPORTED — and a bot that cannot resolve an
