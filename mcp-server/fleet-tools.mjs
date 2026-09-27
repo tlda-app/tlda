@@ -4103,6 +4103,15 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       }
     }
 
+    // Dropped union members lead the warning block: who got the message is the
+    // most load-bearing fact on an accepted send, and a warning crowded out
+    // by render notes is the defect with paperwork. Advisory only — the send
+    // already happened exactly as addressed; this names what it did not reach.
+    warning = formatDroppedUnionWarning(
+      droppedUnionLiterals({ filterAst, sentIds: sent, selfId: activeAgentId() }),
+      sent,
+    ) + warning;
+
     const amendHint = messageId != null ? ` (message id ${messageId} — chat({ amend_id: ${messageId} }) to edit it in place)` : '';
     const sentSummary = formatRecipientStatusSummary(sent, agents, receipts);
     const deliveryText = receipts.length
@@ -6624,6 +6633,43 @@ export function pendingRefusalNote({ recipients = [], rows = [], delivery = null
     + `so ${plural ? 'they cannot' : 'it cannot'} receive chat. This message was not stored and will not arrive later. `
     + `Resend after ${plural ? 'they join' : 'it joins'} — the roster will show ${plural ? 'them' : 'it'} — `
     + `and hold any follow-up until ${plural ? 'they report' : 'it reports'}.`;
+}
+
+// Union members the send silently dropped. Pure: the parsed address
+// expression, the ids the result claims, and the sender. Only explicit
+// `fleet:` members of a top-level union are examined — a lone literal or a
+// conjunction that matches nothing already refuses loudly, and anything that
+// is not a `fleet:` id (labels, `me`, subtree expressions) is a filter term
+// that stays quiet by design, even at zero. The sender's own id is skipped:
+// the server excludes it from recipients on purpose, which is not a drop.
+export function droppedUnionLiterals({ filterAst = null, sentIds = [], selfId = null } = {}) {
+  if (!filterAst || filterAst.t !== 'or') return [];
+  const members = [];
+  const spine = [filterAst];
+  while (spine.length) {
+    const node = spine.pop();
+    if (!node) continue;
+    if (node.t === 'or') { spine.push(node.r, node.l); continue; }
+    if (node.t === 'lit' && typeof node.v === 'string') members.push(node.v);
+  }
+  const sent = new Set(sentIds || []);
+  const dropped = [];
+  for (const member of [...new Set(members)]) {
+    if (!member.startsWith('fleet:')) continue;
+    if (member === selfId) continue;
+    if (!sent.has(member)) dropped.push(member);
+  }
+  return dropped;
+}
+
+export function formatDroppedUnionWarning(dropped = [], reachedIds = []) {
+  if (!dropped.length) return '';
+  const quoted = dropped.map(id => `"${id}"`).join(', ');
+  const reached = (reachedIds || []).join(', ') || 'nobody';
+  const head = dropped.length > 1
+    ? `⚠ **${dropped.length} addressed members matched no agent and did not get this message:** ${quoted}.`
+    : `⚠ **${quoted} matched no agent — they did not get this message.**`;
+  return `\n\n${head} Reached: ${reached}. Check the address and resend if they were meant to receive it.`;
 }
 
 // The spawn-mailbox verdict, rendered. Every state names what happened, whether
