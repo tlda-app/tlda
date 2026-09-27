@@ -274,6 +274,47 @@ export function hasReturnedWork(answers: MarkableAnswer[] | null): boolean {
 }
 
 /**
+ * Take the collapse toggle for a solution header away from Bootstrap.
+ *
+ * The pager sits inside the header Bootstrap toggles the collapse from, so a
+ * pager click must not reach that toggle — and `stopPropagation` on the
+ * buttons cannot keep it from doing so. Measured live: with the buttons
+ * stopping propagation (zero clicks arriving at the header or at document
+ * bubble), every pager press still ran a full Bootstrap `collapsing`
+ * transition, and timestamping put Bootstrap's data-api handler BEFORE
+ * document capture — above anything a target-phase stop can touch. The open
+ * direction masked it (both sides open); the close direction exposed it:
+ * paging back to zero closed the callout, and a boundary press with an open
+ * callout would have toggled it too, because Bootstrap knows nothing of pager
+ * state.
+ *
+ * So a solution that carries a pager answers its header clicks itself: the
+ * `data-bs-toggle` comes off, and one listener flips `show` for clicks that
+ * did not start in the arrows. Other callouts are untouched — this names only
+ * the solution the pager was installed on. Returns the undo, which puts the
+ * toggle exactly back for teardown.
+ */
+function takeHeaderToggle(solution: HTMLElement): (() => void) | null {
+  const header = solution.querySelector<HTMLElement>('.callout-header')
+  if (!header) return null
+  const hadBsToggle = header.hasAttribute('data-bs-toggle')
+  header.removeAttribute('data-bs-toggle')
+  const onHeaderClick = (event: MouseEvent) => {
+    if ((event.target as HTMLElement | null)?.closest?.(`.${ARROWS_CLASS}`)) return
+    const collapsible = solution.querySelector<HTMLElement>('.callout-collapse')
+    if (!collapsible) return
+    const open = collapsible.classList.toggle('show')
+    header.classList.toggle('collapsed', !open)
+    header.setAttribute('aria-expanded', String(open))
+  }
+  header.addEventListener('click', onHeaderClick)
+  return () => {
+    header.removeEventListener('click', onHeaderClick)
+    if (hadBsToggle) header.setAttribute('data-bs-toggle', 'collapse')
+  }
+}
+
+/**
  * Open the solution callout, if it is a collapsible one and it is closed.
  *
  * Skip, 9/18: "hitting fwd/back like shoudld open the fking callout if it's
@@ -424,6 +465,7 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
     const exerciseId = exerciseIdForSolution(solution, doc)
     if (!exerciseId) continue
     const host = arrowHost(solution)
+    const headerToggle = takeHeaderToggle(solution)
 
     // Position zero is "no student's answer", which is where every callout
     // starts and what `back` from the first student returns to.
@@ -521,11 +563,12 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
       await render()
     }
 
-    // The pager sits inside the header Bootstrap toggles the collapse from, so
-    // a click that bubbles toggles: it opens a closed callout and closes an
-    // open one — right half the time, which presents as intermittent. The
-    // pager opens explicitly in `render` instead, and keeps its clicks to
-    // itself, so the header only ever moves by his hand.
+    // The pager sits inside the header the collapse toggles from, so a click
+    // that bubbles toggles: it opens a closed callout and closes an open
+    // one — right half the time, which presents as intermittent. The pager
+    // opens explicitly in `render` instead, and keeps its clicks to itself.
+    // That stop is not enough on its own — `takeHeaderToggle` says why — but
+    // it stays: with it the header only ever moves by his hand.
     back.addEventListener('click', event => { event.stopPropagation(); void step(-1) })
     forward.addEventListener('click', event => { event.stopPropagation(); void step(1) })
     host.append(arrows)
@@ -562,6 +605,7 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
     cleanups.push(() => {
       unpair(solution)
       arrows.remove()
+      headerToggle?.()
     })
   }
 

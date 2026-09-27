@@ -486,3 +486,80 @@ test('a pager click does not toggle the callout header beneath it', async () => 
   assert.equal(toggles, 0, 'the header toggle never fired')
   assert.equal(collapse.classList.contains('show'), true, 'it opened by the pager, not by a bubble')
 })
+
+test('a hand on the header still opens and closes the callout', () => {
+  // Taking the toggle away from Bootstrap must not take it away from him:
+  // the header answers clicks itself, both directions, with the collapsed
+  // state following.
+  const doc = collapsibleChapter()
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
+  const solution = doc.querySelectorAll('.callout-solution')[0]
+  const header = solution.querySelector('.callout-header')!
+  const collapse = solution.querySelector('.callout-collapse')!
+
+  assert.equal(header.hasAttribute('data-bs-toggle'), false, 'Bootstrap no longer toggles this header')
+
+  header.click()
+  assert.equal(collapse.classList.contains('show'), true, 'hand opens')
+  assert.equal(header.classList.contains('collapsed'), false)
+  assert.equal(header.getAttribute('aria-expanded'), 'true')
+
+  header.click()
+  assert.equal(collapse.classList.contains('show'), false, 'hand closes')
+  assert.equal(header.classList.contains('collapsed'), true)
+  assert.equal(header.getAttribute('aria-expanded'), 'false')
+})
+
+test('pager presses do not move the collapse under a capture-phase toggle', async () => {
+  // The live failure: Bootstrap's collapse data-api answers pager clicks from
+  // above document capture — timestamped ahead of a capture listener — so the
+  // buttons' stopPropagation never touches it. Every press toggled: paging
+  // back to zero closed the callout, and a boundary press with an open
+  // callout would have too. This wires that listener the way the browser
+  // does and presses every path through it.
+  const doc = collapsibleChapter()
+  doc.addEventListener('click', event => {
+    const toggle = (event.target as HTMLElement).closest?.('[data-bs-toggle="collapse"]')
+    if (!toggle) return
+    toggle.parentElement?.querySelector('.callout-collapse')?.classList.toggle('show')
+  }, true)
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
+  const solution = doc.querySelectorAll('.callout-solution')[0]
+  const header = solution.querySelector('.callout-header')!
+  const collapse = solution.querySelector('.callout-collapse')!
+  const [back, forward] = solution.querySelectorAll<HTMLButtonElement>('.tlda-marking-arrows button')
+  const settle = () => new Promise(resolve => setTimeout(resolve, 5))
+
+  forward.click() // closed -> ana
+  await settle()
+  assert.equal(collapse.classList.contains('show'), true, 'fwd opens by the pager')
+  back.click() // ana -> zero
+  await settle()
+  assert.equal(collapse.classList.contains('show'), true, 'back to zero leaves it open')
+  back.click() // boundary: already zero, open
+  await settle()
+  assert.equal(collapse.classList.contains('show'), true, 'back at zero changes nothing while open')
+  header.click() // hand closes
+  assert.equal(collapse.classList.contains('show'), false, 'hand closed it')
+  back.click() // boundary: already zero, closed
+  await settle()
+  assert.equal(collapse.classList.contains('show'), false, 'back at zero changes nothing while closed')
+  forward.click() // zero -> ana
+  await settle()
+  forward.click() // ana -> bo (last)
+  await settle()
+  assert.equal(collapse.classList.contains('show'), true, 'open at the last answer')
+  forward.click() // boundary: already last
+  await settle()
+  assert.equal(collapse.classList.contains('show'), true, 'fwd at last changes nothing')
+})
+
+test('teardown puts the Bootstrap toggle back', () => {
+  const doc = collapsibleChapter()
+  const header = doc.querySelectorAll('.callout-solution')[0].querySelector('.callout-header')!
+  const { remove } = installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana']) })
+  assert.equal(header.hasAttribute('data-bs-toggle'), false, 'taken at install')
+  remove()
+  assert.equal(header.getAttribute('data-bs-toggle'), 'collapse', 'restored at teardown')
+  assert.equal(doc.querySelectorAll('.tlda-marking-arrows').length, 0, 'arrows gone')
+})
