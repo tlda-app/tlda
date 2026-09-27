@@ -50,7 +50,7 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
-import { anchorChatScrollPosition, anchoredTailTop, chatScrollStartOf, chatScrollStoreKey, collapseLandingScrollTop, decideScrollRestore, isReaderInputInFlight, nextEarlierChatHistoryWindow, readChatScrollState, shouldPrefetchEarlierChatHistory, writeChatScrollState, CHAT_SCROLL_STORE_VERSION } from './chatViewportAnchor.mjs'
+import { anchorChatScrollPosition, anchoredTailTop, chatScrollContentEnd, chatScrollStartOf, chatScrollStoreKey, collapseLandingScrollTop, decideScrollRestore, isReaderInputInFlight, nextEarlierChatHistoryWindow, readChatScrollState, shouldPrefetchEarlierChatHistory, writeChatScrollState, CHAT_SCROLL_STORE_VERSION } from './chatViewportAnchor.mjs'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 // @ts-ignore — vanilla JS module
 import {
@@ -2768,12 +2768,22 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
       // to the tail on every scroll. Following with no departure pending is
       // exactly "the reader sits where the mount put them".
       const atTail = tailModeRef.current && !pendingDepartureRef.current
+      const contentEnd = chatScrollContentEnd(itemKeys, heightOf)
       const decision = decideScrollRestore({
         saved: pendingRestore,
         resetKey,
         atTail,
         startOf: (key: string) => chatScrollStartOf(itemKeys, heightOf, key),
+        maxTop: contentEnd - viewportHeight,
       })
+      if (decision.action === 'hold' && decision.reason === 'beyond-tail') {
+        log.metric('chat-scroll', 'restore holding beyond committable tail', {
+          panelId: persistKey,
+          top: decision.top ?? null,
+          contentEnd,
+          anchorKey: pendingRestore.anchorKey ?? null,
+        })
+      }
       if (decision.action === 'restore' && decision.top != null) {
         setModelTop(decision.top)
         // setModelTop arms the follow-off settle timer, but the reader was
@@ -2808,7 +2818,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     }
     const newAnchorTop = anchorKey ? geometry.starts.get(anchorKey) : undefined
     setModelTop((newAnchorTop ?? modelTopRef.current) + anchorOffset)
-  }, [itemKeySignature, resetKey, persistKey])
+  }, [itemKeySignature, resetKey, persistKey, viewportHeight])
 
   // Persist the reader's anchor so a reload lands where they were. Runs after
   // scroll renders (geometryVersion moves on every setModelTop) and after new
@@ -5140,11 +5150,20 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [chatLogEl, flushDeferredGeometry])
 
   // A committed filter change is a new conversation view and starts following.
+  // The mount run is not a change: when a non-tail record awaits restore, the
+  // list's own pending-restore path owns positioning, and the mount goToTail —
+  // a loop of up to 12 frames — would yank over its commit.
+  const didMountFollowRef = useRef(false)
   useEffect(() => {
     noteFollowTransition(String(shape.id), 'filter-reset', {
       filterKey,
       bufferKey: chatEventBufferKey,
     })
+    if (!didMountFollowRef.current) {
+      didMountFollowRef.current = true
+      const saved = readChatScrollState(browserLocalStorage(), chatScrollStoreKey(shape.id))
+      if (saved && saved.tail !== true) return
+    }
     goToTail('filter-change')
   }, [filterKey, shape.id, goToTail, chatEventBufferKey])
 

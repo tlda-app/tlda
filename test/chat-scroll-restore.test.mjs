@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   anchorChatScrollPosition,
+  chatScrollContentEnd,
   chatScrollStartOf,
   chatScrollStoreKey,
   decideScrollRestore,
@@ -55,6 +56,12 @@ test('start-of-key walks the same accumulation the list geometry uses', () => {
   assert.equal(chatScrollStartOf(['a', 'b', 'c'], h, 'b'), 100)
   assert.equal(chatScrollStartOf(['a', 'b', 'c'], h, 'c'), 180)
   assert.equal(chatScrollStartOf(['a', 'b', 'c'], h, 'zzz'), null)
+})
+
+test('content end totals the same walk', () => {
+  const h = heights([['a', 100], ['b', 80]])
+  assert.equal(chatScrollContentEnd(['a', 'b', 'c'], h), 260)
+  assert.equal(chatScrollContentEnd([], h), 0)
 })
 
 test('restore resolves anchor start plus offset', () => {
@@ -114,9 +121,9 @@ test('storage read tolerates missing and corrupt records', () => {
 // precede the synced filter or the anchored row, so a single refusal must
 // hold rather than fall to the tail.
 
-function decide(saved, resetKey, atTail, starts) {
+function decide(saved, resetKey, atTail, starts, maxTop) {
   const map = new Map(starts)
-  return decideScrollRestore({ saved, resetKey, atTail, startOf: (k) => map.get(k) })
+  return decideScrollRestore({ saved, resetKey, atTail, startOf: (k) => map.get(k), maxTop })
 }
 
 const ANCHORED = { v: 1, filterKey: FILTER, tail: false, anchorKey: 'b', anchorOffset: 50 }
@@ -124,43 +131,71 @@ const ANCHORED = { v: 1, filterKey: FILTER, tail: false, anchorKey: 'b', anchorO
 test('pending restore jumps when the filter matches and the key is present', () => {
   assert.deepEqual(
     decide(ANCHORED, FILTER, true, [['a', 0], ['b', 100]]),
-    { action: 'restore', top: 150 },
+    { action: 'restore', top: 150, reason: 'restore' },
   )
 })
 
 test('pending restore holds while the filter is still settling', () => {
-  assert.deepEqual(decide(ANCHORED, '[]', true, [['b', 100]]), { action: 'hold' })
-  assert.deepEqual(decide(ANCHORED, '', true, [['b', 100]]), { action: 'hold' })
-  assert.deepEqual(decide(ANCHORED, null, true, [['b', 100]]), { action: 'hold' })
+  assert.deepEqual(decide(ANCHORED, '[]', true, [['b', 100]]), { action: 'hold', reason: 'filter-settling' })
+  assert.deepEqual(decide(ANCHORED, '', true, [['b', 100]]), { action: 'hold', reason: 'filter-settling' })
+  assert.deepEqual(decide(ANCHORED, null, true, [['b', 100]]), { action: 'hold', reason: 'filter-settling' })
 })
 
 test('pending restore holds while the anchored row has not arrived', () => {
-  assert.deepEqual(decide(ANCHORED, FILTER, true, [['a', 0]]), { action: 'hold' })
-  assert.deepEqual(decide(ANCHORED, FILTER, true, []), { action: 'hold' })
+  assert.deepEqual(decide(ANCHORED, FILTER, true, [['a', 0]]), { action: 'hold', reason: 'key-missing' })
+  assert.deepEqual(decide(ANCHORED, FILTER, true, []), { action: 'hold', reason: 'key-missing' })
 })
 
 test('pending restore abandons on a genuine filter change', () => {
   assert.deepEqual(
     decide(ANCHORED, '[[["from","someone-else"]]]', true, [['b', 100]]),
-    { action: 'abandon' },
+    { action: 'abandon', reason: 'filter-changed' },
   )
 })
 
 test('pending restore abandons once the reader moves off the tail', () => {
   assert.deepEqual(
     decide(ANCHORED, FILTER, false, [['a', 0], ['b', 100]]),
-    { action: 'abandon' },
+    { action: 'abandon', reason: 'not-at-tail' },
   )
 })
 
 test('pending restore abandons records that can never resolve', () => {
   const starts = [['a', 0], ['b', 100]]
-  assert.deepEqual(decide(null, FILTER, true, starts), { action: 'abandon' })
-  assert.deepEqual(decide('x', FILTER, true, starts), { action: 'abandon' })
-  assert.deepEqual(decide({ ...ANCHORED, v: 2 }, FILTER, true, starts), { action: 'abandon' })
-  assert.deepEqual(decide({ ...ANCHORED, tail: true }, FILTER, true, starts), { action: 'abandon' })
-  assert.deepEqual(decide({ ...ANCHORED, filterKey: '' }, FILTER, true, starts), { action: 'abandon' })
-  assert.deepEqual(decide({ ...ANCHORED, anchorKey: '' }, FILTER, true, starts), { action: 'abandon' })
-  assert.deepEqual(decide({ ...ANCHORED, anchorOffset: -1 }, FILTER, true, starts), { action: 'abandon' })
-  assert.deepEqual(decide({ ...ANCHORED, anchorOffset: '50' }, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide(null, FILTER, true, starts), { action: 'abandon', reason: 'no-saved' })
+  assert.deepEqual(decide('x', FILTER, true, starts), { action: 'abandon', reason: 'no-saved' })
+  assert.deepEqual(decide({ ...ANCHORED, v: 2 }, FILTER, true, starts), { action: 'abandon', reason: 'version' })
+  assert.deepEqual(decide({ ...ANCHORED, tail: true }, FILTER, true, starts), { action: 'abandon', reason: 'saved-tail' })
+  assert.deepEqual(decide({ ...ANCHORED, filterKey: '' }, FILTER, true, starts), { action: 'abandon', reason: 'saved-filter-empty' })
+  assert.deepEqual(decide({ ...ANCHORED, anchorKey: '' }, FILTER, true, starts), { action: 'abandon', reason: 'anchor-key-empty' })
+  assert.deepEqual(decide({ ...ANCHORED, anchorOffset: -1 }, FILTER, true, starts), { action: 'abandon', reason: 'anchor-offset-bad' })
+  assert.deepEqual(decide({ ...ANCHORED, anchorOffset: '50' }, FILTER, true, starts), { action: 'abandon', reason: 'anchor-offset-bad' })
+})
+
+test('pending restore holds while the target is past the committable tail', () => {
+  const starts = [['a', 0], ['b', 100]]
+  assert.deepEqual(
+    decide(ANCHORED, FILTER, true, starts, 100),
+    { action: 'hold', reason: 'beyond-tail', top: 150 },
+  )
+})
+
+test('pending restore fires once the target is inside the committable tail', () => {
+  const starts = [['a', 0], ['b', 100]]
+  assert.deepEqual(
+    decide(ANCHORED, FILTER, true, starts, 150),
+    { action: 'restore', top: 150, reason: 'restore' },
+  )
+  assert.deepEqual(
+    decide(ANCHORED, FILTER, true, starts, 1000),
+    { action: 'restore', top: 150, reason: 'restore' },
+  )
+})
+
+test('absent maxTop preserves restore behavior exactly', () => {
+  const starts = [['a', 0], ['b', 100]]
+  assert.deepEqual(
+    decide(ANCHORED, FILTER, true, starts, undefined),
+    { action: 'restore', top: 150, reason: 'restore' },
+  )
 })

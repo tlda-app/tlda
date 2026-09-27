@@ -108,6 +108,18 @@ export function anchorChatScrollPosition(keys, heightOf, modelTop) {
   return null
 }
 
+// The total content height under the same walk: the last key's start plus
+// its height. The committable tail is this minus the viewport height.
+export function chatScrollContentEnd(keys, heightOf) {
+  if (!Array.isArray(keys) || keys.length === 0) return 0
+  let cursor = 0
+  for (const key of keys) {
+    const h = heightOf(key)
+    cursor += Number.isFinite(h) && h > 0 ? h : 0
+  }
+  return cursor
+}
+
 // The accumulated start of one key under the same walk the list geometry
 // builds its `starts` map from. Null when the key is not in this item set,
 // which is a page that does not contain the anchor.
@@ -147,28 +159,39 @@ export function resolveChatScrollRestore(saved, resetKey, startOf) {
 //   hold:    stay at the tail and retry next population.
 //   abandon: normal list behaviour from here (genuine change, reader moved on,
 //            or a record that can never resolve).
-export function decideScrollRestore({ saved, resetKey, atTail, startOf }) {
-  if (!saved || typeof saved !== 'object') return { action: 'abandon' }
-  if (saved.v !== CHAT_SCROLL_STORE_VERSION) return { action: 'abandon' }
-  if (saved.tail === true) return { action: 'abandon' }
-  if (!atTail) return { action: 'abandon' }
-  if (typeof saved.filterKey !== 'string' || !saved.filterKey) return { action: 'abandon' }
+// Every decision carries a `reason` code naming the branch taken. `maxTop` is
+// the committable tail (content end minus viewport); a target past it holds
+// for more content instead of committing to an unfinished tail. Absent,
+// behaviour is exactly as before.
+export function decideScrollRestore({ saved, resetKey, atTail, startOf, maxTop }) {
+  if (!saved || typeof saved !== 'object') return { action: 'abandon', reason: 'no-saved' }
+  if (saved.v !== CHAT_SCROLL_STORE_VERSION) return { action: 'abandon', reason: 'version' }
+  if (saved.tail === true) return { action: 'abandon', reason: 'saved-tail' }
+  if (!atTail) return { action: 'abandon', reason: 'not-at-tail' }
+  if (typeof saved.filterKey !== 'string' || !saved.filterKey) return { action: 'abandon', reason: 'saved-filter-empty' }
   if (saved.filterKey !== resetKey) {
     // A filter that is still empty is mount settling, not a change: the shape
     // sync has not delivered the panel's filter yet. Any other mismatch is a
     // genuine filter change and restores nothing.
-    if (resetKey === '[]' || resetKey === '' || resetKey == null) return { action: 'hold' }
-    return { action: 'abandon' }
+    if (resetKey === '[]' || resetKey === '' || resetKey == null) return { action: 'hold', reason: 'filter-settling' }
+    return { action: 'abandon', reason: 'filter-changed' }
   }
-  if (typeof saved.anchorKey !== 'string' || !saved.anchorKey) return { action: 'abandon' }
-  if (!Number.isFinite(saved.anchorOffset) || saved.anchorOffset < 0) return { action: 'abandon' }
+  if (typeof saved.anchorKey !== 'string' || !saved.anchorKey) return { action: 'abandon', reason: 'anchor-key-empty' }
+  if (!Number.isFinite(saved.anchorOffset) || saved.anchorOffset < 0) return { action: 'abandon', reason: 'anchor-offset-bad' }
   const start = startOf(saved.anchorKey)
   // A missing key is either a population that has not arrived yet (history or
   // a derived row lands in a later pass) or an anchor beyond the loaded
   // window. Both hold: the first resolves, the second degrades to the tail,
   // which is the behaviour to this point.
-  if (!Number.isFinite(start) || start < 0) return { action: 'hold' }
-  return { action: 'restore', top: start + saved.anchorOffset }
+  if (!Number.isFinite(start) || start < 0) return { action: 'hold', reason: 'key-missing' }
+  const top = start + saved.anchorOffset
+  // A target past the committable tail is unfinished content, not a position:
+  // committing it would clamp to a tail that is still arriving and convert the
+  // restore into tail-following. Hold for more content; recomputed every
+  // population, so it restores once the target is inside. `maxTop` absent
+  // preserves the old behaviour exactly.
+  if (Number.isFinite(maxTop) && top > maxTop) return { action: 'hold', reason: 'beyond-tail', top }
+  return { action: 'restore', top, reason: 'restore' }
 }
 
 export function readChatScrollState(storage, key) {
