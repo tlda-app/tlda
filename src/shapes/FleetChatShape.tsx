@@ -2547,6 +2547,11 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
   const previousKeysRef = useRef<string[]>([])
   const [geometryVersion, setGeometryVersion] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(0)
+  // Mirror for the restore effect below (synced by a layout effect in
+  // declaration order): reading the state there would need it in the deps,
+  // and it re-measures on every layout pass — re-running the effect
+  // mid-settle re-pins the list to the tail on every scroll (the v2 miss).
+  const viewportHeightRef = useRef(viewportHeight)
   const itemKeys = useMemo(() => items.map(item => String(item.key)), [items])
   const itemKeySignature = useMemo(() => itemKeys.join('\u0001'), [itemKeys])
 
@@ -2741,6 +2746,10 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
   }, [tailTop])
 
   useLayoutEffect(() => {
+    viewportHeightRef.current = viewportHeight
+  }, [viewportHeight])
+
+  useLayoutEffect(() => {
     const wasReset = previousResetKeyRef.current !== resetKey
     const previousKeys = previousKeysRef.current
     previousResetKeyRef.current = resetKey
@@ -2774,7 +2783,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
         resetKey,
         atTail,
         startOf: (key: string) => chatScrollStartOf(itemKeys, heightOf, key),
-        maxTop: contentEnd - viewportHeight,
+        maxTop: contentEnd - viewportHeightRef.current,
       })
       if (decision.action === 'hold' && decision.reason === 'beyond-tail') {
         log.metric('chat-scroll', 'restore holding beyond committable tail', {
@@ -2818,7 +2827,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     }
     const newAnchorTop = anchorKey ? geometry.starts.get(anchorKey) : undefined
     setModelTop((newAnchorTop ?? modelTopRef.current) + anchorOffset)
-  }, [itemKeySignature, resetKey, persistKey, viewportHeight])
+  }, [itemKeySignature, resetKey, persistKey])
 
   // Persist the reader's anchor so a reload lands where they were. Runs after
   // scroll renders (geometryVersion moves on every setModelTop) and after new
