@@ -24,6 +24,28 @@ const windows: JSDOM[] = []
 before(() => {})
 after(() => { for (const w of windows) w.window.close() })
 
+// The shape the course's own `solution-callout.lua` produces with
+// `collapse = true`: the same callouts, with the solution body behind
+// Bootstrap's collapse — a `collapsed` header and a body without `show`.
+const COLLAPSIBLE_CHAPTER = `
+  <div id="exr-a" class="callout callout-exercise"><p>question a</p></div>
+  <div class="callout callout-solution">
+    <div class="callout-header collapsed" aria-expanded="false" data-bs-toggle="collapse">Solution</div>
+    <div class="callout-collapse collapse"><div class="callout-body"><p>solution a</p></div></div>
+  </div>
+  <div id="exr-b" class="callout callout-exercise"><p>question b</p></div>
+  <div class="callout callout-solution">
+    <div class="callout-header collapsed" aria-expanded="false" data-bs-toggle="collapse">Solution</div>
+    <div class="callout-collapse collapse"><div class="callout-body"><p>solution b</p></div></div>
+  </div>
+`
+
+function collapsibleChapter() {
+  const jsdom = new JSDOM(`<!doctype html><html><head></head><body>${COLLAPSIBLE_CHAPTER}</body></html>`)
+  windows.push(jsdom)
+  return jsdom.window.document
+}
+
 // The shape the course's own `solution-callout.lua` produces: the exercise
 // callout, then the solution callout after it, with a header to hang arrows on.
 const CHAPTER = `
@@ -371,4 +393,96 @@ test('the signal fires when there is returned work of the reader\'s own', () => 
 test('and does not fire when there is none, or when the list was never fetched', () => {
   assert.equal(hasReturnedWork([]), false, 'answered nothing on this exercise')
   assert.equal(hasReturnedWork(null), false, 'never asked -- must not claim, the "no answer" failure inverted')
+})
+
+// --- paging opens a closed solution callout ---
+//
+// Skip, 9/18: "hitting fwd/back like shoudld open the fking callout if it's
+// closed like; you don't see a sudent solution with the fking callout closed".
+// An answer beside a closed solution is marking against work he cannot see.
+
+test('paging forward opens a closed solution callout', async () => {
+  const doc = collapsibleChapter()
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
+  const solution = doc.querySelectorAll('.callout-solution')[0]
+  const forward = solution.querySelectorAll<HTMLButtonElement>('.tlda-marking-arrows button')[1]
+
+  forward.click()
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  const collapse = solution.querySelector('.callout-collapse')!
+  const header = solution.querySelector('.callout-header')!
+  assert.equal(collapse.classList.contains('show'), true, 'the body opens')
+  assert.equal(header.classList.contains('collapsed'), false, 'the header unmarks')
+  assert.equal(header.getAttribute('aria-expanded'), 'true')
+  assert.equal(solution.querySelector('.tlda-marking-arrows-label')?.textContent, 'ana 1/2')
+})
+
+test('paging back to a student opens it too', async () => {
+  // A fix that opens on forward alone is half a fix: the back button lands on
+  // a student exactly the way forward does.
+  const doc = collapsibleChapter()
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
+  const solution = doc.querySelectorAll('.callout-solution')[0]
+  const [back, forward] = solution.querySelectorAll<HTMLButtonElement>('.tlda-marking-arrows button')
+  const collapse = solution.querySelector('.callout-collapse')!
+  const header = solution.querySelector('.callout-header')!
+
+  forward.click() // ana
+  await new Promise(resolve => setTimeout(resolve, 5))
+  forward.click() // bo
+  await new Promise(resolve => setTimeout(resolve, 5))
+  // Closed again by hand, so back faces a closed callout the way forward did.
+  collapse.classList.remove('show')
+  header.classList.add('collapsed')
+  header.setAttribute('aria-expanded', 'false')
+
+  back.click()
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  assert.equal(collapse.classList.contains('show'), true, 'back opens what it lands on')
+  assert.equal(header.getAttribute('aria-expanded'), 'true')
+  assert.equal(solution.querySelector('.tlda-marking-arrows-label')?.textContent, 'ana 1/2')
+})
+
+test('landing back at zero leaves the callout as it stands', async () => {
+  // Opening is the ask; closing is not. Paging away must not destroy state he
+  // may have set deliberately — including the open state paging itself made.
+  const doc = collapsibleChapter()
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
+  const solution = doc.querySelectorAll('.callout-solution')[0]
+  const [back, forward] = solution.querySelectorAll<HTMLButtonElement>('.tlda-marking-arrows button')
+
+  forward.click()
+  await new Promise(resolve => setTimeout(resolve, 5))
+  back.click()
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  assert.equal(solution.querySelector('.callout-collapse')!.classList.contains('show'), true, 'still open')
+  assert.equal(solution.querySelector('.tlda-marking-arrows-label')?.textContent, 'no answer')
+  assert.equal(doc.querySelectorAll('.tlda-marking-pair').length, 0, 'and unpaired')
+})
+
+test('a pager click does not toggle the callout header beneath it', async () => {
+  // The pager sits inside Bootstrap's collapse toggle. A click that bubbles
+  // toggles: it opens a closed callout and closes an open one — right half
+  // the time, which presents as intermittent. The pager opens explicitly and
+  // keeps its clicks to itself, so the header only ever moves by his hand.
+  const doc = collapsibleChapter()
+  installSolutionMarking(doc, { answersFor: answersFor(doc, ['ana', 'bo']) })
+  const solution = doc.querySelectorAll('.callout-solution')[0]
+  const header = solution.querySelector('.callout-header')!
+  const collapse = solution.querySelector('.callout-collapse')!
+  let toggles = 0
+  header.addEventListener('click', () => {
+    toggles++
+    collapse.classList.toggle('show')
+  })
+  const forward = solution.querySelectorAll<HTMLButtonElement>('.tlda-marking-arrows button')[1]
+
+  forward.click()
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  assert.equal(toggles, 0, 'the header toggle never fired')
+  assert.equal(collapse.classList.contains('show'), true, 'it opened by the pager, not by a bubble')
 })

@@ -273,6 +273,31 @@ export function hasReturnedWork(answers: MarkableAnswer[] | null): boolean {
   return !!answers && answers.length > 0
 }
 
+/**
+ * Open the solution callout, if it is a collapsible one and it is closed.
+ *
+ * Skip, 9/18: "hitting fwd/back like shoudld open the fking callout if it's
+ * closed like; you don't see a sudent solution with the fking callout closed".
+ * An answer beside a closed solution is marking against work he cannot see,
+ * so showing a student opens what they are shown against.
+ *
+ * The classes are Bootstrap's, set directly rather than by clicking the
+ * header: a header click toggles, which opens a closed callout and closes an
+ * open one. Only the open direction is ever wanted here.
+ *
+ * Open-only, deliberately. Landing back at zero unpairs but never closes:
+ * closing would destroy state he may have set deliberately, including the
+ * open state paging itself made.
+ */
+function openSolution(solution: HTMLElement) {
+  const collapsible = solution.querySelector<HTMLElement>('.callout-collapse')
+  if (!collapsible || collapsible.classList.contains('show')) return
+  collapsible.classList.add('show')
+  const header = solution.querySelector<HTMLElement>('.callout-header')
+  header?.classList.remove('collapsed')
+  header?.setAttribute('aria-expanded', 'true')
+}
+
 /** Take the pair apart, leaving the solution callout exactly as it was found. */
 function unpair(solution: HTMLElement) {
   const pair = solution.closest(`.${PAIR_CLASS}`)
@@ -463,6 +488,11 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
         options.onShow?.(exerciseId, null, null, null)
         return
       }
+      // Showing a student opens the solution they are shown against, before
+      // the answer arrives and whether or not it does: a closed callout hides
+      // the work either way, and the open direction does not depend on the
+      // fetch. Both arrows reach this path, so both open.
+      openSolution(solution)
       const shown = index
       const element = await current.load()
       // He can page again while a fetch is in flight. Only the answer that is
@@ -491,8 +521,13 @@ export function installSolutionMarking(doc: Document, options: SolutionMarkingOp
       await render()
     }
 
-    back.addEventListener('click', () => { void step(-1) })
-    forward.addEventListener('click', () => { void step(1) })
+    // The pager sits inside the header Bootstrap toggles the collapse from, so
+    // a click that bubbles toggles: it opens a closed callout and closes an
+    // open one — right half the time, which presents as intermittent. The
+    // pager opens explicitly in `render` instead, and keeps its clicks to
+    // itself, so the header only ever moves by his hand.
+    back.addEventListener('click', event => { event.stopPropagation(); void step(-1) })
+    forward.addEventListener('click', event => { event.stopPropagation(); void step(1) })
     host.append(arrows)
     // Opening on a named student asks for the answers up front, which is exactly
     // what `step` avoids doing for a chapter he is only reading — so it happens
