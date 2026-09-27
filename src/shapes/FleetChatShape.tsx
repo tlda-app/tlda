@@ -2762,7 +2762,12 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     const pendingRestore = persistKey ? pendingScrollRestoreRef.current : null
     if (pendingRestore) {
       const heightOf = (key: string) => heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
-      const atTail = Math.abs(modelTopRef.current - tailTop()) <= tailEpsRef.current
+      // Still-at-tail is read from follow state, not geometry: calling
+      // tailTop() here would need it in the effect deps, and it churns on
+      // every re-measure — re-running this effect mid-settle re-pins the list
+      // to the tail on every scroll. Following with no departure pending is
+      // exactly "the reader sits where the mount put them".
+      const atTail = tailModeRef.current && !pendingDepartureRef.current
       const decision = decideScrollRestore({
         saved: pendingRestore,
         resetKey,
@@ -2803,10 +2808,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     }
     const newAnchorTop = anchorKey ? geometry.starts.get(anchorKey) : undefined
     setModelTop((newAnchorTop ?? modelTopRef.current) + anchorOffset)
-    // tailTop rides along because the pending-restore check above reads it;
-    // a side benefit is that settling heights re-offer the restore while it
-    // is still pending rather than only on new content.
-  }, [itemKeySignature, resetKey, persistKey, tailTop])
+  }, [itemKeySignature, resetKey, persistKey])
 
   // Persist the reader's anchor so a reload lands where they were. Runs after
   // scroll renders (geometryVersion moves on every setModelTop) and after new
