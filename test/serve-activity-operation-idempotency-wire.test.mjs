@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import WebSocket from 'ws'
@@ -158,7 +158,16 @@ os.setPriority = (...args) => {
   let historyClient
   try {
     await waitForServer(child)
-    const base = `wss://127.0.0.1:${port}`
+    // Same rule as the server (776b4fe93): readable certs → TLS, else the
+    // plain-HTTP fallback. Under a secrets fence the pair exists but reads
+    // EPERM, so the booted server speaks ws and a wss dial dies EPROTO.
+    let serverTls = false
+    try {
+      readFileSync(process.env.TLDA_TLS_CERT || join(homedir(), '.config/tlda/localhost+2.pem'))
+      readFileSync(process.env.TLDA_TLS_KEY || join(homedir(), '.config/tlda/localhost+2-key.pem'))
+      serverTls = true
+    } catch { /* plain-HTTP fallback */ }
+    const base = `${serverTls ? 'wss' : 'ws'}://127.0.0.1:${port}`
     liveClient = await openSocket(`${base}/ws/fleet`)
     subscribe(liveClient, 'serve-live', agentId)
     daemon = await openSocket(`${base}/ws/fleet-daemon`)
