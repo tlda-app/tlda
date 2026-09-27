@@ -7,6 +7,25 @@ import { fileURLToPath } from 'node:url'
 const DEV_NULL = '/dev/null'
 const PS_EXEC_RULE = '(allow process-exec (literal "/bin/ps") (with no-sandbox))'
 const FLEET_DB_DENY = path.join(os.homedir(), '.config', 'tlda', 'fleet.db*')
+// Public CA bundles live under secret-shaped names (`**/*.pem` matches
+// /etc/ssl/cert.pem), so every enforcing profile must re-allow reads of the
+// system CA directories after the secrets denies. This list lives in the
+// emitter rather than in settings on purpose: on 2026-09-27 the emitter fix
+// shipped without the exception and three agents lost TLS, so the two must
+// not be separable again — any profile built here carries both.
+// Both spellings of each symlinked directory are listed so the open is
+// allowed whether the sandbox evaluates the unresolved or resolved path.
+// Directory granularity: a renamed or added bundle inside a known directory
+// keeps working; a bundle in a NEW directory is not covered (stated residual).
+// Reads only — writes of secret-shaped names under these directories stay
+// denied, so planting a readable secret here needs an unfenced writer.
+const FENCE_CA_READ_ROOTS = [
+  '/etc/ssl',
+  '/private/etc/ssl',
+  '/opt/homebrew/etc/ca-certificates',
+  '/opt/homebrew/etc/openssl@3',
+  '/opt/homebrew/etc/gnutls',
+]
 
 function usage() {
   return 'usage: node bin/fence-seatbelt.mjs --settings <file.json> -- <command> [args...]'
@@ -80,7 +99,9 @@ function globToRegex(glob) {
     if (ch === '*') {
       if (input[i + 1] === '*') {
         if (input[i + 2] === '/') {
-          out += '(?:.*/)?'
+          // SBPL regex is ERE: `(?:...)` is literal text there, not a group,
+          // so the PCRE spelling voids every rule built from a leading `**/`.
+          out += '(.*/)?'
           i += 2
         } else {
           out += '.*'
@@ -126,6 +147,10 @@ function denyBlock(operation, roots) {
   ].join('\n')
 }
 
+function caReadAllow() {
+  return `(allow file-read* ${FENCE_CA_READ_ROOTS.map((root) => `(subpath ${sbplString(root)})`).join(' ')})`
+}
+
 export function buildSeatbeltProfile(settings) {
   if (!settings || typeof settings !== 'object') throw new Error('settings file must contain an object')
   const filesystem = settings.filesystem
@@ -143,6 +168,9 @@ export function buildSeatbeltProfile(settings) {
   const denyWrite = denyBlock('file-write*', filesystem.denyWrite || [])
   if (denyWrite) lines.push(denyWrite)
   lines.push(`(deny file-write* ${pathPatternMatcher(FLEET_DB_DENY)})`)
+  // Last match wins in SBPL, so the CA re-allow goes last: reads of the
+  // public bundles succeed while every secrets deny above still holds.
+  lines.push(caReadAllow())
   return `${lines.join('\n')}\n`
 }
 
