@@ -144,7 +144,10 @@ export function parseUnifiedFilter(input, { sort = 'agent' } = {}) {
   }
 
   function parseLiteral(value) {
-    for (const key of ['from', 'to', 'involving', 'since', 'before', 'type', 'id']) {
+    // `model:` is a VALUE term like `type:`, not an agent expression like
+    // `from:`: it names no participant, so there is no next atom to parse and
+    // an empty value is refused rather than read off what follows.
+    for (const key of ['from', 'to', 'involving', 'since', 'before', 'type', 'id', 'model']) {
       const prefix = `${key}:`
       if (value.startsWith(prefix)) {
         if (sort !== 'message') {
@@ -152,11 +155,11 @@ export function parseUnifiedFilter(input, { sort = 'agent' } = {}) {
         }
         const rest = value.slice(prefix.length)
         if (!rest) {
-          if (key === 'since' || key === 'before' || key === 'type' || key === 'id') throw new Error(`filter parse error: missing value after ${prefix}`)
+          if (key === 'since' || key === 'before' || key === 'type' || key === 'id' || key === 'model') throw new Error(`filter parse error: missing value after ${prefix}`)
           return { t: key, x: parseAtom() }
         }
         if (key === 'id') return parseIdLiteral(rest, value)
-        if (key === 'since' || key === 'before' || key === 'type') return { t: key, v: rest }
+        if (key === 'since' || key === 'before' || key === 'type' || key === 'model') return { t: key, v: rest }
         return { t: key, x: parseAgentLiteral(rest) }
       }
     }

@@ -272,6 +272,9 @@ function lowerFilterAst(node) {
   if (!node) return node
   switch (node.t) {
     case 'lit': return { ...node, v: String(node.v).toLowerCase() }
+    // `model:` folds with the rest of the roster filter: the row labels are
+    // lowered below, so an unfolded value would miss its own row.
+    case 'model': return { ...node, v: String(node.v).toLowerCase() }
     case 'not': return { ...node, x: lowerFilterAst(node.x) }
     case 'and': case 'or': return { ...node, l: lowerFilterAst(node.l), r: lowerFilterAst(node.r) }
     default: return node

@@ -417,6 +417,10 @@ Useful scopes:
 - `agent:` is another spelling of `involving:`.
 - `since:` and `before:` bound time; `after:` is an alias for `since:`.
 - `type:` and `role:` select event or message roles.
+- `model:` matches the author's present model (`model:muse`), by exact value
+  and case-insensitive. It resolves NOW while participant names bind at each
+  message's timestamp, and the value is recorded-or-inferred — inferred by
+  harness and era for agents minted before the model backfill.
 - `me` resolves to the current identity.
 - A name selects whoever held it **when each message was sent**. `from:chief`
   over a week gives each holder's own messages rather than every holder's

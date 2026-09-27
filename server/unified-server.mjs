@@ -8317,6 +8317,20 @@ async function dispatchFleetWsMessage(ws, msg) {
       // agentId names its owner, not its sender; treating that owner as `from`
       // makes another agent's report look like a message authored by the owner.
       const rowFrom = (row) => row.from || null
+      // `model:` resolves NOW, against the author's present model — the one
+      // node type that does not bind at the row's timestamp, because
+      // model-at-message-time is recorded nowhere (the events table has no
+      // model column; only agents.metadata.model exists). Cached per request:
+      // the post-filter runs once per row and the value cannot change
+      // mid-search.
+      const modelCache = new Map()
+      const currentModelOf = async (id) => {
+        if (!id) return null
+        if (!modelCache.has(id)) {
+          modelCache.set(id, (await fleetStore.getAgent(id))?.metadata?.model || null)
+        }
+        return modelCache.get(id)
+      }
       // The recipient side is a SET, not a field: group send made one event carry
       // many recipients, so a `to:` leaf matches when ANY recipient satisfies it.
       // This read used to be `row.to`, a column group send deleted — which made
@@ -8339,6 +8353,17 @@ async function dispatchFleetWsMessage(ws, msg) {
           case 'since': return !row.timestamp || row.timestamp >= node.v
           case 'before': return !row.timestamp || row.timestamp < node.v
           case 'type': return row.type === node.v || row.role === node.v
+          // The sender's present model — or the owner's where the row has no
+          // sender, since a session or activity row belongs to its owner the
+          // way a message belongs to its sender. Recipients never count:
+          // `from:X & model:muse` means X is muse today, not that a muse
+          // agent is merely copied. Exact value, case-insensitive: the
+          // roster's `model:` token, evaluated per row rather than per agent.
+          case 'model': {
+            const author = rowFrom(row) || row.agentId || null
+            const current = await currentModelOf(author)
+            return !!current && String(current).toLowerCase() === String(node.v || '').toLowerCase()
+          }
           // The id we hand out is the event id. A session row carries an id of
           // its own that nothing prints and nobody can reference, so `id:` is
           // false against one rather than matching a different numbering.

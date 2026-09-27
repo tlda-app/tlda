@@ -19,7 +19,7 @@ function withExplicitConjunctions(parts, junctions) {
   return explicitConjunctionSegments(parts, junctions).map(s => s.text).join(' ')
 }
 
-const FILTER_KEYS = new Set(['from', 'to', 'involving', 'agent', 'project', 'since', 'after', 'before', 'type', 'role', 'id'])
+const FILTER_KEYS = new Set(['from', 'to', 'involving', 'agent', 'project', 'since', 'after', 'before', 'type', 'role', 'id', 'model'])
 const FILTER_OPERATORS = new Set(['&', '|', '!', '(', ')'])
 
 // `agentSelector` is the search tool's `agent` parameter. It used to be spliced
@@ -469,7 +469,10 @@ function normalizeSearchFilterToken(key, valueTokens) {
   if (normalizedKey === 'id') {
     return { value, filterTokens: [`${normalizedKey}:${value}`] }
   }
-  if (normalizedKey === 'type') {
+  // `model:` travels as one `model:<value>` token exactly the way `type:`
+  // does: a value, not an agent expression, so it is never split into a bare
+  // key with the value parsed as the next atom.
+  if (normalizedKey === 'type' || normalizedKey === 'model') {
     return { value, filterTokens: [`${normalizedKey}:${value}`] }
   }
   return {

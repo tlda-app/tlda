@@ -124,6 +124,11 @@ export function evalExpr(ast, labels) {
     switch (n.t) {
       case 'lit': return has(n.v)
       case 'me': return has('me')
+      // `model:` parses to its own node rather than to the `model:X` literal
+      // it used to be, so the membership test is spelled out: a label set
+      // carrying `model:<present value>` (see fleetTableLabelsForAgent)
+      // matches exactly that value, and one without it matches nothing.
+      case 'model': return has(`model:${n.v}`)
       case 'not': return !ev(n.x)
       case 'and': return ev(n.l) && ev(n.r)
       case 'or': return ev(n.l) || ev(n.r)
