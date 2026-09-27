@@ -1,20 +1,30 @@
-/* The student's answer pane beside the chapter.
+/* The student's answer pane beside the chapter, in two documents.
  *
- * THE PANE OPTS BACK INTO POINTER EVENTS, and the container stays out. It is
- * mounted inside `.bottom-panels`, which is `pointer-events: none` so clicks
- * fall through the panel overlay to the canvas underneath — and `pointer-events`
- * is inherited, so without this rule the iframe declines every pointer and the
- * pair header inside it (Return, +, Send, Layers) is unpressable by mouse or
- * touch. Measured: the header was reachable only by keyboard focus plus Enter.
+ * THE HEADER TAKES POINTER INPUT AND THE BODY DECLINES IT, and that split is
+ * the whole of this file. Both frames mount inside `.bottom-panels`, which is
+ * `pointer-events: none` so clicks fall through the panel overlay to the
+ * canvas underneath — and `pointer-events` is inherited, so without the first
+ * rule the pair header (Return, +, Send, Layers) is unpressable by mouse or
+ * touch. Measured: reachable only by keyboard focus plus Enter.
  *
- * The opt-in is on the iframe, the smallest unit that can receive pointer input
- * for a document: hit-testing reaches the frame element before anything inside
- * it, so no rule in the answer's own document can substitute. The trade is the
- * pane's own rectangle, which now takes pointer input instead of passing it to
- * the canvas — the same trade the grading panes already make
- * (`ClassroomWorkspace.css`), and the glass above this pane still owns the pen
- * while a marking tool is selected.
+ * The header is the smallest unit hit-testing can land on for the controls
+ * inside it: the frame element is reached before anything in its document, so
+ * no rule in the answer's own document can substitute. Its `z-index` is chosen
+ * against the marking glass (200), not the book: the glass owns the pen over
+ * the whole pair while a marking tool is armed, so a header beneath it would
+ * take taps as ink dots, and pressing Return would need disarming first.
+ *
+ * The body's `none` is deliberate fall-through, not the defect recurring.
+ * With nothing above it the wheel and clicks reach the glass while marking
+ * and the canvas otherwise — a wheel over a five-thousand-pixel answer pans
+ * the page exactly as it did before marking opened. It is written out rather
+ * than inherited so the pane keeps falling through no matter what the
+ * container's rule becomes.
  */
-.tlda-marking-answer-pane {
+.tlda-marking-header-pane {
   pointer-events: auto;
+}
+
+.tlda-marking-body-pane {
+  pointer-events: none;
 }

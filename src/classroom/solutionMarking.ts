@@ -31,7 +31,27 @@
  */
 
 const PAIR_CLASS = 'tlda-marking-pair'
-const ANSWER_CLASS = 'tlda-marking-answer'
+/** The answer callout's class, shared with the pane that renders it as two documents. */
+export const ANSWER_CLASS = 'tlda-marking-answer'
+
+/**
+ * Divide the handed-over answer at its name header.
+ *
+ * Returns `[header, body]`: the header div's own markup wrapped in the callout
+ * class its rules match on, and the answer with it removed. A handover with no
+ * header comes back as `[markup, null]` and the caller renders it whole where
+ * the controls live — controls first, body swallowing — rather than failing
+ * to show the work.
+ */
+export function splitAnswerMarkup(markup: string): [string | null, string | null] {
+  const parsed = new DOMParser().parseFromString(markup, 'text/html')
+  const root = parsed.body.firstElementChild
+  const header = root ? [...root.children].find(child => child.classList.contains(ANSWER_HEADER_CLASS)) ?? null : null
+  if (!root || !header) return [markup, null]
+  const headerMarkup = header.outerHTML
+  header.remove()
+  return [`<div class="${ANSWER_CLASS}">${headerMarkup}</div>`, root.outerHTML]
+}
 const ARROWS_CLASS = 'tlda-marking-arrows'
 const STYLE_ID = 'tlda-marking-style'
 

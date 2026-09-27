@@ -11,14 +11,36 @@
  * Quarto document, so an element moved out here renders as a grey panel. See
  * `answerDocument.ts`, which builds the document it carries.
  *
- * ONE PANE PER OPEN PAIR. It is created and torn down with the pair by the
- * overlay that owns both, and it holds nothing — no registry, no lifecycle of
- * its own, nothing another consumer could attach to.
+ * ONE PANE PER OPEN PAIR, IN TWO DOCUMENTS. The handed-over answer is one
+ * callout — name header first, work below it — and it renders as two stacked
+ * iframes rather than one, because the header and the body need opposite
+ * answers from hit-testing:
+ *
+ * - The header carries the marking controls (Return, the plus, Send, the
+ *   Layers dropdown). It opts into pointer events, and it sits ABOVE the
+ *   marking glass (z 201 over the glass's 200), so pressing a control works
+ *   whatever tool is armed — with a draw tool the glass owns the pen over the
+ *   whole pair, and a header beneath it would take taps as ink dots.
+ * - The body is the work being read. It declines pointer events explicitly,
+ *   so clicks and wheel fall through to the glass while marking and to the
+ *   canvas otherwise — the pane never swallows a pan, and a wheel over a
+ *   five-thousand-pixel answer moves the page exactly as it did before marking
+ *   opened. That `none` is the design, not the defect recurring: the defect
+ *   was the header inheriting it with no opt-in anywhere.
+ *
+ * The split is presentational: the handover from the chapter is still one
+ * markup string, and `splitAnswerMarkup` divides it at render. If it ever
+ * arrives without a header, the whole thing renders in the header frame —
+ * controls first, body swallowing — rather than failing to show the work.
+ *
+ * It is created and torn down with the pair by the overlay that owns both,
+ * and it holds nothing — no registry, no lifecycle of its own, nothing
+ * another consumer could attach to.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { answerDocumentSrcdoc, answerStyleSources } from './answerDocument'
-import { ANSWER_DOCUMENT_CSS, ANSWER_HEADER_CLASS } from './solutionMarking'
+import { ANSWER_DOCUMENT_CSS, ANSWER_HEADER_CLASS, splitAnswerMarkup } from './solutionMarking'
 import './AnswerPane.css'
 
 export function AnswerPane({
@@ -38,38 +60,117 @@ export function AnswerPane({
   bounds: { left: number; top: number; width: number; height: number }
   /** The chapter's scale, so the answer is laid out at the width it is measured at. */
   scale: number
-  /** The answer's height in the chapter's own units, once its document has one. */
+  /** The answer's height in the chapter's own units, once its documents have one. */
   onHeight: (height: number) => void
-  /** The header the Return button portals into, once it exists. */
+  /** The header the controls portal into, once it exists. */
   onHeader: (header: HTMLElement | null) => void
   /** Whether this is the pair he is marking, which decides who wins a collision. */
   marked: boolean
 }) {
+  const [headerMarkup, bodyMarkup] = useMemo(() => splitAnswerMarkup(markup), [markup])
+  const styles = useMemo(() => {
+    const sources = answerStyleSources(chapter)
+    // Our own chrome goes in last so it wins against the chapter's rules for
+    // the header and the Return button, which are ours and not the book's.
+    return { ...sources, inline: [...sources.inline, ANSWER_DOCUMENT_CSS] }
+  }, [chapter, markup])
+  const baseHref = chapter.baseURI
+  const bodyClass = chapter.body.className
+  const htmlClass = chapter.documentElement.className
+
+  const headerSrcdoc = useMemo(() => headerMarkup === null ? null : answerDocumentSrcdoc({
+    answerHtml: headerMarkup,
+    styles,
+    baseHref,
+    bodyClass,
+    htmlClass,
+  }), [headerMarkup, styles, baseHref, bodyClass, htmlClass])
+  const bodySrcdoc = useMemo(() => bodyMarkup === null ? null : answerDocumentSrcdoc({
+    answerHtml: bodyMarkup,
+    styles,
+    baseHref,
+    bodyClass,
+    htmlClass,
+  }), [bodyMarkup, styles, baseHref, bodyClass, htmlClass])
+
+  // WHAT EACH FRAME IS TALL IS WHAT ITS DOCUMENT IS TALL, in the chapter's own
+  // units, and neither is known until its document has laid out. A student's
+  // answer is usually a photograph, so it is not known at `load` either — the
+  // image arrives after it. Hence an observer per document rather than a
+  // single measurement: the heights are reported whenever either document
+  // changes what it needs, and the frame is their sum.
+  const [headerHeight, setHeaderHeight] = useState(0)
+  const [bodyHeight, setBodyHeight] = useState(0)
+  useEffect(() => {
+    onHeight(headerHeight + bodyHeight)
+  }, [headerHeight, bodyHeight, onHeight])
+
+  return (
+    <>
+      {headerSrcdoc !== null && (
+        <AnswerFrame
+          srcdoc={headerSrcdoc}
+          chapter={chapter}
+          title="Answer header with marking controls"
+          className="tlda-marking-header-pane"
+          bounds={{ ...bounds, height: headerHeight * scale }}
+          scale={scale}
+          zIndex={201}
+          onHeight={setHeaderHeight}
+          onHeader={onHeader}
+        />
+      )}
+      {bodySrcdoc !== null && (
+        <AnswerFrame
+          srcdoc={bodySrcdoc}
+          chapter={chapter}
+          title="Student's answer"
+          className="tlda-marking-body-pane"
+          bounds={{ ...bounds, top: bounds.top + headerHeight * scale, height: bodyHeight * scale }}
+          scale={scale}
+          // Under the glass, which is 200 and takes the pointer while he marks.
+          // Above the book, or the answer would be behind the page it sits beside.
+          //
+          // AND THE ONE HE IS MARKING WINS A COLLISION. A photographed answer is
+          // taller than the distance to the next solution, so panes do overlap —
+          // measured up to 632px on his chapter. This does not resolve that; it
+          // resolves it for the pane he is drawing on, which is the one that must
+          // never be covered. Reading down a chapter of long answers is still a
+          // question about what the marked region IS, and it is not a z-index.
+          zIndex={marked ? 199 : 198}
+          onHeight={setBodyHeight}
+          onHeader={null}
+        />
+      )}
+    </>
+  )
+}
+
+function AnswerFrame({
+  srcdoc,
+  chapter,
+  title,
+  className,
+  bounds,
+  scale,
+  zIndex,
+  onHeight,
+  onHeader,
+}: {
+  srcdoc: string
+  chapter: Document
+  title: string
+  className: string
+  bounds: { left: number; top: number; width: number; height: number }
+  scale: number
+  zIndex: number
+  onHeight: (height: number) => void
+  /** Reports the header element, for the frame that carries it; null for the body. */
+  onHeader: ((header: HTMLElement | null) => void) | null
+}) {
   const ref = useRef<HTMLIFrameElement>(null)
   const [ready, setReady] = useState(0)
 
-  const srcdoc = useMemo(() => {
-    const styles = answerStyleSources(chapter)
-    return answerDocumentSrcdoc({
-      answerHtml: markup,
-      // Our own chrome goes in last so it wins against the chapter's rules for
-      // the header and the Return button, which are ours and not the book's.
-      styles: { ...styles, inline: [...styles.inline, ANSWER_DOCUMENT_CSS] },
-      baseHref: chapter.baseURI,
-      // The book's theme is a class on its body — without it the callout is
-      // styled by rules that never match and comes back looking like nothing.
-      bodyClass: chapter.body.className,
-      // And dark reading is a class on its `html`. Read here for the first
-      // paint; kept in step below, because he switches it while reading.
-      htmlClass: chapter.documentElement.className,
-    })
-  }, [markup, chapter])
-
-  // WHAT THE PANE IS TALL IS WHAT THE ANSWER IS TALL, and that is not known
-  // until its document has laid out. A student's answer is usually a
-  // photograph, so it is not known at `load` either — the image arrives after
-  // it. Hence an observer rather than a single measurement: the height is
-  // reported whenever the answer's own document changes what it needs.
   useEffect(() => {
     const iframe = ref.current
     const view = iframe?.contentWindow
@@ -77,10 +178,10 @@ export function AnswerPane({
     if (!iframe || !view || !root) return
     const report = () => {
       onHeight(root.scrollHeight)
-      onHeader(view.document.querySelector<HTMLElement>(`.${ANSWER_HEADER_CLASS}`))
+      if (onHeader) onHeader(view.document.querySelector<HTMLElement>(`.${ANSWER_HEADER_CLASS}`))
     }
     report()
-    // The answer's OWN `ResizeObserver`, so the observation is driven by the
+    // The frame's OWN `ResizeObserver`, so the observation is driven by the
     // document being measured rather than by ours. `contentWindow` is typed as
     // `Window`, which does not declare it — the global constructors live on
     // `typeof globalThis` — so the view is named at the type it actually has.
@@ -103,15 +204,15 @@ export function AnswerPane({
     return () => {
       resize.disconnect()
       theme.disconnect()
-      onHeader(null)
+      if (onHeader) onHeader(null)
     }
   }, [ready, srcdoc, chapter, onHeight, onHeader])
 
   return (
     <iframe
       ref={ref}
-      className="tlda-marking-answer-pane"
-      title="Student's answer"
+      className={className}
+      title={title}
       srcDoc={srcdoc}
       onLoad={() => setReady(current => current + 1)}
       style={{
@@ -128,16 +229,7 @@ export function AnswerPane({
         transformOrigin: '0 0',
         border: 'none',
         background: 'transparent',
-        // Under the glass, which is 200 and takes the pointer while he marks.
-        // Above the book, or the answer would be behind the page it sits beside.
-        //
-        // AND THE ONE HE IS MARKING WINS A COLLISION. A photographed answer is
-        // taller than the distance to the next solution, so panes do overlap —
-        // measured up to 632px on his chapter. This does not resolve that; it
-        // resolves it for the pane he is drawing on, which is the one that must
-        // never be covered. Reading down a chapter of long answers is still a
-        // question about what the marked region IS, and it is not a z-index.
-        zIndex: marked ? 199 : 198,
+        zIndex,
       }}
     />
   )
