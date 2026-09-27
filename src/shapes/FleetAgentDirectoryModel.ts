@@ -46,8 +46,13 @@ export function fleetAgentLabelColor(name: string): string {
 // It reads the metadata field rather than the `dev-probe` label the minters
 // already set, because that is what he asked for and because a label or name
 // pattern eventually catches something that is not a probe.
-export function fleetAgentListed(agent: { dead?: unknown; metadata?: { hidden?: unknown } | null } | null | undefined): boolean {
-  if (agent?.dead) return false
+//
+// Death hides the same way, but behind the panel's show-dead toggle
+// (tail-11: hiding is a panel option, default off, not the query). Only the
+// agents panel passes showDead; every other caller keeps the default, so chat
+// filter choices and the unread rail never list the dead.
+export function fleetAgentListed(agent: { dead?: unknown; metadata?: { hidden?: unknown } | null } | null | undefined, showDead = false): boolean {
+  if (agent?.dead && !showDead) return false
   if (agent?.metadata?.hidden) return false
   return true
 }
@@ -55,6 +60,33 @@ export function fleetAgentListed(agent: { dead?: unknown; metadata?: { hidden?: 
 export function fleetAgentCategory(agent: any): 'awake' | 'hibernating' {
   const category = fleetRosterCategory(agent)
   return category === 'awake' ? 'awake' : 'hibernating'
+}
+
+// The show-dead toggle fetches dead rows from /api/fleet-table, whose rows
+// are rowForAgent projections ({name, status, last_seen_ago_s, ...}), not the
+// full agent objects the panel otherwise renders. Map one onto the panel's
+// row shape. Lossy by design — a dead row is a listing, not a live agent —
+// but total: every field the directory row model reads is present, and the
+// runtime pair mirrors _hydrateAgent's dead branch (dead humans project
+// away, never human→dead, which the runtime assert rejects).
+export function fleetTableDeadRowToAgent(row: any): any {
+  if (!row) return row
+  const human = !!row.human
+  const agoMs = typeof row.last_seen_ago_s === 'number' ? row.last_seen_ago_s * 1000 : null
+  return {
+    id: row.id,
+    friendly_name: row.name || row.id,
+    parent_agent_id: row.parent_agent_id ?? null,
+    human,
+    labels: Array.isArray(row.labels) ? row.labels : [],
+    dead: row.status === 'dead',
+    last_seen: agoMs == null ? null : new Date(Date.now() - agoMs).toISOString(),
+    registered_at: null,
+    metadata: row.model ? { model: row.model } : {},
+    runtime_status: human
+      ? { kind: 'human', status: 'away', activity: row.activity || 'unknown' }
+      : { kind: 'ai', status: 'dead', activity: row.activity || 'unknown' },
+  }
 }
 
 type SpawnModelCatalogEntry = {
@@ -307,7 +339,7 @@ export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirector
 
 export function getFleetAgentDirectoryRows(agents: any[], options: FleetAgentDirectoryFormatOptions = {}): FleetAgentDirectoryRowModel[] {
   return agents
-    .filter(fleetAgentListed)
+    .filter((agent) => fleetAgentListed(agent))
     .map((agent) => toFleetAgentDirectoryRow(agent, options))
     .filter((row) => !!row.exactName)
 }

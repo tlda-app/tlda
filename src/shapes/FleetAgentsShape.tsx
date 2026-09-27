@@ -46,7 +46,8 @@ import {
   projectFleetAgentDirectoryFolding,
   toFleetAgentDirectoryRow,
 } from './FleetAgentDirectoryRow'
-import { fleetAgentListed } from './FleetAgentDirectoryModel'
+import { fleetAgentListed, fleetTableDeadRowToAgent } from './FleetAgentDirectoryModel'
+import { getFleetHttpBase } from '../fleet/fleet-data.mjs'
 
 
 const DEFAULT_W = 340
@@ -507,6 +508,42 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const [sortKey, setSortKey] = useState<SortKey>('active')
   const [sortAsc, setSortAsc] = useState(false)
 
+  // Show-dead toggle (tail-11): hiding the dead is a panel option, default
+  // off, not the query. On, the panel merges a dead snapshot — the 200 most
+  // recently seen dead rows — under the live SSE list, which stays the
+  // authority: a reanimated agent renders from the live row, never twice.
+  // Snapshot, not subscription: death is terminal, so nothing on this list
+  // changes except by reanimate-then-retoggle.
+  const [showDead, setShowDead] = useState(false)
+  const [deadAgents, setDeadAgents] = useState<any[]>([])
+  const [deadTotal, setDeadTotal] = useState<number | null>(null)
+  useEffect(() => {
+    if (!showDead) {
+      setDeadAgents([])
+      setDeadTotal(null)
+      return
+    }
+    let cancelled = false
+    fetch(`${getFleetHttpBase()}/api/fleet-table?filter=${encodeURIComponent('dead')}&limit=200`)
+      .then((res) => res.json())
+      .then((data: any) => {
+        if (cancelled) return
+        setDeadAgents(Array.isArray(data?.agents) ? data.agents.map(fleetTableDeadRowToAgent) : [])
+        setDeadTotal(typeof data?.matched === 'number' ? data.matched : null)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setDeadAgents([])
+        setDeadTotal(null)
+      })
+    return () => { cancelled = true }
+  }, [showDead])
+  const listedAgents = useMemo(() => {
+    if (!showDead || deadAgents.length === 0) return agents
+    const liveIds = new Set(agents.map((a: any) => a.id))
+    return [...agents, ...deadAgents.filter((a: any) => a && !liveIds.has(a.id))]
+  }, [agents, showDead, deadAgents])
+
   // Spawn input — always visible, fetches projects for autocomplete.
   // Starts empty/ghosted; the ghost shows the currently viewed project.
   const [spawnDoc, setSpawnDoc] = useState('')
@@ -636,8 +673,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     const now = Date.now()
     const liveIds = new Set<string>()
     const list: any[] = []
-    for (const a of agents) {
-      if (!fleetAgentListed(a)) continue
+    for (const a of listedAgents) {
+      if (!fleetAgentListed(a, showDead)) continue
       const ts = a.last_active ? new Date(a.last_active).getTime() : 0
       // The band IS the displayed time bucket — same value the row shows.
       const band = formatFleetAgentRelativeTime(ts)
@@ -651,12 +688,12 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     for (const id of bandStateRef.current.keys()) if (!liveIds.has(id)) bandStateRef.current.delete(id)
     const dir = sortAsc ? 1 : -1
     list.sort((a, b) => {
-      if (sortKey === 'name') return dir * agentDisplayLabel(a, agents).localeCompare(agentDisplayLabel(b, agents))
+      if (sortKey === 'name') return dir * agentDisplayLabel(a, listedAgents).localeCompare(agentDisplayLabel(b, listedAgents))
       if (sortKey === 'status') {
         const order: Record<string, number> = { awake: 0, hibernating: 1 }
         const ca = order[fleetAgentCategory(a)] ?? 2
         const cb = order[fleetAgentCategory(b)] ?? 2
-        return dir * (ca - cb) || agentDisplayLabel(a, agents).localeCompare(agentDisplayLabel(b, agents))
+        return dir * (ca - cb) || agentDisplayLabel(a, listedAgents).localeCompare(agentDisplayLabel(b, listedAgents))
       }
       // "Active": stable sort keyed on the displayed time bucket. Different
       // buckets order by recency (the coarse continuum); within the SAME bucket,
@@ -695,7 +732,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       families.push(family)
     }
     return families.flat()
-  }, [agents, sortKey, sortAsc])
+  }, [listedAgents, showDead, sortKey, sortAsc])
 
   // Playback has its own fixed roster; live panels use server-provided totals
   // that remain stable as virtualized pages materialize.
@@ -788,6 +825,13 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             style={{ cursor: 'pointer' }}
           >Task {sortKey === 'status' ? (sortAsc ? '▴' : '▾') : ''}</span>
           <span className="fleet-agents-col-labels">Label</span>
+          {!frameId?.startsWith('shape:') && (
+            <span className="fleet-agents-sort-header"
+              onPointerUp={(e) => { e.stopPropagation(); setShowDead(p => !p) }}
+              style={{ cursor: 'pointer' }}
+              title={showDead ? 'Hide dead agents' : 'Show dead agents (snapshot of the 200 most recently seen)'}
+            >Dead{showDead ? ' ✓' : ''}{showDead && deadTotal != null ? ` ${deadAgents.length}/${deadTotal}` : ''}</span>
+          )}
         </div>
 
         {/* Agent rows — scrollable flat list */}
