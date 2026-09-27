@@ -4980,7 +4980,17 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       }
       const pane = await capturePaneText(args.agent, 60);
       if (!pane.ok) {
-        return { content: [{ type: 'text', text: `wake ${label}.\nI could not read their terminal to show you the state: ${pane.error}` }] };
+        // The wake RPC answered, but without the terminal there is no evidence
+        // the agent is actually up -- answering `wake <name>.` here is what
+        // told a chief an agent was reachable when the wake had timed out.
+        // Unverified is a failure for the caller, so it carries isError.
+        return {
+          content: [{
+            type: 'text',
+            text: `Lifecycle wake unverified: I could not read ${label}'s terminal to confirm the wake: ${pane.error}\nDo not treat ${label} as reachable -- the wake itself may never have launched.`,
+          }],
+          isError: true,
+        };
       }
       return {
         content: [{
