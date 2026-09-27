@@ -3856,6 +3856,16 @@ export class FleetStore {
     return row ? this.projectAgentDaemonRoute(this._hydrateAgent(row)) : null;
   }
 
+  // P1 mint linkage: the shell row whose daemon reported this mint. Mint ids
+  // are daemon-allocated uuids, so at most one row carries each.
+  findAgentByDaemonMintId(mintId) {
+    if (!mintId) return null;
+    const row = this.db.prepare(
+      `SELECT id FROM agents WHERE json_extract(metadata, '$.daemon_mint_id') = ? LIMIT 1`
+    ).get(String(mintId));
+    return row?.id || null;
+  }
+
   // ---- Name provenance ----
 
   // Everything needed to name a set of agents at arbitrary instants, in two

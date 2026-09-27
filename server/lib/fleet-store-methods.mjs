@@ -40,6 +40,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'delegate',
   'defineLabel',
   'findAgent',
+  'findAgentByDaemonMintId',
   'findAgentStored',
   'filterMembershipSpans',
   'flushTaskDocs',

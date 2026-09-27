@@ -116,6 +116,7 @@ import { createLocalArtifacts } from '../daemon/local-artifacts.mjs'
 import { createPromptPlan } from '../daemon/prompt-plan.mjs'
 import { createAgentStatus } from '../daemon/agent-status.mjs'
 import { createAgentLiveness, PROCESS as LIVENESS_PROCESS } from '../daemon/agent-liveness.mjs'
+import { examineNeverJoinedRow, neverJoinedCutoffIso } from '../daemon/never-joined.mjs'
 import { createAgySupervisor } from '../daemon/agy-supervisor.mjs'
 import { createGooseSupervisor } from '../daemon/goose-supervisor.mjs'
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
@@ -1424,6 +1425,58 @@ async function mintProcessConfirmedDead(facts) {
   return sessionConfirmedDead(await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET }))
 }
 
+// P1 never-joined sweep state: (mint_id, verdict) pairs emitted this daemon
+// lifetime. Spares re-sends only — server admission is durably idempotent,
+// so a restart re-emitting is harmless (acknowledged without re-notice).
+const neverJoinedEmitted = new Set()
+
+function examineOneNeverJoinedRow(facts, source) {
+  return examineNeverJoinedRow({
+    facts,
+    probeSession: session => sessionRuntimeState(session, { tmuxSocket: TMUX_SOCKET }),
+    emit: msg => sendMsg(msg),
+    emitted: neverJoinedEmitted,
+    daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+    source,
+  })
+}
+
+async function sweepNeverJoinedMints() {
+  let rows = []
+  try {
+    rows = mintStore.unjoinedOlderThan(neverJoinedCutoffIso())
+  } catch (error) {
+    log.warn(`never-joined sweep failed to list mints: ${error?.message || error}`)
+    return
+  }
+  let emitted = 0
+  for (const facts of rows) {
+    try {
+      if (await examineOneNeverJoinedRow(facts, 'daemon-never-joined-sweep')) emitted += 1
+    } catch (error) {
+      // One bad row must not abort the sweep for every other unjoined mint.
+      log.warn(`never-joined sweep failed for ${facts?.mintId}: ${error?.message || error}`)
+    }
+  }
+  if (emitted) log.info(`never-joined sweep: examined ${rows.length}, emitted ${emitted}`)
+}
+
+// F3(a) receive leg: the server declared a launch failed. Examine this
+// daemon's mint row for that agent now rather than waiting for the sweep —
+// subject to the same launch-latency grace (a +4s failure races the spawn,
+// and an absent verdict on a process still starting would be a false
+// failure). A live process emits the P1 leaked-alive verdict through the
+// normal path; nothing else here kills, fails, or retires anything.
+async function rpcLaunchFailedServerSide({ agent_id, agentId } = {}) {
+  const fleetId = agent_id || agentId
+  if (!fleetId) throw new Error('launch-failed-server-side requires agent_id')
+  const facts = mintStore.getByFleetId(fleetId)
+  if (!facts || facts.joinedAt) return { ok: true, examined: false, verdict: null }
+  if ((facts.createdAt || '') >= neverJoinedCutoffIso()) return { ok: true, examined: false, verdict: null, reason: 'within launch-latency grace' }
+  const verdict = await examineOneNeverJoinedRow(facts, 'daemon-launch-failed-notice')
+  return { ok: true, examined: true, verdict }
+}
+
 // The bounded evidence a partial mint row can be checked against, in the order
 // the daemon already trusts it: the seat's own process binding, any binding
 // recorded under the same friendly name, and the tmux session the launch recipe
@@ -2069,6 +2122,7 @@ machineRpc.register({
   'native-subagent-route-for-tool-use': ({ parent_agent_id, tool_use_id }) =>
     jsonlIngestor.nativeSubagentRouteForToolUse(parent_agent_id, tool_use_id),
   ...terminalRpc.handlers,
+  'launch-failed-server-side': rpcLaunchFailedServerSide,
   'notification-symptom': rpcNotificationSymptom,
   ...agentLauncher.handlers,
   'mint': rpcMint,
@@ -2682,4 +2736,11 @@ agentStatus.start()
 setInterval(() => {
   agentLiveness.checkAll().catch(error => log.warn(`liveness sweep failed: ${error?.message || error}`))
 }, getStatusScanMs()).unref?.()
+// P1: unjoined mints past the launch-latency grace get a process-grounded
+// verdict. Five minutes: the grace is ten, so the first verdict lands within
+// ~15min of a mint that never joins; long-unjoined rows emit on the first
+// sweep after deploy.
+setInterval(() => {
+  sweepNeverJoinedMints().catch(error => log.warn(`never-joined sweep failed: ${error?.message || error}`))
+}, 5 * 60 * 1000).unref?.()
 connect()

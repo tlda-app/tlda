@@ -274,6 +274,16 @@ export class MintStore {
     return this.get(mintId)
   }
 
+  // P1 sweep population: rows that never joined and are older than the
+  // launch-latency grace cutoff. Ordered oldest first so the longest-unjoined
+  // get their verdict first.
+  unjoinedOlderThan(cutoffIso) {
+    return this.db.prepare(`
+      SELECT * FROM daemon_mints WHERE joined_at IS NULL AND created_at < ?
+      ORDER BY created_at ASC
+    `).all(cutoffIso).map(mintRow)
+  }
+
   close() {
     this.db.close()
   }

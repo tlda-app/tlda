@@ -121,6 +121,7 @@ import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { createAgentRuntimeStatusStore, RUNTIME_KIND, RUNTIME_STATUS } from './lib/agent-runtime-status.mjs'
 import { createHumanPresenceTracker } from './lib/human-presence.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
+import { admitNeverJoinedVerdict } from './lib/never-joined-admission.mjs'
 import { buildSpawnMailboxStatus } from './lib/spawn-mailbox-status.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { spawnCallerId } from './lib/spawn-caller.mjs'
@@ -2794,6 +2795,10 @@ async function performSpawnRelay(caller, msg) {
         ...(project ? { project } : {}),
         ...(cwd ? { cwd } : {}),
         ...(mintedModelAlias ? { model: mintedModelAlias } : {}),
+        // P1 ownership: the daemon this spawn was sent to, written where the
+        // choice is made. Daemon verdicts for this row must arrive from this
+        // key. Additive — no other mint consumer reads it.
+        spawn_daemon_key: `${machineId}:${route.env_name}`,
       },
     })
     // Both slots, written where the row is made, because this is the mint.
@@ -2939,6 +2944,11 @@ async function performSpawnRelay(caller, msg) {
           if (minted && minted.metadata?.model !== result.model) {
             await fleetStore.updateAgentMeta?.(pendingAgentId, { model: String(result.model) })
           }
+        }
+        // P1 mint linkage: the daemon-allocated mint id for this shell, so a
+        // verdict that names only the mint still resolves. Additive.
+        if (pendingAgentId && result?.ok !== false && result?.mint_id) {
+          await fleetStore.updateAgentMeta?.(pendingAgentId, { daemon_mint_id: String(result.mint_id) })
         }
       } catch (e) {
         // A transport error is not a launch failure. The daemon may still be
@@ -10871,6 +10881,30 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
       broadcastState([agent_id])
     } catch (e) {
       await reportDaemonEventFailure(msg, 'process-liveness-write', e)
+      throw e
+    }
+    return
+  }
+
+  // ---- never-joined ----
+  // P1: the daemon's process-grounded verdict for a mint that never joined.
+  // Same contract as process-liveness — the daemon decides, the server
+  // verifies ownership, dedupes on (mint_id, verdict), and writes down what
+  // it is told. Closed over the connection key: a verdict that does not name
+  // its daemon is attributed to the connection it arrived on.
+  if (type === 'never-joined') {
+    if (!fleetStore) return
+    try {
+      const outcome = await admitNeverJoinedVerdict({
+        store: fleetStore,
+        mailbox: mailboxLibrarian,
+        chat: (...args) => fleetStore.chat(...args),
+        completeMailbox: (entry, status, detail) => deliverSpawnMailboxCompletion(entry, status, detail),
+        log: console,
+      }, { ...msg, daemon_key: msg.daemon_key || ws._daemonKey || null })
+      if (outcome?.changed && outcome?.agentId) broadcastState([outcome.agentId])
+    } catch (e) {
+      await reportDaemonEventFailure(msg, 'never-joined-write', e)
       throw e
     }
     return
