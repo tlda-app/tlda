@@ -179,6 +179,13 @@ function ProjectMapViewport({
           shapePredicate={isProjectMapShape}
           interactionMode="pinned"
           fitBounds
+          // The fit-bounds camera sits near z=0.02, where fork-viewport
+          // visibility math (absolute screen origin divided by zoom) misses
+          // content by tens of thousands of units and unmounts every iframe
+          // (measured: vp x=54965 vs content at x=0). Culling a fit-bounds
+          // overview is pointless anyway — everything is visible by
+          // construction — so keep it all mounted.
+          disableCulling
         />
       )}
       <button
