@@ -7,7 +7,11 @@ agents working on it alongside you.
 > also used to coordinate that development work.
 >
 > It was an interesting process and the commit history has been left unfiltered
-> as a record of how it went.
+> as a record of how it went.[^one-exception]
+
+[^one-exception]: One exception: `AGENTS.md` and `CLAUDE.md` appear here only in
+    their current form. Agents had filled their history with quotes of me, which
+    I didn't ask for and am not republishing.
 
 ## A shared paper workspace
 
