@@ -142,6 +142,12 @@ const ANCHORED_STATUS_ITEM_KEY = '__status__'
 const ANCHORED_EMPTY_ITEM_KEY = '__empty__'
 const ANCHORED_SENSOR_HEIGHT = 20_000_000
 const ANCHORED_SENSOR_MID = ANCHORED_SENSOR_HEIGHT / 2
+let modelWriteSeq = 0 // TEMPORARY v6: model-write trace, revert with result
+function traceModelWrite(site: string, detail: Record<string, unknown>) { // TEMPORARY v6
+  modelWriteSeq += 1
+  const stack = (new Error().stack || '').split('\n').slice(2, 10).join(' <- ')
+  console.info('[model-write]', JSON.stringify({ seq: modelWriteSeq, site, ...detail, stack }))
+}
 const ANCHORED_SENSOR_EDGE = 1_000_000
 const ANCHORED_ESTIMATED_ROW_HEIGHT = 80
 const ANCHORED_OVERSCAN_PX = 800
@@ -310,7 +316,7 @@ type AnchoredChatItem = {
   _empty?: boolean
 }
 type AnchoredChatListHandle = {
-  scrollToTail: () => void
+  scrollToTail: (reason?: string) => void // TEMPORARY v6: reason threading
   isAtTail: () => boolean
 }
 
@@ -2621,8 +2627,9 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     onTailModeChange?.(next, getDetail())
   }, [onTailModeChange])
 
-  const setModelTop = useCallback((nextTop: number, opts?: { forceTail?: boolean }) => {
+  const setModelTop = useCallback((nextTop: number, opts?: { forceTail?: boolean, reason?: string }) => {
     const top = clampTop(nextTop)
+    traceModelWrite('setModelTop', { reason: opts?.reason ?? 'none', prev: modelTopRef.current, next: nextTop, clamped: top, tailTop: tailTop(), forceTail: opts?.forceTail ?? false, atBottom: Math.abs(top - tailTop()) <= tailEpsRef.current, tailMode: tailModeRef.current, pendingDeparture: pendingDepartureRef.current }) // TEMPORARY v6
     modelTopRef.current = top
     const atBottom = Math.abs(top - tailTop()) <= tailEpsRef.current
     const getDetail = () => scrollSnapshot(nextTop, top)
@@ -2674,8 +2681,8 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     el.scrollTop = ANCHORED_SENSOR_MID
   }, [])
 
-  const scrollToTail = useCallback(() => {
-    setModelTop(tailTop(), { forceTail: true })
+  const scrollToTail = useCallback((reason?: string) => {
+    setModelTop(tailTop(), { forceTail: true, reason: reason ?? 'scrollToTail-direct' }) // TEMPORARY v6: reason threading
     const el = scrollerRef.current
     if (el) recenterSensor(el)
   }, [recenterSensor, setModelTop, tailTop])
@@ -2726,8 +2733,10 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
       tailEpsRef.current = ANCHORED_TAIL_EPS_BASE + paddingBottom
       setViewportHeight(nextHeight)
       const nextTailTop = tailTop(nextHeight)
+      const prevResizeTop = modelTopRef.current // TEMPORARY v6
       if (tailModeRef.current && !pendingDepartureRef.current) modelTopRef.current = nextTailTop
       else modelTopRef.current = Math.max(0, Math.min(modelTopRef.current, nextTailTop))
+      traceModelWrite('resize-apply', { prev: prevResizeTop, next: modelTopRef.current, tailTop: nextTailTop, tailMode: tailModeRef.current, pendingDeparture: pendingDepartureRef.current }) // TEMPORARY v6
       setGeometryVersion(version => version + 1)
     }
     // The first pass has no entry to read, so it measures once.
@@ -2785,6 +2794,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
         startOf: (key: string) => chatScrollStartOf(itemKeys, heightOf, key),
         maxTop: contentEnd - viewportHeightRef.current,
       })
+      console.info('[decide-reason]', JSON.stringify({ action: decision.action, reason: (decision as { reason?: string }).reason ?? null, top: decision.top ?? null, contentEnd, maxTop: contentEnd - viewportHeightRef.current, anchorKey: pendingRestore.anchorKey ?? null, anchorOffset: (pendingRestore as { anchorOffset?: number }).anchorOffset ?? null, atTail, savedFilterKey: (pendingRestore as { filterKey?: string }).filterKey ?? null, resetKey })) // TEMPORARY v8: decide line alongside model-write trace, revert with result
       if (decision.action === 'hold' && decision.reason === 'beyond-tail') {
         log.metric('chat-scroll', 'restore holding beyond committable tail', {
           panelId: persistKey,
@@ -2794,7 +2804,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
         })
       }
       if (decision.action === 'restore' && decision.top != null) {
-        setModelTop(decision.top)
+        setModelTop(decision.top, { reason: 'restore-commit' }) // TEMPORARY v6
         // setModelTop arms the follow-off settle timer, but the reader was
         // already away from the tail before the reload — commit that now,
         // or a live arrival inside the settle window yanks back to the tail.
@@ -2803,13 +2813,13 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
         return
       }
       if (decision.action === 'hold') {
-        scrollToTail()
+        scrollToTail('restore-hold') // TEMPORARY v6
         return
       }
       pendingScrollRestoreRef.current = null
     }
     if (wasReset || previousKeys.length === 0 || tailModeRef.current) {
-      scrollToTail()
+      scrollToTail('reset-or-following') // TEMPORARY v6
       return
     }
     const oldTop = modelTopRef.current
@@ -2826,7 +2836,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
       cursor += h
     }
     const newAnchorTop = anchorKey ? geometry.starts.get(anchorKey) : undefined
-    setModelTop((newAnchorTop ?? modelTopRef.current) + anchorOffset)
+    setModelTop((newAnchorTop ?? modelTopRef.current) + anchorOffset, { reason: 'anchor-hold' }) // TEMPORARY v6
   }, [itemKeySignature, resetKey, persistKey])
 
   // Persist the reader's anchor so a reload lands where they were. Runs after
@@ -2905,7 +2915,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     // Nothing here writes `scrollTop`. It moves the MODEL, which the slice
     // transform follows on the next render, so it cannot fight a momentum
     // glide and is not a claimant in the re-entrancy map.
-    if (tailModeRef.current && !pendingDepartureRef.current) modelTopRef.current = tailTop()
+    if (tailModeRef.current && !pendingDepartureRef.current) { const prevReconcileTop = modelTopRef.current; modelTopRef.current = tailTop(); traceModelWrite('reconcile-follow', { prev: prevReconcileTop, next: modelTopRef.current, tailTop: tailTop(), tailMode: tailModeRef.current, pendingDeparture: pendingDepartureRef.current }) } // TEMPORARY v6
     // No tail ceiling on this path, and that is the whole fix.
     //
     // clampTop bounds the result by tailTop(), which is `geometry.total -
@@ -2942,7 +2952,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     // scroll or resize re-clamps. That is a transient gap at the bottom instead
     // of the content jumping under the reader, and between those two the choice
     // is his and he has already made it.
-    else modelTopRef.current = Math.max(0, modelTopRef.current + topAdjustment)
+    else { const prevAbsorbTop = modelTopRef.current; modelTopRef.current = Math.max(0, modelTopRef.current + topAdjustment); traceModelWrite('reconcile-absorb', { prev: prevAbsorbTop, next: modelTopRef.current, topAdjustment, tailMode: tailModeRef.current, pendingDeparture: pendingDepartureRef.current }) } // TEMPORARY v6
     setGeometryVersion(version => version + 1)
     // clampTop is deliberately no longer a dependency: this path no longer
     // clamps. It is still the right thing on scroll and on viewport resize.
@@ -3002,7 +3012,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     if (Math.abs(delta) > 0.5) {
       const previousTop = modelTopRef.current
       const nextTop = clampTop(previousTop + delta)
-      if (Math.abs(nextTop - previousTop) > 0.5) setModelTop(nextTop)
+      if (Math.abs(nextTop - previousTop) > 0.5) setModelTop(nextTop, { reason: 'sensor-delta' }) // TEMPORARY v6
       else if (nextSensorTop !== ANCHORED_SENSOR_MID) recenterSensor(el)
     }
     if (nextSensorTop < ANCHORED_SENSOR_EDGE || nextSensorTop > ANCHORED_SENSOR_HEIGHT - ANCHORED_SENSOR_EDGE) recenterSensor(el)
@@ -5093,7 +5103,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (goToTailRunRef.current !== run) return
 
       try {
-        anchoredListRef.current?.scrollToTail()
+        anchoredListRef.current?.scrollToTail(`goToTail:${reason}`) // TEMPORARY v6
       } catch (e) {
         log.metric('chat-scroll', 'go-to-tail scrollToTail failed', {
           panelId: String(shape.id), reason, e: String(e),
