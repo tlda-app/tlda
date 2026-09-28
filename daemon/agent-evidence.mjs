@@ -1,7 +1,8 @@
 // One input path for all status evidence into the daemon's machines.
 //
 // Every status source — process probe, hooks, transcript tails, structured
-// harness events, pane scraping — is evidence, none of them a status. The
+// harness events, pane scraping, server-observed acts — is evidence, none
+// of them a status. The
 // machines decide; the server reports the verdict. Sources call
 // admitEvidence() and set only the fields they can prove; omitting a field
 // is how a source declines to speak, and the machines treat omission as
@@ -41,6 +42,7 @@ export const EVIDENCE_SOURCE = Object.freeze({
   TRANSCRIPT: 'transcript',
   HARNESS_EVENT: 'harness-event',
   PANE_SCRAPE: 'pane-scrape',
+  SERVER_OBSERVED: 'server-observed',
 })
 
 const SOURCES = new Set(Object.values(EVIDENCE_SOURCE))
@@ -52,6 +54,9 @@ const ACTIVITIES = new Set(['thinking', 'idle', 'compacting', 'active', 'unknown
 export const EVIDENCE_STALE_MS = 60_000
 
 export function createEvidenceAdmission({ liveness, activity, log, now = () => Date.now() } = {}) {
+  // Drops are log-only: no counter, no alert, no surface. A quiet log is an
+  // unchecked instrument, not proof — grep for 'evidence dropped' before
+  // believing a window was clean.
   function drop(reason, envelope) {
     log?.warn?.(`evidence dropped (${reason}): agent=${envelope?.agentId || '?'} source=${envelope?.source || '?'}`)
   }

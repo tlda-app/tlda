@@ -29,7 +29,7 @@ function harness({ agent = liveAgent(), route = { agent_id: 'fleet:test', daemon
   }
   const deps = {
     store,
-    touchActivity: id => { calls.touched.push(id) },
+    recordBeat: (id, atMs) => { calls.touched.push([id, atMs]) },
     log: log || { warn: (...args) => { calls.warns.push(args) } },
   }
   return { deps, calls, agentRow }
@@ -50,7 +50,9 @@ test('owned beat via spawn key records the heartbeat', async () => {
   assert.equal(outcome.changed, true)
   assert.equal(outcome.agentId, 'fleet:test')
   assert.deepEqual(calls.heartbeats, ['fleet:test'])
-  assert.deepEqual(calls.touched, ['fleet:test'])
+  assert.equal(calls.touched.length, 1)
+  assert.equal(calls.touched[0][0], 'fleet:test')
+  assert.ok(Number.isFinite(calls.touched[0][1]))
 })
 
 test('legacy row without spawn key admits via matching route', async () => {

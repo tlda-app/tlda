@@ -6,7 +6,6 @@ export async function completeTaskLifecycle({
   completedAt = new Date().toISOString(),
   eventMetadata,
   taskMetadataPatch,
-  onCompleted,
 }) {
   if (!fleetStore) throw new Error('missing fleetStore')
   if (!agentId) throw new Error('missing agentId')
@@ -22,7 +21,6 @@ export async function completeTaskLifecycle({
   }
 
   await fleetStore.upsertTask(completedTask)
-  onCompleted?.(agentId)
   const event = await fleetStore.taskDone?.(agentId, completedTask.id, description, eventMetadata)
   return {
     task: completedTask,

@@ -3,7 +3,7 @@
 // Claude status hook: reports PreToolUse / Stop / StopFailure as additional
 // triggers into the existing agent-status state machine (agent-runtime/
 // hook-status.mjs maps the event; the server's /api/fleet/hook-status route
-// applies the same agent-status path the pane scrape uses). Events with no
+// forwards the body to the owning daemon untouched). Events with no
 // activity edge exit silently. This script never fails: a hook that errors
 // would surface hook noise in the agent's turn, so every failure mode below
 // exits 0 with no stdout.

@@ -4,20 +4,38 @@ import test from 'node:test'
 import { BINDING_STATE, createAgentLiveness, PROCESS } from './agent-liveness.mjs'
 import { createEvidenceAdmission } from './agent-evidence.mjs'
 
-function setup(bindings, results) {
+async function setup(bindings, results) {
   const sent = []
+  let booting = true
   const liveness = createAgentLiveness({
-    getBindings: () => bindings,
+    getBindings: () => booting ? [] : bindings,
     checkProcesses: async rows => new Map(rows.map(row => [row.id, results[row.id] ?? PROCESS.UNKNOWN])),
     sendMsg: msg => sent.push(msg),
     getAdmit: () => admit,
   })
   const admit = createEvidenceAdmission({ liveness, log: { warn() {} } })
+  await liveness.checkAll()
+  booting = false
   return { liveness, sent }
 }
 
-test('first sighting moves hibernating to waking without emitting', async () => {
-  const { liveness, sent } = setup([{ id: 'fleet:a' }], { 'fleet:a': PROCESS.ALIVE })
+test('boot observes and declares: first sweep states what it sees', async () => {
+  const sent = []
+  const liveness = createAgentLiveness({
+    getBindings: () => [{ id: 'fleet:a' }],
+    checkProcesses: async rows => new Map(rows.map(row => [row.id, PROCESS.ALIVE])),
+    sendMsg: msg => sent.push(msg),
+    getAdmit: () => admit,
+  })
+  const admit = createEvidenceAdmission({ liveness, log: { warn() {} } })
+  await liveness.checkAll()
+  assert.equal(sent.length, 1)
+  assert.deepEqual([sent[0].agent_id, sent[0].alive], ['fleet:a', true])
+  assert.equal(liveness.stateFor('fleet:a'), BINDING_STATE.AWAKE)
+})
+
+test('bindings appearing after boot still walk through waking', async () => {
+  const { liveness, sent } = await setup([{ id: 'fleet:a' }], { 'fleet:a': PROCESS.ALIVE })
   await liveness.checkAll()
   assert.equal(sent.length, 0)
   assert.equal(liveness.stateFor('fleet:a'), BINDING_STATE.WAKING)
@@ -25,7 +43,7 @@ test('first sighting moves hibernating to waking without emitting', async () => 
 })
 
 test('second consecutive sighting wakes the binding and emits alive', async () => {
-  const { liveness, sent } = setup([{ id: 'fleet:a' }], { 'fleet:a': PROCESS.ALIVE })
+  const { liveness, sent } = await setup([{ id: 'fleet:a' }], { 'fleet:a': PROCESS.ALIVE })
   await liveness.checkAll()
   await liveness.checkAll()
   assert.equal(sent.length, 1)
@@ -38,7 +56,7 @@ test('second consecutive sighting wakes the binding and emits alive', async () =
 test('death needs two consecutive dead sweeps; one is suspicion without emit', async () => {
   const bindings = [{ id: 'fleet:a' }]
   const results = { 'fleet:a': PROCESS.ALIVE }
-  const { liveness, sent } = setup(bindings, results)
+  const { liveness, sent } = await setup(bindings, results)
   await liveness.checkAll()
   await liveness.checkAll()
   assert.equal(sent.length, 1)
@@ -56,7 +74,7 @@ test('death needs two consecutive dead sweeps; one is suspicion without emit', a
 test('a lone dead sweep heals silently on the next alive sighting', async () => {
   const bindings = [{ id: 'fleet:a' }]
   const results = { 'fleet:a': PROCESS.ALIVE }
-  const { liveness, sent } = setup(bindings, results)
+  const { liveness, sent } = await setup(bindings, results)
   await liveness.checkAll()
   await liveness.checkAll()
   assert.equal(sent.length, 1)
@@ -72,7 +90,7 @@ test('a lone dead sweep heals silently on the next alive sighting', async () => 
 test('unknown during suspicion neither confirms nor clears it', async () => {
   const bindings = [{ id: 'fleet:a' }]
   const results = { 'fleet:a': PROCESS.ALIVE }
-  const { liveness, sent } = setup(bindings, results)
+  const { liveness, sent } = await setup(bindings, results)
   await liveness.checkAll()
   await liveness.checkAll()
   results['fleet:a'] = PROCESS.DEAD
@@ -92,7 +110,7 @@ test('unknown during suspicion neither confirms nor clears it', async () => {
 test('declareAll re-emits dying bindings as awake', async () => {
   const bindings = [{ id: 'fleet:a' }]
   const results = { 'fleet:a': PROCESS.ALIVE }
-  const { liveness, sent } = setup(bindings, results)
+  const { liveness, sent } = await setup(bindings, results)
   await liveness.checkAll()
   await liveness.checkAll()
   results['fleet:a'] = PROCESS.DEAD
@@ -129,7 +147,7 @@ test('unbound dying agents emit false; the binding is gone either way', async ()
 test('death while waking is silent; the server already shows hibernating', async () => {
   const bindings = [{ id: 'fleet:a' }]
   const results = { 'fleet:a': PROCESS.ALIVE }
-  const { liveness, sent } = setup(bindings, results)
+  const { liveness, sent } = await setup(bindings, results)
   await liveness.checkAll()
   assert.equal(liveness.stateFor('fleet:a'), BINDING_STATE.WAKING)
   results['fleet:a'] = PROCESS.DEAD
@@ -139,7 +157,7 @@ test('death while waking is silent; the server already shows hibernating', async
 })
 
 test('steady state emits nothing', async () => {
-  const { liveness, sent } = setup([{ id: 'fleet:a' }], { 'fleet:a': PROCESS.ALIVE })
+  const { liveness, sent } = await setup([{ id: 'fleet:a' }], { 'fleet:a': PROCESS.ALIVE })
   await liveness.checkAll()
   await liveness.checkAll()
   await liveness.checkAll()
@@ -149,7 +167,7 @@ test('steady state emits nothing', async () => {
 test('unknown observations keep state and emit nothing', async () => {
   const bindings = [{ id: 'fleet:a' }]
   const results = { 'fleet:a': PROCESS.ALIVE }
-  const { liveness, sent } = setup(bindings, results)
+  const { liveness, sent } = await setup(bindings, results)
   await liveness.checkAll()
   results['fleet:a'] = PROCESS.UNKNOWN
   await liveness.checkAll()
@@ -159,14 +177,14 @@ test('unknown observations keep state and emit nothing', async () => {
 })
 
 test('unknown with no prior state emits nothing', async () => {
-  const { liveness, sent } = setup([{ id: 'fleet:a' }], { 'fleet:a': PROCESS.UNKNOWN })
+  const { liveness, sent } = await setup([{ id: 'fleet:a' }], { 'fleet:a': PROCESS.UNKNOWN })
   await liveness.checkAll()
   assert.equal(sent.length, 0)
   assert.equal(liveness.stateFor('fleet:a'), null)
 })
 
 test('declareAll re-emits awake verdicts only', async () => {
-  const { liveness, sent } = setup(
+  const { liveness, sent } = await setup(
     [{ id: 'fleet:a' }, { id: 'fleet:b' }],
     { 'fleet:a': PROCESS.ALIVE, 'fleet:b': PROCESS.ALIVE },
   )
@@ -179,7 +197,7 @@ test('declareAll re-emits awake verdicts only', async () => {
 })
 
 test('declareAll skips waking and hibernating bindings', async () => {
-  const { liveness, sent } = setup(
+  const { liveness, sent } = await setup(
     [{ id: 'fleet:a' }, { id: 'fleet:b' }],
     { 'fleet:a': PROCESS.ALIVE, 'fleet:b': PROCESS.DEAD },
   )
@@ -211,7 +229,7 @@ test('unbound awake agents transition to hibernating', async () => {
 })
 
 test('unbound never-awake bindings retire silently', async () => {
-  let bindings = [{ id: 'fleet:a' }]
+  let bindings = []
   const sent = []
   const liveness = createAgentLiveness({
     getBindings: () => bindings,
@@ -220,6 +238,8 @@ test('unbound never-awake bindings retire silently', async () => {
     getAdmit: () => admit,
   })
   const admit = createEvidenceAdmission({ liveness, log: { warn() {} } })
+  await liveness.checkAll()
+  bindings = [{ id: 'fleet:a' }]
   await liveness.checkAll()
   assert.equal(liveness.stateFor('fleet:a'), BINDING_STATE.WAKING)
   bindings = []

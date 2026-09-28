@@ -14,30 +14,6 @@ const storeWith = (...tasks) => ({
   getActiveTasks: () => tasks,
 })
 
-test('successful task completion resets the agent idle clock', async () => {
-  let idleSeconds = 1201
-  const observedAtTaskDone = []
-  const fleetStore = {
-    upsertTask: async () => {},
-    taskDone: async () => {
-      observedAtTaskDone.push(idleSeconds)
-      return { id: 17 }
-    },
-  }
-
-  await completeTaskLifecycle({
-    fleetStore,
-    agentId: 'fleet:worker',
-    task: { id: 'task:one', agent: 'fleet:worker', status: 'working' },
-    onCompleted: agentId => {
-      assert.equal(agentId, 'fleet:worker')
-      idleSeconds = 0
-    },
-  })
-
-  assert.deepEqual(observedAtTaskDone, [0])
-})
-
 test('intentionally grants authority through an active post-target marker', async () => {
   const target = task('target', 'worker', 'owner', '2026-07-20T12:00:00.000Z')
   const marker = task('marker', 'owner', 'caller', '2026-07-23T19:51:14.000Z')

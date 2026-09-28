@@ -10,7 +10,7 @@
 // logged — fail closed, so one daemon can never hold another daemon's
 // agents looking alive.
 export async function admitDaemonHeartbeat(deps, msg) {
-  const { store, touchActivity, log } = deps
+  const { store, recordBeat, log } = deps
   // Logging must never break admission: a warn sink throwing would turn a
   // rejected beat into a 500-class failure.
   const fail = (...args) => { try { log?.warn?.(...args) } catch { /* log sink is best-effort */ } }
@@ -44,7 +44,7 @@ export async function admitDaemonHeartbeat(deps, msg) {
     fail(`heartbeat for ${agent.id} rejected: daemon_key mismatch`)
     return { agentId: agent.id, changed: false, ignored: 'ownership' }
   }
-  touchActivity?.(agent.id)
+  recordBeat?.(agent.id, Date.parse(msg?.ts) || Date.now())
   await store.updateHeartbeat?.(agent.id)
   return { agentId: agent.id, changed: true }
 }

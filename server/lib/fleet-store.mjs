@@ -4209,15 +4209,15 @@ export class FleetStore {
     if (state.kind !== storedKind) {
       throw new TypeError(`runtime kind ${state.kind} does not match ${id} kind ${storedKind}`);
     }
-    let metadata = {};
-    try { metadata = agent.metadata ? JSON.parse(agent.metadata) : {}; } catch (e) {
-      throw new Error(`corrupt metadata JSON for runtime state ${id}: ${e.message}`);
-    }
+    // Dead is terminal: a daemon verdict arriving after an explicit death
+    // (the sweep confirming a kill) records DEAD, never a lesser state.
+    // Shells need no branch — nothing writes spans for them except explicit
+    // death, which already passes DEAD.
     const durableStatus = state.kind === RUNTIME_KIND.HUMAN
       ? state.status
       : agent.dead
         ? RUNTIME_STATUS.DEAD
-        : metadata?.shell ? RUNTIME_STATUS.HIBERNATING : state.status;
+        : state.status;
     const at = timestamp || new Date().toISOString();
     const changed = this.db.transaction(() => {
       const open = this.db.prepare(`

@@ -46,6 +46,12 @@ export function createAgentLiveness({
   if (typeof sendMsg !== 'function') throw new Error('agent liveness requires sendMsg')
   if (typeof getAdmit !== 'function') throw new Error('agent liveness requires getAdmit')
   const states = new Map()
+  // A restart observes and declares: the first sweep states what it sees
+  // rather than walking hibernating->waking->awake. AWAKE=PROCESS, so a
+  // process seen on the first sweep is awake, not waking. Bindings first
+  // seen on later sweeps are mints, and still walk: appearing mid-run is
+  // unconfirmed in a way boot-time presence is not.
+  let booted = false
 
   function emit(agentId, alive) {
     sendMsg({
@@ -78,7 +84,10 @@ export function createAgentLiveness({
       log?.info?.(`liveness transition: agent=${agentId} ${state}->hibernating (unbound)`)
       emit(agentId, false)
     }
-    if (!bindings.length) return states.size
+    if (!bindings.length) {
+      booted = true
+      return states.size
+    }
     let observedById
     try {
       observedById = await checkProcesses(bindings)
@@ -100,6 +109,7 @@ export function createAgentLiveness({
         process: observed === PROCESS.ALIVE ? 'alive' : 'dead',
       })
     }
+    booted = true
     return states.size
   }
 
@@ -127,6 +137,12 @@ export function createAgentLiveness({
       return BINDING_STATE.DYING
     }
     if (state === BINDING_STATE.AWAKE) return BINDING_STATE.AWAKE
+    if (!booted && !states.has(agentId)) {
+      states.set(agentId, BINDING_STATE.AWAKE)
+      log?.info?.(`liveness transition: agent=${agentId} hibernating->awake (observe-and-declare)${via}`)
+      emit(agentId, true)
+      return BINDING_STATE.AWAKE
+    }
     if (state === BINDING_STATE.DYING) {
       states.set(agentId, BINDING_STATE.AWAKE)
       log?.info?.(`liveness transition: agent=${agentId} dying->awake${via}`)

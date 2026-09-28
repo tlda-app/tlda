@@ -11,9 +11,8 @@
 // This module is PURE (hook payload in, transition out) so it is table-
 // testable beside decideThinkingEdge/shouldDisarm. The daemon owns delivery:
 // the hook script POSTs to the server's /api/fleet/hook-status route, which
-// applies the same agent-status path unified-server.mjs already handles — so
-// hook evidence and pane evidence converge in runtimeStatusStore.updateActivity,
-// latest-wins by atMs.
+// forwards the body to the owning daemon untouched; the daemon admits it to
+// its machines, and hook evidence and pane evidence converge there.
 
 // Claude hook events that produce an agent-status activity edge. Everything
 // else the binary confirms (SessionStart/End, UserPromptSubmit, SubagentStart/

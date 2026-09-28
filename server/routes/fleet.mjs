@@ -16,7 +16,7 @@ import os from 'os'
 import { randomUUID } from 'crypto'
 import { DEFAULT_PORT, loadServerConfig, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs'
+import { RUNTIME_KIND, RUNTIME_STATUS, fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs'
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
@@ -551,6 +551,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     try {
       await fleetStore.markDead(req.params.id)
+      await fleetStore.recordRuntimeState(req.params.id, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.DEAD }, Date.now())
       // F4: the death emits (actor from the caller when supplied).
       await emitAgentDiedEvent({
         share: event => fleetStore.share(event),

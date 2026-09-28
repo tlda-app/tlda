@@ -117,6 +117,7 @@ import { createPromptPlan } from '../daemon/prompt-plan.mjs'
 import { createAgentStatus } from '../daemon/agent-status.mjs'
 import { createAgentLiveness, PROCESS as LIVENESS_PROCESS } from '../daemon/agent-liveness.mjs'
 import { createEvidenceAdmission } from '../daemon/agent-evidence.mjs'
+import { createRemoteEvidence } from '../daemon/remote-evidence.mjs'
 import { examineNeverJoinedRow, neverJoinedCutoffIso } from '../daemon/never-joined.mjs'
 import { createAgySupervisor } from '../daemon/agy-supervisor.mjs'
 import { createGooseSupervisor } from '../daemon/goose-supervisor.mjs'
@@ -1256,6 +1257,16 @@ const agentLiveness = createAgentLiveness({
 // verdicts. Hook and harness-event sources join the same function later.
 const admitEvidence = createEvidenceAdmission({ liveness: agentLiveness, activity: agentStatus, log })
 
+// Evidence forwarded from elsewhere: hook bodies the server routes here
+// without reading, and server-observed acts (chat, delegate sends). Only
+// bound agents are admitted; anything else declines with a reason.
+const remoteEvidence = createRemoteEvidence({
+  log,
+  admit: admitEvidence,
+  isBound: agentId => permissionLedger.listProcessBindings().some(row =>
+    row.id === agentId && row.daemonKey === `${MACHINE_ID}:${ACTIVE_ENV}`),
+})
+
 const promptPlan = createPromptPlan({
   tmuxArgs: TMUX_ARGS,
   log,
@@ -2181,6 +2192,8 @@ const machineRpc = createMachineRpc({
 })
 machineRpc.register({
   'resolve-agent-route': resolveAgentRoute,
+  'hook-evidence': params => remoteEvidence.admitHook(params),
+  'server-activity': params => remoteEvidence.admitServerActivity(params),
   'native-subagent-routes': ({ parent_agent_id, child_agent_ids }) =>
     jsonlIngestor.nativeSubagentRoutes(parent_agent_id, child_agent_ids),
   'native-subagent-route-for-tool-use': ({ parent_agent_id, tool_use_id }) =>

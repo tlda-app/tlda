@@ -7,11 +7,11 @@
 //
 // So these run a real server on a real port with its own database, a real
 // daemon socket answering the RPC, and read the durable runtime_status_history
-// rows back off disk afterwards. The negative case is the load-bearing one: a
-// no-ledger agent whose process is still up must come back as an error with no
-// status written and no success ack. The ledger-backed case is its positive
-// control — same wire, same handler, one field different — because a negative
-// test that would also pass against a broken server proves nothing.
+// rows back off disk afterwards. The server asserts nothing itself: the
+// negative case (no-ledger agent, process still up) errors with no status
+// written and no success ack, and the ledger-backed positive control acks
+// the kill with no status written either — the durable row appears only
+// when the daemon's verdict arrives on the same socket afterwards.
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { spawn } from 'node:child_process'
@@ -182,7 +182,11 @@ async function runHibernate({ killSessionReply }) {
     const frame = await client.request({ type: 'hibernate-session', agent: AGENT_ID })
     // Read the durable rows while the server is still up but after it replied.
     await new Promise(resolve => setTimeout(resolve, 250))
-    return { frame, rpcs: daemon.rpcs, rows: runtimeStatusRows(dbPath) }
+    const sendVerdict = async verdict => {
+      daemon.ws.send(JSON.stringify({ type: 'process-liveness', agent_id: AGENT_ID, ...verdict }))
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+    return { frame, rpcs: daemon.rpcs, rows: runtimeStatusRows(dbPath), sendVerdict, readRows: () => runtimeStatusRows(dbPath) }
   } finally {
     client?.ws?.close()
     daemon?.ws?.close()
@@ -217,8 +221,8 @@ test('NEGATIVE: hibernate on a no-ledger agent errors, writes no status, and sen
   )
 })
 
-test('POSITIVE CONTROL: hibernate on a ledger-backed agent records the explicit lifecycle result', { timeout: 180_000 }, async () => {
-  const { frame, rpcs, rows } = await runHibernate({
+test('POSITIVE CONTROL: hibernate acks the kill, writes nothing itself, and records the daemon verdict', { timeout: 180_000 }, async () => {
+  const { frame, rpcs, rows, sendVerdict, readRows } = await runHibernate({
     killSessionReply: { ok: true },
   })
 
@@ -228,7 +232,15 @@ test('POSITIVE CONTROL: hibernate on a ledger-backed agent records the explicit 
   assert.equal(frame.error, undefined, `expected success, got ${JSON.stringify(frame)}`)
   assert.equal(frame.result?.ok, true, 'a real kill is acknowledged')
 
-  assert.equal(rows.length, 1, `expected one durable hibernation row; got ${JSON.stringify(rows)}`)
-  assert.equal(rows[0].kind, 'ai')
-  assert.equal(rows[0].status, 'hibernating')
+  assert.deepEqual(
+    rows,
+    [],
+    `the ack must not write status; only the daemon verdict does. got ${JSON.stringify(rows)}`,
+  )
+
+  await sendVerdict({ alive: false })
+  const after = readRows()
+  assert.equal(after.length, 1, `expected one durable hibernation row; got ${JSON.stringify(after)}`)
+  assert.equal(after[0].kind, 'ai')
+  assert.equal(after[0].status, 'hibernating')
 })

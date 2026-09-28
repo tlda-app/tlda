@@ -1210,7 +1210,6 @@ async function reanimateAgent(agentQuery) {
   // of the one flag only a request may set, and it undid what the caller had
   // just asked for.
   const revived = await fleetStore.markAlive(before.id)
-  markAgentNotAlive(before.id, { source: 'reanimate', reason: 'dead bit cleared; waking agent' })
   broadcastState(before.id)
   let spawnResult
   try {
@@ -1229,11 +1228,10 @@ async function reanimateAgent(agentQuery) {
     // guessing at the consequence — it says the next verb is `wake` without
     // requiring them to know the model.
     //
-    // "Hibernating" is asserted without a qualifier because the route survives:
+    // "Hibernating" is reported without a qualifier because the route survives:
     // `markDead` does not touch `agent_daemon_routes` (only `removeAgent` does),
-    // and `reanimate` refuses to start at all without a route. So this agent is
-    // addressable and reachable, which is what hibernating means.
-    markAgentNotAlive(before.id, { source: 'reanimate', reason: `wake phase failed: ${e.message}` })
+    // and `reanimate` refuses to start at all without a route. The daemon's
+    // next verdict establishes the state; nothing is asserted here.
     broadcastState(before.id)
     throw new Error(
       `the wake phase of the reanimate failed for ${before.friendly_name || before.id}. ` +
@@ -2010,14 +2008,17 @@ const mailboxLibrarian = new MailboxLibrarian({
   },
 })
 const _contextState = new Map()    // agentId → { percent, inputTokens }
-const _lastActivityAt = new Map()  // agentId → timestamp (ms) — last real activity (thinking, tool call, chat)
+// Last activity per agent, transcribed from daemon-reported timestamps —
+// never from server-side observation. Chat, delegate, hook, transcript,
+// scrape and heartbeat evidence all arrive as daemon traffic carrying its
+// own ts; this map writes down what the daemon said. Latest wins.
+const _lastDaemonActivityAt = new Map()  // agentId → timestamp (ms)
 // Most recent touch attributable to daemon-pipe processing (activity-event,
-// agent-status, admitted heartbeat). Chat, login, and hook touches do not
-// move it: the canary must reflect the daemon delivery path, not any traffic.
-// Read by /api/fleet/trusted-idle as the map's freshness signal — under a
-// delivery stall it ages while idles go stale. A quiet fleet ages it too;
-// that is the consumer's to interpret, and the server never withholds the
-// map for it.
+// agent-status, admitted heartbeat, agent-activity). Read by
+// /api/fleet/trusted-idle as the map's freshness signal — under a delivery
+// stall it ages while idles go stale. A quiet fleet ages it too; that is
+// the consumer's to interpret, and the server never withholds the map
+// for it.
 let _lastDaemonPipeTouchAtMs = null
 const _viewingContext = new Map()   // agentId → { doc, page, sourceLine, ... , updatedAt }
 let _lastReaperStatus = null       // latest reaper snapshot from daemon
@@ -2026,12 +2027,14 @@ const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
 const MY_TASK_TASK_LIMIT = 20
 const MY_TASK_DELIVERY_LIMIT = 50
 
-function touchActivity(agentId) {
-  _lastActivityAt.set(agentId, Date.now())
+function transcribeDaemonActivity(agentId, atMs) {
+  if (!agentId || !Number.isFinite(atMs)) return
+  const prev = _lastDaemonActivityAt.get(agentId)
+  if (prev === undefined || atMs > prev) _lastDaemonActivityAt.set(agentId, atMs)
 }
 
-// A touch arrived via daemon-pipe processing. Called alongside touchActivity
-// at the daemon-message sites only — never for chat, login, or hooks.
+// A touch arrived via daemon-pipe processing. Called alongside
+// transcribeDaemonActivity at the daemon-message sites only.
 function markDaemonPipeTouch() {
   _lastDaemonPipeTouchAtMs = Date.now()
 }
@@ -2095,14 +2098,14 @@ async function getTrustedIdleSeconds() {
     if (runtime.activity === 'thinking' || runtime.activity === 'compacting') continue
     const aliveSince = Number(runtimeStatusStore.evidenceFor(agentId)?.alive_since_ms)
     if (!Number.isFinite(aliveSince)) continue
-    // Idle baseline = last REAL activity, or — if we've recorded none this
-    // server-run (e.g. the agent was already idle before the last restart) —
-    // the start of its current alive run. aliveSince comes from the canonical
-    // runtime evidence and is not bumped by passive roster/status reads, so it
-    // is a true floor for "has done nothing".
+    // Idle baseline = last daemon-reported activity, or — if none has been
+    // transcribed this server-run (e.g. the agent was already idle before
+    // the last restart) — the start of its current alive run. aliveSince
+    // comes from the daemon's verdict stream and is not bumped by passive
+    // reads, so it is a true floor for "has done nothing".
     // Without this, every deploy would leave pre-existing idle agents
     // permanently un-hibernatable (no lastActive → skipped forever).
-    const lastActive = _lastActivityAt.get(agentId) || aliveSince
+    const lastActive = _lastDaemonActivityAt.get(agentId) || aliveSince
     const idleMs = Math.min(now - lastActive, now - aliveSince)
     result[agentId] = Math.floor(idleMs / 1000)
   }
@@ -2512,6 +2515,7 @@ async function failServerMintShell(agentId, reason) {
     await fleetStore.retractTask?.(task.id, { retractedBy: 'mint-launch-failed' })
   }
   await fleetStore.markDead(agentId)
+  await fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.DEAD }, Date.now())
   // F3(a): the launch failed server-side — tell the owning daemon so it can
   // examine its mint row now (a live process emits the P1 leaked-alive
   // verdict) rather than waiting for the sweep. Unawaited by design: the
@@ -4599,7 +4603,7 @@ app.get('/api/fleet/trusted-idle', requireRead, async (_req, res) => {
   const idleSecondsByAgent = await getTrustedIdleSeconds()
   const touchAtMsByAgent = {}
   for (const agentId of Object.keys(idleSecondsByAgent)) {
-    touchAtMsByAgent[agentId] = _lastActivityAt.get(agentId) ?? null
+    touchAtMsByAgent[agentId] = _lastDaemonActivityAt.get(agentId) ?? null
   }
   res.json(annotateIdleFreshness({
     idleSecondsByAgent,
@@ -4787,39 +4791,46 @@ async function emitSkillDismissCard(agentId, dismissed, reason) {
 }
 
 // ---------- Hook status triggers ----------
-// Claude hooks (PreToolUse / Stop / StopFailure / PermissionDenied, installed
-// in agent-launch/harness/claude.mjs) POST here via bin/claude-status-hook.mjs.
-// This applies the SAME agent-status path the daemon's pane scrape uses (the
-// `agent-status` handler below): hook evidence and pane evidence converge in
-// runtimeStatusStore.updateActivity, latest-wins by atMs, so a hook firing
-// and a pane scan racing it cannot fork the activity — the newer stamp wins.
-// Unknown hook events and non-activity statuses are rejected: hook silence
-// must never fabricate an edge, and the pane scrape keeps covering the gaps
-// (interactive running/idle, user-input-wait, PermissionRequest).
+// Claude hooks (PreToolUse / Stop / StopFailure, installed in
+// agent-launch/harness/claude.mjs) POST here via bin/claude-status-hook.mjs.
+// Hook bodies are evidence addressed to the daemon, not to this server. The
+// body crosses untouched — activity, tool and event name are never read
+// here — and the owning daemon admits it to its machines, which emit the
+// verdicts this server reports. agent_id is the address on the envelope,
+// the one field routing reads; everything else is opaque content.
+// Forwarding failure is an error (502), never a silent drop: the hook
+// script exits 0 on any response, so the error surfaces here, not in the
+// agent's turn.
 app.post('/api/fleet/hook-status', async (req, res) => {
   const agentId = typeof req.body?.agent_id === 'string' ? req.body.agent_id : null
-  const activity = req.body?.activity
-  if (!agentId || !['thinking', 'compacting', 'idle', 'unknown'].includes(activity)) {
-    res.status(400).json({ ok: false, error: 'agent_id and a known activity are required' })
-    return
-  }
+  if (!agentId) { res.status(400).json({ ok: false, error: 'agent_id is required' }); return }
   if (!fleetStore) { res.status(503).json({ ok: false, error: 'Fleet store not available' }); return }
   const agent = await fleetStore.getAgent?.(agentId)
-  if (!agent || agent.dead) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
-  const tool = typeof req.body?.tool === 'string' && req.body.tool.trim() ? req.body.tool.trim() : null
-  const atMs = Date.now()
-  if (activity !== 'unknown') {
-    markAgentAlive(agentId, atMs, {
-      source: 'claude-hook',
-      reason: `hook ${req.body?.hook_event_name || 'event'} status ${activity}`,
-      atMs,
-    })
+  const { seat, error: seatError } = await agentRouteOrError(agent)
+  if (!seat) { res.status(404).json({ ok: false, error: seatError }); return }
+  try {
+    const receipt = await sendDaemonEphemeral(seat.daemon_key, 'hook-evidence', { ...req.body, agent_id: agentId })
+    res.json({ ok: true, admitted: receipt?.admitted ?? null })
+  } catch (error) {
+    console.error(`hook-status forward failed: agent=${agentId} daemon=${seat.daemon_key} error=${error?.message || error}`)
+    res.status(502).json({ ok: false, error: 'owning daemon unreachable' })
   }
-  runtimeStatusStore.updateActivity(agentId, activity, { tool, atMs })
-  broadcastEvent('agent-status', { agent: agentId, activity, tool, ts: new Date(atMs).toISOString() })
-  if (activity === 'thinking' || activity === 'compacting') touchActivity(agentId)
-  res.json({ ok: true })
 })
+
+// Forward a server-observed act to the owning daemon as activity evidence.
+// Chat and delegate sends are the acts: the daemon cannot see them, but an
+// agent coordinating all day in chat is working, and the idle clock must
+// know. Humans and the unrouted are skipped quietly — no daemon, no
+// evidence. Callers fire and forget with a logged error: chat must not wait
+// on it, and a failure must be visible, not silent.
+async function forwardServerActivity(agentId) {
+  if (!agentId || !fleetStore) return
+  const agent = await fleetStore.getAgent?.(agentId)
+  if (!agent || agent.human) return
+  const { seat } = await agentRouteOrError(agent)
+  if (!seat) return
+  await sendDaemonEphemeral(seat.daemon_key, 'server-activity', { agent_id: agentId, atMs: Date.now() })
+}
 
 // ---------- Agent suggestion chips ----------
 // Any agent can push its CURRENT set of clickable suggestion chips — actionable
@@ -5067,8 +5078,8 @@ app.post('/api/kill-session', requireRead, async (req, res) => {
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-    markAgentNotAlive(agent.id, { source: 'http-kill-session', reason: 'operator killed session', status: RUNTIME_STATUS.DEAD })
     await fleetStore.markDead(agent.id)
+    await fleetStore.recordRuntimeState(agent.id, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.DEAD }, Date.now())
     const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
     await fleetStore.share(killEvent)
     broadcastState(agent.id)
@@ -7623,6 +7634,7 @@ async function dispatchFleetWsMessage(ws, msg) {
     if (!agentId) { error('mark-dead requires agent'); return }
     try {
       await fleetStore.markDead(agentId)
+      await fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.DEAD }, Date.now())
       // F4: the death emits (actor from the caller when supplied).
       await emitAgentDiedEvent({
         share: event => fleetStore.share(event),
@@ -8059,7 +8071,6 @@ async function dispatchFleetWsMessage(ws, msg) {
       const storedAgent = await fleetStore.projectAgentDaemonRoute?.(stored) || stored
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null, ...(returnNotice ? { return_notice: returnNotice } : {}) })
       void fleetStore.share?.({ type: 'login', agent_id: loginAgentId, from: loginAgentId, to: loginAgentId, text: `${agent.friendly_name || loginAgentId} logged in` })
-      touchActivity(loginAgentId)
       spawnLibrarian.observeLogin(await fleetStore.getAgent?.(loginAgentId) || agent)
       broadcastState(storedAgent)
       return
@@ -8944,10 +8955,12 @@ async function dispatchFleetWsMessage(ws, msg) {
       error(`Broadcast to ${recipients.length} agents exceeds max_recipients=${maxRecipients}`)
       return
     }
-    // Update sender heartbeat + activity tracking
+    // Sender heartbeat stays (presence); activity evidence goes to the daemon.
     if (from) {
       await fleetStore.updateHeartbeat?.(from)
-      touchActivity(from)
+      void forwardServerActivity(from).catch(error => {
+        console.error(`server-activity forward failed: agent=${from} error=${error?.message || error}`)
+      })
     }
     // Resolve CC (still single-string list)
     // Copy attachments into the persistent upload dir (once for all recipients),
@@ -9309,6 +9322,11 @@ async function dispatchFleetWsMessage(ws, msg) {
     const outcome = await performDelegate(msg)
     if (outcome.error) { error(outcome.error); return }
     reply(outcome.reply)
+    if (msg.from) {
+      void forwardServerActivity(msg.from).catch(forwardError => {
+        console.error(`server-activity forward failed: agent=${msg.from} error=${forwardError?.message || forwardError}`)
+      })
+    }
     await outcome.finish?.()
     return
   }
@@ -9341,7 +9359,7 @@ async function dispatchFleetWsMessage(ws, msg) {
         }
       }
     }
-    const { eventId } = await completeTaskLifecycle({ fleetStore, agentId: agent, task, onCompleted: touchActivity })
+    const { eventId } = await completeTaskLifecycle({ fleetStore, agentId: agent, task })
     broadcastState()
     reply({ ok: true, task_id: task.id, event_id: eventId })
     return
@@ -9447,7 +9465,6 @@ async function dispatchFleetWsMessage(ws, msg) {
           close_reason: closeReason,
           closed_by: agent,
         },
-        onCompleted: touchActivity,
       })
       closeEventId = eventId || null
       controlPlaneTraces.append({
@@ -9766,8 +9783,8 @@ async function dispatchFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-      await markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session', status: RUNTIME_STATUS.DEAD })
       await fleetStore.markDead(agent.id)
+      await fleetStore.recordRuntimeState(agent.id, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.DEAD }, Date.now())
       // Killing the parent ends its native subagents too, but this handler has
       // not observed that — it has observed that it asked. The daemon's next
       // status batch establishes the parent's liveness and reconciles them from
@@ -9799,20 +9816,12 @@ async function dispatchFleetWsMessage(ws, msg) {
       // again at 00:23, tmux session_created never changing, while an agent with
       // a ledger row hibernated correctly in the same sweep.
       //
-      // A successful explicit hibernate is the operation result. The daemon no
-      // longer publishes a full inventory batch afterward, so this handler writes
-      // the durable runtime transition it just caused.
+      // The daemon's next verdict establishes the state; nothing is written
+      // here. A pre-write would assert what the sweep has not yet observed.
       if (result?.terminal_unresolved) {
         error(`${seat.daemon_key} has no terminal binding for ${agent.friendly_name || agent.id}; nothing was hibernated`)
         return
       }
-      const atMs = Date.now()
-      await markAgentNotAlive(agent.id, {
-        source: 'hibernate-session',
-        reason: 'explicit hibernate-session completed',
-        atMs,
-        status: RUNTIME_STATUS.HIBERNATING,
-      })
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
@@ -9846,7 +9855,6 @@ async function dispatchFleetWsMessage(ws, msg) {
     }
     try {
       await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-      await markAgentNotAlive(agent.id, { source: 'ws-restart-agent-mcp', reason: 'operator restarted MCP' })
       // A restart kills the session and wakes it again, so the native subagents
       // under the old process are gone and the new one starts with none. That
       // needs no continuity modelling and no pre-write here: the kill and the
@@ -10839,7 +10847,7 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
     const { agent_id, jsonl_offset, ts } = msg
     if (!agent_id || typeof jsonl_offset !== 'number') return
     spawnLibrarian.observeActivity({ type, agent_id, jsonl_offset, ts })
-    touchActivity(agent_id)
+    transcribeDaemonActivity(agent_id, Date.parse(ts) || Date.now())
     markDaemonPipeTouch()
     if (fleetStore?.updateHeartbeat) {
       await fleetStore.updateHeartbeat(agent_id)
@@ -10863,7 +10871,7 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
         store: fleetStore,
         // Admitted beats feed the map, so they move the pipe canary; refused
         // ones never reach here and honestly leave it still.
-        touchActivity: id => { touchActivity(id); markDaemonPipeTouch() },
+        recordBeat: (id, atMs) => { transcribeDaemonActivity(id, atMs); markDaemonPipeTouch() },
         log: console,
       }, { ...msg, daemon_key: msg.daemon_key || ws._daemonKey || null })
       if (outcome?.changed && outcome?.agentId) broadcastState([outcome.agentId])
@@ -10894,20 +10902,13 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
     const activity = msg.activity || msg.state
     if (!agentId || !['thinking', 'compacting', 'idle', 'unknown'].includes(activity)) return
     const activityAtMs = Date.parse(msg.ts) || Date.now()
-    if (activity !== 'unknown') {
-      markAgentAlive(agentId, activityAtMs, {
-        source: 'daemon-read-pane',
-        reason: `pane status ${activity}`,
-        atMs: activityAtMs,
-      })
-    }
     runtimeStatusStore.updateActivity(agentId, activity, {
       tool: msg.tool || null,
       atMs: activityAtMs,
     })
     broadcastEvent('agent-status', { agent: agentId, activity, tool: msg.tool || null, ts: msg.ts || new Date(activityAtMs).toISOString() })
     if (activity === 'thinking' || activity === 'compacting') {
-      touchActivity(agentId)
+      transcribeDaemonActivity(agentId, activityAtMs)
       markDaemonPipeTouch()
     }
     return
@@ -10926,13 +10927,6 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
       tool,
     })
     const activityAtMs = Date.parse(msg.ts) || serverReceivedAtMs
-    if (!historical) {
-      markAgentAlive(agent_id, activityAtMs, {
-        source: 'daemon-activity-event',
-        reason: 'activity extracted from harness stream',
-        atMs: activityAtMs,
-      })
-    }
     const currentActivity = runtimeStatusStore.evidenceFor(agent_id)?.activity
     if (!historical && tool && !String(tool).startsWith('_') && (currentActivity === 'thinking' || currentActivity === 'compacting')) {
       runtimeStatusStore.updateActivity(agent_id, currentActivity, {
@@ -10942,7 +10936,7 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
       broadcastEvent('agent-status', { agent: agent_id, activity: currentActivity, tool, ts: msg.ts || new Date(activityAtMs).toISOString() })
     }
     if (!historical) {
-      touchActivity(agent_id)
+      transcribeDaemonActivity(agent_id, activityAtMs)
       markDaemonPipeTouch()
     }
     if (sourceEditActivity && (msg.status === 'completed' || msg.status === 'error')) return
@@ -11148,7 +11142,10 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
       // A shell that never booted (never claimed) must be marked dead so it
       // leaves the not-dead registry — otherwise the reserved identity
       // lingers as a phantom addressable agent that will never inhabit.
-      if (agent?.metadata?.shell) await fleetStore.markDead?.(agent_id)
+      if (agent?.metadata?.shell) {
+        await fleetStore.markDead?.(agent_id)
+        await fleetStore.recordRuntimeState(agent_id, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.DEAD }, Date.now())
+      }
       await fleetStore.updateAgentMeta?.(agent_id, {
         startupFailure: {
           ts: new Date().toISOString(),
