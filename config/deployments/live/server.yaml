@@ -102,3 +102,17 @@ notifications:
 # source of authority, and the installer will not add a second.
 #
 # example shape:  {"<project-name>": "pic-preview"}
+
+# Pre-send chat linters: binary gates on outbound agent chat, enforced at
+# server ingress (see docs/chat-linters.md). file-backed-composition refuses
+# substantive inline chat (at or over minChars with no source file);
+# outline-depth refuses a purported outline with a single structural depth.
+# Humans are never gated; the amend path is untouched.
+chatLinters:
+  fileBackedComposition:
+    enabled: true
+    minChars: 500
+  outlineDepth:
+    enabled: true
+    minSignalLines: 5
+    maxProseLines: 2
