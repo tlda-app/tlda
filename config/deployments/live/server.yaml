@@ -104,7 +104,10 @@ notifications:
 # example shape:  {"<project-name>": "pic-preview"}
 
 # Explicit outline contract (see docs/chat-linters.md): a message the sender
-# marks as an outline must carry a source file. Nothing else is gated.
+# marks as an outline must carry a source file and show outline depth.
+# Unmarked chat is never gated.
 chatLinters:
   outlineFileBacked:
+    enabled: true
+  outlineDepth:
     enabled: true
