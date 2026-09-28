@@ -3,10 +3,12 @@
 // writes down what it is told; it decides nothing.
 //
 // States: hibernating (no process) -> waking (process sighted once,
-// unconfirmed) -> awake (process confirmed, emitted). A confirmed dead
-// process transitions straight into hibernation with no debounce — death is
-// already confirmed by the check. Unknown observations change nothing:
-// unknown is a state of our knowledge, not of the agent.
+// unconfirmed) -> awake (process confirmed, emitted). Death is symmetric:
+// awake -> dying (process missed once, unconfirmed) -> hibernating
+// (missed twice running, emitted). One disagreeing sweep is suspicion,
+// not evidence — a transient empty tmux answer must not read as 34
+// deaths. Unknown observations change nothing: unknown is a state of
+// our knowledge, not of the agent.
 //
 // The wire carries only verdicts that change what the server shows. Waking
 // is daemon-side only, and dead is emitted only when leaving awake: the
@@ -22,6 +24,7 @@ export const PROCESS = Object.freeze({
 export const BINDING_STATE = Object.freeze({
   AWAKE: 'awake',
   WAKING: 'waking',
+  DYING: 'dying',
   HIBERNATING: 'hibernating',
 })
 
@@ -49,7 +52,7 @@ export function createAgentLiveness({
 
   // Check every binding once, in one batched probe. Emits only on transitions
   // that change the server-visible verdict: waking->awake and
-  // awake->hibernating. Bindings that left the ledger retire the same way:
+  // dying->hibernating. Bindings that left the ledger retire the same way:
   // an unbound agent the daemon saw awake reads dead, because unbinding is
   // how the daemon records that it manages no process for it.
   async function checkAll() {
@@ -64,8 +67,8 @@ export function createAgentLiveness({
     for (const [agentId, state] of states) {
       if (present.has(agentId)) continue
       states.delete(agentId)
-      if (state !== BINDING_STATE.AWAKE) continue
-      log?.info?.(`liveness transition: agent=${agentId} awake->hibernating (unbound)`)
+      if (state !== BINDING_STATE.AWAKE && state !== BINDING_STATE.DYING) continue
+      log?.info?.(`liveness transition: agent=${agentId} ${state}->hibernating (unbound)`)
       emit(agentId, false)
     }
     if (!bindings.length) return states.size
@@ -83,16 +86,26 @@ export function createAgentLiveness({
       if (observed !== PROCESS.ALIVE && observed !== PROCESS.DEAD) continue
       const state = states.get(agentId) || BINDING_STATE.HIBERNATING
       if (observed === PROCESS.DEAD) {
+        if (state === BINDING_STATE.DYING) {
+          states.set(agentId, BINDING_STATE.HIBERNATING)
+          log?.info?.(`liveness transition: agent=${agentId} dying->hibernating`)
+          emit(agentId, false)
+          continue
+        }
         if (state !== BINDING_STATE.AWAKE) {
           states.set(agentId, BINDING_STATE.HIBERNATING)
           continue
         }
-        states.set(agentId, BINDING_STATE.HIBERNATING)
-        log?.info?.(`liveness transition: agent=${agentId} awake->hibernating`)
-        emit(agentId, false)
+        states.set(agentId, BINDING_STATE.DYING)
+        log?.info?.(`liveness transition: agent=${agentId} awake->dying`)
         continue
       }
       if (state === BINDING_STATE.AWAKE) continue
+      if (state === BINDING_STATE.DYING) {
+        states.set(agentId, BINDING_STATE.AWAKE)
+        log?.info?.(`liveness transition: agent=${agentId} dying->awake`)
+        continue
+      }
       if (state === BINDING_STATE.WAKING) {
         states.set(agentId, BINDING_STATE.AWAKE)
         log?.info?.(`liveness transition: agent=${agentId} waking->awake`)
@@ -106,12 +119,13 @@ export function createAgentLiveness({
   }
 
   // Re-declare current awake verdicts. Runs on (re)connect so missed
-  // transitions repair themselves. Awake only: the server already reads
-  // everything else as hibernating.
+  // transitions repair themselves. Awake and dying: a dying binding has
+  // not emitted since its awake verdict, so the server still shows it
+  // awake, and the next sweep resolves the suspicion either way.
   function declareAll() {
     let declared = 0
     for (const [agentId, state] of states) {
-      if (state !== BINDING_STATE.AWAKE) continue
+      if (state !== BINDING_STATE.AWAKE && state !== BINDING_STATE.DYING) continue
       emit(agentId, true)
       declared += 1
     }
@@ -123,7 +137,8 @@ export function createAgentLiveness({
   }
 
   function verdictFor(agentId) {
-    return states.get(agentId) === BINDING_STATE.AWAKE
+    const state = states.get(agentId)
+    return state === BINDING_STATE.AWAKE || state === BINDING_STATE.DYING
   }
 
   function drop(agentId) {
