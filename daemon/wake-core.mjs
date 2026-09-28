@@ -200,12 +200,15 @@ export function createDaemonWakeCore({
       } catch (error) {
         resumeError = error
       }
-      // A permanent resume error (stale session: the transcript is in no
-      // config base) will fail identically on every attempt. Retrying it is
-      // the storm, not diligence: six spawns against a session that cannot
-      // exist. The launch layer marks such errors `.permanent`; anything
-      // else keeps the existing retry behavior.
-      if (resumeError?.permanent) break
+      // Two errors end the loop after one attempt, for opposite reasons.
+      // Permanent (stale session: the transcript is in no config base) will
+      // fail identically on every attempt — retrying it is the storm, not
+      // diligence. A cap refusal is transient (a slot can free a second
+      // later) but names its own reason, so hammering it is equally
+      // pointless: report what it said and let the caller decide. The launch
+      // layer marks the first `.permanent`, the daemon the second
+      // `cap-refused`; anything else keeps the existing retry behavior.
+      if (resumeError?.permanent || resumeError?.code === 'cap-refused') break
       runtimeConfirmed = await processAlive(latestProcess === facts.processState ? facts : { ...facts, processState: latestProcess })
       if (runtimeConfirmed) break
       if (attempt + 1 < attempts) {
@@ -222,9 +225,10 @@ export function createDaemonWakeCore({
     }
     if (!runtimeConfirmed) {
       // A permanent error already names the agent, the session, and the
-      // bases searched; wrapping it in the generic runtime sentence would
-      // bury the diagnosis it carries. Re-raise it as the wake's verdict.
-      if (resumeError?.permanent) throw resumeError
+      // bases searched, and a cap refusal already names its count and
+      // ceiling; wrapping either in the generic runtime sentence would bury
+      // the diagnosis it carries. Re-raise it as the wake's verdict.
+      if (resumeError?.permanent || resumeError?.code === 'cap-refused') throw resumeError
       const detail = resumeError?.message ? `: ${resumeError.message}` : ''
       throw new Error(`wake did not produce a live runtime for ${facts.mintId}${detail}`)
     }

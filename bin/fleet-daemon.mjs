@@ -187,7 +187,13 @@ async function requireLaunchSlot(operation, launch = {}) {
   const refusal = agentCapRefusal(operation, { cap, awake, daemonKey, probeError: probe.error || null })
   if (refusal) {
     log.warn(`[agent-cap] ${refusal}`)
-    throw new Error(refusal)
+    const error = new Error(refusal)
+    // A refusal names its reason (count and ceiling) for the caller to act
+    // on; it is information, not a condition to hammer. wake-core attempts it
+    // once and reports what it said. Transient, deliberately not permanent: a
+    // slot can free a second later.
+    error.code = 'cap-refused'
+    throw error
   }
 }
 // CONFIG_DIR holds daemon configuration, cursors, PID and log files. Defaults to

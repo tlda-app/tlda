@@ -2329,6 +2329,31 @@ function deliverSpawnLaunchFailure(entry, detail) {
   )).catch(e => console.error(`[spawn-mailbox] failed to deliver ${entry.id}: ${e.message}`))
 }
 
+// The wake twin of the above. A wake failure reported as `mint failed`
+// asserts something untrue about what was attempted and sends the 3am reader
+// looking for a mint that never happened; the agent exists, it has history,
+// and what failed is bringing it back. Same delivery contract (missing method
+// throws rather than no-ops), truthful wording.
+function deliverWakeLaunchFailure(entry, detail) {
+  if (entry.kind !== 'spawn' || !entry.ownerId) return
+  const label = detail.label || entry.meta?.name || entry.meta?.agentId || 'agent'
+  const agentId = detail.agentId || entry.meta?.agentId || null
+  const reason = detail.error || detail.reason || 'wake-failed'
+  Promise.resolve(fleetStore.chat(
+    'fleet:tlda',
+    entry.ownerId,
+    `**wake failed** — \`${label}\` did not come back.\n\n${reason}\n\nagent_id: \`${agentId || '(none)'}\` · mailbox: \`${entry.id}\``,
+    { type: 'wake_launch_failed', mailbox_id: entry.id, agent_id: agentId, reason },
+  )).catch(e => console.error(`[spawn-mailbox] failed to deliver ${entry.id}: ${e.message}`))
+}
+
+// Mint and wake share the spawn outcome path; the failure notice must say
+// which was attempted. pendingAgentId is set only for fresh mints.
+function deliverSpawnOutcomeFailure(entry, detail, pendingAgentId) {
+  if (pendingAgentId) return deliverSpawnLaunchFailure(entry, detail)
+  return deliverWakeLaunchFailure(entry, detail)
+}
+
 // The readiness settle — the mint launched, and the agent had not logged in by
 // the deadline. It is the ONLY settle with no delivery: the three launch-failure
 // sites above all reach the owner, and this one wrote a `to`-less record and
@@ -3016,7 +3041,7 @@ async function performSpawnRelay(caller, msg) {
             error: e.message || String(e),
           })
           if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { error: e.message || String(e), reason: e.code || 'launch-failed' })
-          if (settled) deliverSpawnLaunchFailure(settled, { error: e.message || String(e), reason: e.code || 'launch-failed' })
+          if (settled) deliverSpawnOutcomeFailure(settled, { error: e.message || String(e), reason: e.code || 'launch-failed' }, pendingAgentId)
           return
         }
       }
@@ -3043,7 +3068,7 @@ async function performSpawnRelay(caller, msg) {
         if (pendingAgentId) await failServerMintShell(pendingAgentId, result.reason || result.error || 'launch-failed')
         const settled = mailboxLibrarian.fail(mailbox.id, result.error || result.reason || 'launch-failed', result)
         if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...result, error: result.error || result.reason || 'launch-failed' })
-        if (settled) deliverSpawnLaunchFailure(settled, { ...result, error: result.error || result.reason || 'launch-failed' })
+        if (settled) deliverSpawnOutcomeFailure(settled, { ...result, error: result.error || result.reason || 'launch-failed' }, pendingAgentId)
         return
       }
       let ready = null
@@ -3102,7 +3127,7 @@ async function performSpawnRelay(caller, msg) {
         error: e.message || String(e),
       })
       if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { error: e.message || String(e), reason: e.code || 'launch-failed' })
-      if (settled) deliverSpawnLaunchFailure(settled, { error: e.message || String(e), reason: e.code || 'launch-failed' })
+      if (settled) deliverSpawnOutcomeFailure(settled, { error: e.message || String(e), reason: e.code || 'launch-failed' }, pendingAgentId)
     }
   })()
   if (msg.await_ready) {
