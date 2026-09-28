@@ -190,6 +190,38 @@ function resolveAdapterModel(adapter, rawModel, config, modelSpec = null) {
   return { model: spec.id, provider: spec.provider || null, selection: null, spec }
 }
 
+// A recorded model spec is authoritative: relaunching an agent reproduces
+// the conditions it was launched under rather than re-resolving its recipe
+// against today's catalog, where an alias may have been repurposed onto
+// another harness (the 2026-09-26 `muse` rename orphaned every claude agent
+// recorded under it). Complete means carrying the launch: id, provider, and
+// the harness it was recorded for.
+function recordedSpecUsable(modelSpec, requestedKind) {
+  return !!modelSpec
+    && typeof modelSpec.id === 'string' && !!modelSpec.id
+    && typeof modelSpec.harness === 'string'
+    && modelSpec.harness === requestedKind
+}
+
+function resolveLaunchModel(adapter, rawModel, config, { modelSpec = null, requestedKind = null } = {}) {
+  if (modelSpec && typeof modelSpec.id === 'string' && modelSpec.id && typeof modelSpec.harness === 'string') {
+    // The spec names its harness: either it matches this launch and is used
+    // whole (id, provider, flags, env — the recorded launch conditions), or
+    // it fails loud here. Falling through to the catalog would silently
+    // substitute today's meaning of the alias for the recorded one.
+    if (!recordedSpecUsable(modelSpec, requestedKind)) {
+      const alias = modelSpec.alias || modelSpec.id
+      throw new SpawnError(
+        'model-harness-mismatch',
+        `recorded model "${alias}" was launched for harness "${modelSpec.harness}", not "${requestedKind}"`,
+        { alias, model_id: modelSpec.id, recorded_harness: modelSpec.harness, requested_harness: requestedKind },
+      )
+    }
+    return { model: modelSpec.id, provider: modelSpec.provider || null, selection: null, spec: modelSpec }
+  }
+  return resolveAdapterModel(adapter, rawModel, config, modelSpec)
+}
+
 function directModelConfig(kind, model) {
   const harness = String(kind || '').trim().toLowerCase()
   const id = String(model || '').trim()
@@ -373,7 +405,7 @@ export async function launchMintProcess(params) {
   const adapter = ADAPTERS[requestedKind]
   if (!adapter) throw new SpawnError('launch-failed', `unsupported harness: ${requestedKind}`)
   applyNormalizedOptions(params, modelSpec)
-  const modelResolved = resolveAdapterModel(adapter, params.model, config, modelSpec)
+  const modelResolved = resolveLaunchModel(adapter, params.model, config, { modelSpec, requestedKind })
   const model = modelResolved.model
   const requestedTmuxSession = params.tmuxSession || params.tmux_session || `fleet-${sanitizeSessionName(name)}`
   const tmuxSession = params.exactTmuxSession
@@ -561,7 +593,7 @@ async function spawnFresh(params) {
   try {
     const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
     tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
-    const modelResolved = resolveAdapterModel(adapter, params.model, config, modelSpec)
+    const modelResolved = resolveLaunchModel(adapter, params.model, config, { modelSpec, requestedKind })
     model = modelResolved.model
     const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
     const configuredHarnessOptions = modelResolved.spec?.harnessOptions || null
@@ -956,7 +988,7 @@ async function spawnRespawn(params) {
   const requestedKind = modelSpec.harness
   const adapter = ADAPTERS[requestedKind]
   if (!adapter) throw new SpawnError('launch-failed', `unknown spawn harness: ${requestedKind}`, { kind: requestedKind })
-  const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
+  const modelResolved = resolveLaunchModel(adapter, rawModel, config, { modelSpec, requestedKind })
   const model = modelResolved.model
   const tmuxSession = localProcess.tmuxName || `fleet-${sanitizeSessionName(friendlyName)}`
   const agent = {
@@ -1268,7 +1300,7 @@ async function spawnRefresh(params) {
   const fleetId = agent.id
   const friendlyName = params.name && !params.name.startsWith('fleet:') ? params.name : (agent.friendly_name || agent.name || fleetId)
   const cwd = resolveSpawnCwd(params.cwd || agent.cwd || process.cwd())
-  const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
+  const modelResolved = resolveLaunchModel(adapter, rawModel, config, { modelSpec, requestedKind })
   const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
   const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
@@ -1373,7 +1405,7 @@ export async function launchDoctorYolo(params = {}) {
   const rawModel = params.model
   const config = directModelConfig(requestedKind, rawModel)
   const modelSpec = resolveLaunchSpec(rawModel, config)
-  const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
+  const modelResolved = resolveLaunchModel(adapter, rawModel, config, { modelSpec, requestedKind })
   // The daemon's own machine id, not the hostname. They agree on this box and
   // need not anywhere else, and a daemon_key built from the wrong half names a
   // daemon that does not exist — which is a route to nowhere rather than an
@@ -1653,7 +1685,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     : (agentName || defaultEnrolledName(params, sessionId))
   const cwd = resolveSpawnCwd(params.cwd || sessionMeta.cwd || process.cwd())
   const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
-  const modelResolved = resolveAdapterModel(codex, params.model, config)
+  const modelResolved = resolveLaunchModel(codex, params.model, config, { requestedKind: 'codex' })
   const model = modelResolved.model
   const tmuxSession = params.tmuxSession || `fleet-${sanitizeSessionName(friendlyName)}`
   if (await (deps.sessionHasRuntime || sessionHasRuntime)(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
@@ -1735,7 +1767,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     : (identity.agentName || defaultEnrolledName(params, sessionId))
   const cwd = resolveSpawnCwd(params.cwd || identity.cwd || process.cwd())
   const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
-  const modelResolved = resolveAdapterModel(claude, params.model, config)
+  const modelResolved = resolveLaunchModel(claude, params.model, config, { requestedKind: 'claude' })
   const model = modelResolved.model
   const tmuxSession = params.tmuxSession || `fleet-${sanitizeSessionName(friendlyName)}`
   if (await (deps.sessionHasRuntime || sessionHasRuntime)(tmuxSession, { tmuxSocket: params.tmuxSocket })) {

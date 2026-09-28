@@ -14,7 +14,7 @@ const CONFIGURED_DIR = '/fake/.tlda/configs/app'
 const CONFIGURED_BASE = '/fake/.tlda/configs/app/claude/projects'
 const DEFAULT_BASE = '/fake/.claude/projects'
 
-function launchParams({ found, searched }) {
+function launchParams({ found, searched }, overrides = {}) {
   let spawned = null
   const params = {
     mintId: 'mint-resume-base-test',
@@ -22,7 +22,7 @@ function launchParams({ found, searched }) {
     name: 'resume-base-test',
     requestedKind: 'claude',
     kind: 'claude',
-    modelSpec: { alias: 'test-claude', id: 'test-claude', harness: 'claude', provider: 'test' },
+    modelSpec: overrides.modelSpec || { alias: 'test-claude', id: 'test-claude', harness: 'claude', provider: 'test' },
     cwd: process.cwd(),
     resumeId: SID,
     tmuxSession: 'fleet-resume-base-test',
@@ -39,7 +39,7 @@ function launchParams({ found, searched }) {
     acknowledgeNoSecurity: true,
     config: {
       agentConfigDir: CONFIGURED_DIR,
-      modelSpecs: { 'test-claude': { alias: 'test-claude', id: 'test-claude', harness: 'claude' } },
+      modelSpecs: overrides.modelSpecs || { 'test-claude': { alias: 'test-claude', id: 'test-claude', harness: 'claude' } },
     },
     activeEnvName: 'testing',
     machineId: 'mini',
@@ -96,6 +96,49 @@ function launchParams({ found, searched }) {
   assert.equal(error.permanent, true)
   assert.match(error.message, new RegExp(SID))
   assert.match(error.message, new RegExp(CONFIGURED_BASE.replace(/[./]/g, c => `\\${c}`)))
+  assert.equal(spawned(), null)
+}
+
+// Case 4: recorded claude spec whose alias the current catalog repurposed
+// onto another harness. The recorded launch conditions win; the catalog is
+// not consulted.
+{
+  const { params, spawned } = launchParams(
+    {
+      found: { kind: 'bundle', name: 'app', agentConfigDir: CONFIGURED_DIR, projectsBase: CONFIGURED_BASE, sessionPath: `${CONFIGURED_BASE}/x/${SID}.jsonl` },
+      searched: [CONFIGURED_BASE],
+    },
+    {
+      modelSpec: { alias: 'muse', id: 'meta/muse-spark-1.3-contributor', harness: 'claude', provider: 'claude' },
+      modelSpecs: { muse: { alias: 'muse', id: 'muse-spark-native', harness: 'muse', provider: 'muse' } },
+    },
+  )
+  const result = await launchMintProcess(params)
+  assert.ok(spawned(), 'expected a spawn')
+  assert.match(spawned().cmd, /--model 'meta\/muse-spark-1\.3-contributor'/)
+  assert.equal(result.model, 'meta/muse-spark-1.3-contributor')
+}
+
+// Case 5: recorded spec naming a different harness than requested fails
+// loud, never silently substituted.
+{
+  const { params, spawned } = launchParams(
+    {
+      found: { kind: 'bundle', name: 'app', agentConfigDir: CONFIGURED_DIR, projectsBase: CONFIGURED_BASE, sessionPath: `${CONFIGURED_BASE}/x/${SID}.jsonl` },
+      searched: [CONFIGURED_BASE],
+    },
+    {
+      modelSpec: { alias: 'muse', id: 'muse-spark-native', harness: 'muse', provider: 'muse' },
+      modelSpecs: { muse: { alias: 'muse', id: 'muse-spark-native', harness: 'muse', provider: 'muse' } },
+    },
+  )
+  const error = await launchMintProcess(params).then(
+    () => { throw new Error('launch should have thrown') },
+    e => e,
+  )
+  assert.equal(error.code, 'model-harness-mismatch')
+  assert.match(error.message, /muse/)
+  assert.match(error.message, /claude/)
   assert.equal(spawned(), null)
 }
 
