@@ -4790,7 +4790,7 @@ app.post('/api/fleet/hook-status', async (req, res) => {
     })
   }
   runtimeStatusStore.updateActivity(agentId, activity, { tool, atMs })
-  broadcastEvent('agent-status', { agent: agentId, status: 'awake', activity, tool, ts: new Date(atMs).toISOString() })
+  broadcastEvent('agent-status', { agent: agentId, activity, tool, ts: new Date(atMs).toISOString() })
   if (activity === 'thinking' || activity === 'compacting') touchActivity(agentId)
   res.json({ ok: true })
 })
@@ -10879,7 +10879,7 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
       tool: msg.tool || null,
       atMs: activityAtMs,
     })
-    broadcastEvent('agent-status', { agent: agentId, status: 'awake', activity, tool: msg.tool || null, ts: msg.ts || new Date(activityAtMs).toISOString() })
+    broadcastEvent('agent-status', { agent: agentId, activity, tool: msg.tool || null, ts: msg.ts || new Date(activityAtMs).toISOString() })
     if (activity === 'thinking' || activity === 'compacting') {
       touchActivity(agentId)
       markDaemonPipeTouch()
@@ -10913,7 +10913,7 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
         tool,
         atMs: runtimeStatusStore.evidenceFor(agent_id)?.activity_at_ms || activityAtMs,
       })
-      broadcastEvent('agent-status', { agent: agent_id, status: 'awake', activity: currentActivity, tool, ts: msg.ts || new Date(activityAtMs).toISOString() })
+      broadcastEvent('agent-status', { agent: agent_id, activity: currentActivity, tool, ts: msg.ts || new Date(activityAtMs).toISOString() })
     }
     if (!historical) {
       touchActivity(agent_id)
