@@ -11,6 +11,7 @@ import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShape
 import { loadSlidesDocument } from './loaders/slidesLoader'
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
+import { snapHtmlHighlightToText } from './htmlSelection'
 import { log } from './logger'
 import { processHighlightFeedback } from './highlightFeedback'
 import { processRibbonHighlight, isInRibbonZone, clearLineYIndexCache, remapRibbonSegments, initRibbon, setupRibbonEraser } from './ribbonInteraction'
@@ -953,6 +954,9 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
             return
           }
           snapHighlighterToText(editor, shape.id, document.name, document.targets)
+          // HTML/markdown pages have no SyncTeX data; snap to rendered text
+          // instead. Each snap is a no-op on the other's page kind.
+          snapHtmlHighlightToText(editor, shape.id)
           processHighlightFeedback(editor, shape.id, document.name)
         }
 

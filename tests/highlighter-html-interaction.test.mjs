@@ -8,6 +8,10 @@ test('ordinary highlights do not become HTML paragraph sticky notes', () => {
   assert.doesNotMatch(editorSetup, /applyHtmlSelectionToHighlight/)
 })
 
+test('HTML highlights snap to rendered text without a share card', () => {
+  assert.match(editorSetup, /snapHtmlHighlightToText/)
+})
+
 test('the right side of the viewport does not cancel drawing tools', () => {
   assert.doesNotMatch(editorSetup, /SLIDER_ZONE_WIDTH/)
   assert.doesNotMatch(editorSetup, /event\.point\.x\s*>=\s*w\s*-/)

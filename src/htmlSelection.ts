@@ -135,7 +135,12 @@ function sourceLineElement(el: Element): Element | null {
 }
 
 function textFromElement(el: Element) {
-  return (el.textContent || '').replace(/\s+/g, ' ').trim()
+  // Fix-3a seam: KaTeX renders each formula twice (a MathML copy plus the
+  // visible HTML), so block text would double every formula. Strip math
+  // subtrees here; mapping them back via their annotation nodes is fix 3b.
+  const clone = el.cloneNode(true) as Element
+  clone.querySelectorAll('.katex').forEach(node => node.remove())
+  return (clone.textContent || '').replace(/\s+/g, ' ').trim()
 }
 
 function renderedTextLineElements(doc: Document): Element[] {
@@ -232,20 +237,21 @@ function htmlPageFallbackSelection(
   return best
 }
 
-export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLShapeId): boolean {
-  const highlight = editor.getShape(highlightId)
-  if (!highlight || (highlight.type as string) !== 'highlight') return false
-  const highlightBounds = editor.getShapePageBounds(highlightId)
-  if (!highlightBounds) return false
+type BestHtmlSelection = { selection: HtmlTextSelection; htmlShape: HtmlPageShapeLike; distance: number }
 
+function findBestHtmlSelection(
+  editor: Editor,
+  highlightBounds: { minX: number; minY: number; maxX: number; maxY: number },
+  highlightParentId?: string,
+): BestHtmlSelection | null {
   const now = Date.now()
-  let best: { selection: HtmlTextSelection; htmlShape: HtmlPageShapeLike; distance: number } | null = null
+  let best: BestHtmlSelection | null = null
 
   for (const selection of htmlTextSelections.values()) {
     if (now - selection.createdAt > RECENT_SELECTION_MS) continue
     const htmlShape = editor.getShape(selection.shapeId as TLShapeId)
     if (!isHtmlPageShapeLike(htmlShape)) continue
-    if (htmlShape.parentId && highlight.parentId && htmlShape.parentId !== highlight.parentId) continue
+    if (htmlShape.parentId && highlightParentId && htmlShape.parentId !== highlightParentId) continue
 
     const pageBounds = editor.getShapePageBounds(htmlShape.id)
     if (!pageBounds || !expandedIntersects(highlightBounds, pageBounds, 16)) continue
@@ -269,10 +275,10 @@ export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLSha
     if (!best || distance < best.distance) best = { selection, htmlShape, distance }
   }
 
-  best ??= htmlPageFallbackSelection(editor, highlightBounds, highlight.parentId)
-  if (!best) return false
+  return best ?? htmlPageFallbackSelection(editor, highlightBounds, highlightParentId)
+}
 
-  const { selection, htmlShape } = best
+function buildHtmlHighlightMeta(htmlShape: HtmlPageShapeLike, selection: HtmlTextSelection) {
   const sourceFile = normalizeSourceFile(htmlShape.props.source || '')
   const anchoredSelectionLines = selection.sourceLines && sourceFile
     ? selection.sourceLines
@@ -291,6 +297,20 @@ export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLSha
     ? [{ ...sourceAnchor, content: selection.text, highlighted: true }]
     : [sourceAnchor]
   const lines = selection.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  return { sourceFile, sourceLines, sourceAnchor, lines }
+}
+
+export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLShapeId): boolean {
+  const highlight = editor.getShape(highlightId)
+  if (!highlight || (highlight.type as string) !== 'highlight') return false
+  const highlightBounds = editor.getShapePageBounds(highlightId)
+  if (!highlightBounds) return false
+
+  const best = findBestHtmlSelection(editor, highlightBounds, highlight.parentId)
+  if (!best) return false
+
+  const { selection, htmlShape } = best
+  const { sourceLines, sourceAnchor, lines } = buildHtmlHighlightMeta(htmlShape, selection)
   const shareCardId = createShapeId()
   const shareCardH = estimateShareCardHeight(selection.text)
   const shareCardX = Math.min(
@@ -337,6 +357,43 @@ export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLSha
       sourceAnchor,
       htmlPageShapeId: htmlShape.id,
       shareCardId,
+    },
+  } as unknown as Parameters<Editor['updateShape']>[0])
+
+  return true
+}
+
+/**
+ * Snap an HTML/markdown highlight stroke to the rendered text beneath it.
+ * Same selection resolution as applyHtmlSelectionToHighlight, but writes only
+ * the highlight's own metadata — no share card, so ordinary highlights never
+ * spawn sticky notes. No-op (returns false) when the stroke overlaps no
+ * html-page shape, which makes it safe to call unconditionally after the
+ * SyncTeX snap on every highlight completion.
+ */
+export function snapHtmlHighlightToText(editor: Editor, highlightId: TLShapeId): boolean {
+  const highlight = editor.getShape(highlightId)
+  if (!highlight || (highlight.type as string) !== 'highlight') return false
+  const highlightBounds = editor.getShapePageBounds(highlightId)
+  if (!highlightBounds) return false
+
+  const best = findBestHtmlSelection(editor, highlightBounds, highlight.parentId)
+  if (!best) return false
+
+  const { selection, htmlShape } = best
+  const { sourceLines, sourceAnchor, lines } = buildHtmlHighlightMeta(htmlShape, selection)
+
+  editor.updateShape({
+    id: highlight.id,
+    type: highlight.type,
+    meta: {
+      ...highlight.meta,
+      highlightText: selection.text,
+      highlightedText: selection.text,
+      highlightLines: lines.length > 0 ? lines : [selection.text],
+      sourceLines,
+      sourceAnchor,
+      htmlPageShapeId: htmlShape.id,
     },
   } as unknown as Parameters<Editor['updateShape']>[0])
 
