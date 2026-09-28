@@ -23,6 +23,9 @@
 // What is exercised is exactly the client-side bookkeeping that was missing.
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 
 import { FleetSearchClient } from './fleet-search-client.mjs'
@@ -196,6 +199,93 @@ test('a query occupying one worker does not block a query on another', { timeout
 
   stuck.catch(() => {})
   await client.close()
+})
+
+// The append is async, so the tests poll rather than assume it has landed.
+// Bounded: without the fix there is no file at all, which must fail fast,
+// not hang the suite.
+async function readRecycleLines(logPath, { expect = 1, timeout = 3000 } = {}) {
+  const started = Date.now()
+  for (;;) {
+    try {
+      const lines = readFileSync(logPath, 'utf8').split('\n').filter(Boolean)
+      if (lines.length >= expect) return lines.map(line => JSON.parse(line))
+    } catch {
+      // Not written yet.
+    }
+    if (Date.now() - started > timeout) throw new Error(`timed out waiting for ${expect} recycle line(s) in ${logPath}`)
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+}
+
+function withRecycleLog() {
+  const dir = mkdtempSync(join(tmpdir(), 'search-recycle-'))
+  const logPath = join(dir, 'search-recycles.log')
+  const prevTimeout = process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS
+  const prevLog = process.env.TLDA_SEARCH_RECYCLE_LOG
+  process.env.TLDA_SEARCH_RECYCLE_LOG = logPath
+  return {
+    logPath,
+    restore() {
+      if (prevTimeout === undefined) delete process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS
+      else process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = prevTimeout
+      if (prevLog === undefined) delete process.env.TLDA_SEARCH_RECYCLE_LOG
+      else process.env.TLDA_SEARCH_RECYCLE_LOG = prevLog
+      rmSync(dir, { recursive: true, force: true })
+    },
+  }
+}
+
+test('a timed-out request is logged durably, and its recycle logs nothing more', { timeout: 8000 }, async () => {
+  // The ceiling-hit rate was unmeasurable: a SIGKILLed query writes no
+  // slowquery row (better-sqlite3 never returns) and the TIMEOUT warn goes
+  // to stdout, whose Fly buffer rolls in minutes. This line is the count.
+  const log = withRecycleLog()
+  process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '150'
+  try {
+    const client = new StubClient('/nonexistent.db', { workers: 1 })
+    const context = { requestId: 'search:test-timeout', caller: 'fleet:test', surface: 'search', payload: { query: 'anything' } }
+    await assert.rejects(client.searchAll('anything', { _requestContext: context }), /did not answer/)
+    const [entry] = await readRecycleLines(log.logPath, { expect: 1 })
+    assert.equal(entry.kind, 'request-timeout')
+    assert.equal(entry.worker, 0)
+    assert.equal(entry.method, 'searchAll')
+    assert.equal(entry.timeoutMs, 150)
+    assert.deepEqual(entry.context, context)
+    assert.equal(entry.inflightOnWorker, 1)
+    assert.equal(entry.totalPending, 1)
+    // The recycle that follows is the same event wearing an exit: no second
+    // line, or every timeout counts twice.
+    await new Promise(resolve => setTimeout(resolve, 200))
+    assert.equal((await readRecycleLines(log.logPath, { expect: 1 })).length, 1)
+    await client.close()
+  } finally {
+    log.restore()
+  }
+})
+
+test('a worker exit nobody ordered is logged with the cancelled requests', { timeout: 8000 }, async () => {
+  // Same hole, other direction: an unordered death rejected its waiters with
+  // "exited (code)" and left no durable trace of what was lost with it.
+  const log = withRecycleLog()
+  process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '30000'
+  try {
+    const client = new StubClient('/nonexistent.db', { workers: 1 })
+    const context = { requestId: 'search:test-exit', caller: 'fleet:test', surface: 'search', payload: { query: 'anything' } }
+    const pending = client.searchAll('anything', { _requestContext: context })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(client._workers[0].inflight.size, 1)
+    client._workers[0].child.kill('SIGTERM')
+    await assert.rejects(pending, /exited/)
+    const [entry] = await readRecycleLines(log.logPath, { expect: 1 })
+    assert.equal(entry.kind, 'worker-exit')
+    assert.equal(entry.worker, 0)
+    assert.equal(entry.signal, 'SIGTERM')
+    assert.deepEqual(entry.cancelled, [context])
+    await client.close()
+  } finally {
+    log.restore()
+  }
 })
 
 test('recycling one worker does not cancel queries on the others', { timeout: 5000 }, async () => {

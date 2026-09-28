@@ -1,5 +1,7 @@
 import { fork } from 'node:child_process'
-import { constants as osConstants, setPriority } from 'node:os'
+import { appendFile } from 'node:fs'
+import { constants as osConstants, homedir, setPriority } from 'node:os'
+import { join } from 'node:path'
 
 import { loadServerConfig } from '../../shared/config.mjs'
 
@@ -43,6 +45,31 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 function requestTimeoutMs() {
   const configured = Number(process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS)
   return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_REQUEST_TIMEOUT_MS
+}
+
+// Where a search timeout or worker death is recorded durably, as JSON lines.
+// stdout alone is a stakeout, not an instrument: the Fly log buffer rolls in
+// minutes, so a ceiling hit is only readable by whoever is tailing at the
+// instant it fires. A SIGKILLed query writes no slowquery row either —
+// better-sqlite3 never returns — so before this the hit rate was
+// unmeasurable: inferred from 20-28.6s completions kissing the bound, never
+// counted. Separate file from slowquery.log, same directory: the schemas
+// differ (no ms/sql here) and slowquery parsers assume theirs.
+// Env-overridable so tests assert against the real writer.
+function recycleLogFile() {
+  return process.env.TLDA_SEARCH_RECYCLE_LOG || join(homedir(), '.config', 'tlda', 'search-recycles.log')
+}
+
+function logSearchRecycle(entry) {
+  let line
+  try {
+    line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n'
+  } catch {
+    return
+  }
+  appendFile(recycleLogFile(), line, err => {
+    if (err) console.warn(`[fleet-search-request] recycle-log append failed: ${err.message}`)
+  })
 }
 
 // What this error may and may not assert.
@@ -182,6 +209,18 @@ export class FleetSearchClient {
     // nothing wrong — say which it was rather than reporting a bare exit.
     const reason = worker.recycleReason
     worker.recycleReason = null
+    // A deliberate recycle is already logged where the timeout fired, with the
+    // bound and the query. An exit nobody ordered has no other record anywhere
+    // — log it here, before _fail clears the waiters carrying the contexts.
+    if (!reason) {
+      logSearchRecycle({
+        kind: 'worker-exit',
+        worker: worker.index,
+        code: code ?? null,
+        signal: signal ?? null,
+        cancelled: [...worker.inflight].map(waiterId => this._pending.get(waiterId)?.context || null),
+      })
+    }
     this._fail(worker, new Error(reason
       ? `the fleet search child was restarted because ${reason}; searches in flight on that child were cancelled with it`
       : `fleet search process exited (${code ?? signal})`))
@@ -251,6 +290,19 @@ export class FleetSearchClient {
         // Only this path can report a request that never came back. The elapsed
         // log below lives in the reply handler, so before this existed a hung
         // request produced no line at any log retention, ever.
+        // Logged durably before the deletes, so the counts include this
+        // request: what timed out, on which worker, and how many other
+        // searches the recycle takes with it. The exit that follows is a
+        // deliberate recycle and logs nothing further.
+        logSearchRecycle({
+          kind: 'request-timeout',
+          worker: worker.index,
+          method,
+          timeoutMs,
+          context: context || null,
+          inflightOnWorker: worker.inflight.size,
+          totalPending: this._pending.size,
+        })
         this._pending.delete(id)
         worker.inflight.delete(id)
         console.warn(`[fleet-search-request] TIMEOUT after ${timeoutMs}ms ${method} ${JSON.stringify(context || {})}`)
