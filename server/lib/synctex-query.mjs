@@ -183,6 +183,37 @@ export async function loadSynctex(projectName, texBase, opts = {}) {
     }
   }
 
+  // --- Remap ephemeral build paths to live source paths ---
+  // LaTeX runs in a per-target scratch dir that is deleted after the build,
+  // so every .tex Input: line points at a path that no longer exists and the
+  // pathExists filter in reverse lookup would drop every record. Rebind an
+  // input whose basename is unique in the project's source tree; leave
+  // missing or ambiguous inputs untouched so they keep today's behavior.
+  const stale = []
+  for (const [id, p] of inputMap) {
+    if (p.endsWith('.tex') && !await pathExists(p)) stale.push([id, p])
+  }
+  if (stale.length > 0) {
+    const byBase = new Map()
+    const walk = async (dir) => {
+      let entries
+      try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        const full = join(dir, e.name)
+        if (e.isDirectory()) await walk(full)
+        else if (e.name.endsWith('.tex')) {
+          if (!byBase.has(e.name)) byBase.set(e.name, [])
+          byBase.get(e.name).push(full)
+        }
+      }
+    }
+    await walk(srcDir)
+    for (const [id, p] of stale) {
+      const cands = byBase.get(basename(p)) || []
+      if (cands.length === 1) inputMap.set(id, await realResolve(cands[0]))
+    }
+  }
+
   const result = { records, inputMap, unit, magnification }
   cache.set(key, result)
   return result
