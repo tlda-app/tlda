@@ -2336,6 +2336,7 @@ export function getFleetTools() {
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
           types: { type: 'array', items: { type: 'string' }, description: 'Filter to specific event types. Valid values: chat, delegate, task_done, task_update, report, login, register, lifecycle. Example: ["chat"] returns only chat messages. Omit for all types.' },
           page_size: { type: 'number', description: 'Max messages per page (default 200; when both since and until are set, the default is the whole window). To get the next page, call again with `since` set to the last returned timestamp. Always honoured when you pass it — a bounded read will not flood you with the whole window if you asked for less.' },
+          limit: { type: 'number', description: 'Alias of page_size — the fleet-wide spelling (search and roster both use limit). page_size wins when both are given.' },
           project: { type: 'string', description: 'Project name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
         },
       },
@@ -5488,7 +5489,12 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     // The window still defaults to whole, so nothing changes for a caller who
     // does not ask; `page_size` is now honoured when it is written down.
     const isBounded = !!(resolvedSince && resolvedUntil);
-    const pageSize = args.page_size || (isBounded ? 10_000 : 200);
+    // `limit` is the fleet-wide spelling for "at most N rows" (search, roster),
+    // so a caller passing it to thread is following the convention, not making
+    // something up. It used to be silently ignored here — `limit: 3` returned
+    // the whole 200-row page — which is a supplied term not reaching the query.
+    // Honoured as an alias; the documented `page_size` wins when both are given.
+    const pageSize = args.page_size || args.limit || (isBounded ? 10_000 : 200);
 
     const parseEventMetadata = (metadata) => {
       if (!metadata) return {};
@@ -5804,6 +5810,21 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       // names the route back to the pair.
       if (pairName) {
         const resolvedTo = primaryId ? ` (${primaryId})` : '';
+        // A bounded read that finds nothing found nothing IN THE WINDOW. The
+        // sentence below asserts the pair never exchanged messages, which a
+        // bound cannot establish: on 2026-09-28 a `since` fifteen minutes
+        // after two inbox messages came back "you two have not exchanged
+        // messages". Name the window that was actually measured, and say how
+        // to read past it. Only the unbounded read earns the strong sentence.
+        if (resolvedSince || resolvedUntil) {
+          const window = [args.since && `since ${args.since}`, args.until && `until ${args.until}`].filter(Boolean).join(' and ');
+          const widen = resolvedSince && resolvedUntil
+            ? 'Widen the window, or drop since/until to read the whole conversation.'
+            : resolvedSince
+            ? `Move since earlier than "${args.since}", or drop it to read the whole conversation.`
+            : `Move until later than "${args.until}", or drop it to read the whole conversation.`;
+          return { content: [{ type: 'text', text: `No messages between you and "${pairName}"${resolvedTo} ${window} in environment "${activeEnvName()}". The time bound excluded everything in range — this says nothing about the conversation outside the window, which may be extensive. ${widen} Pass env explicitly to read another environment.` }] };
+        }
         return { content: [{ type: 'text', text: `No messages between you and "${pairName}"${resolvedTo} in environment "${activeEnvName()}". This is the two-party conversation, so an empty result means you two have not exchanged messages — it is not a statement about ${pairName}'s history, which may be extensive. For everything ${pairName} said to the whole fleet, ask for \`filter: "from:${pairName}"\`. Pass env explicitly to read another environment.` }] };
       }
       return { content: [{ type: 'text', text: `No messages found for the given criteria in environment "${activeEnvName()}". Pass env explicitly to read another environment.` }] };
