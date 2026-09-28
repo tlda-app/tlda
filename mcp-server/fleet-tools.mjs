@@ -2180,6 +2180,7 @@ export function getFleetTools() {
           selector: { type: 'string', description: 'CSS selector within `file` selecting markdown structure. Bare heading ids are accepted as shorthand, e.g. `the-plan` means `#the-plan`.' },
           amend_id: { type: 'number', description: 'The id of one of your earlier messages (returned by chat()). When set, this edits that message in place instead of sending a new one — no filter needed.' },
           max_recipients: { type: 'number', description: 'If the resolved recipient list exceeds this count, abort and return an error listing the matched agents. Default: 5. Pass a higher value to explicitly confirm a large broadcast.' },
+          outline: { type: 'boolean', description: 'Set true when this message is an outline. A marked outline must be file-backed — send it with `file`+`selector` — or the server refuses it. Omit for ordinary messages.' },
         },
       },
     },
@@ -4001,6 +4002,9 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     if (docContext) chatBody.context = docContext;
     if (preambleRef) chatBody.preambleRef = preambleRef;
     if (source) chatBody.source = source;
+    // Explicit outline marking, carried to the server ingress gate. Sent only
+    // when true — absent means an ordinary message, which is never gated.
+    if (args.outline === true) chatBody.outline = true;
     try {
       const data = await mcpFleetTransport.durable('chat', chatBody, { operationId: chatBody._tempId });
       if (data?.queued) {
