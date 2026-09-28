@@ -25,7 +25,6 @@ import {
   temporaryMarkdownShapeMeta,
 } from '../wm/markdown-surface'
 import { requestManagedSurface } from '../wm/managed-surfaces'
-import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 // @ts-ignore — vanilla JS module
 import { parseCanonicalReference } from '../../shared/canonical-references.mjs'
 import { sendCanvasPageShapesToBack } from './document-pages'
@@ -39,8 +38,7 @@ import {
   frameFromHudPresence,
   type FleetInteractionFrame,
 } from '../wm/fleet-interaction-frame'
-import { materializeMarkdownChip } from './markdown-chip-materialize'
-import { CHIP_OPEN_FAILED, fetchChatMarkdown } from './fleet-chat-markdown-open'
+import { CHIP_OPEN_FAILED } from './fleet-chat-markdown-open'
 import { type UiIntentTransaction } from '../uiIntentTelemetry'
 import {
   applyFilterPreviewWithIntent,
@@ -71,8 +69,6 @@ const MARKDOWN_DOCVIEW_W = 650
 const MARKDOWN_DOCVIEW_H = 450
 // Opening lines of the file shown in the drag ghost — more than fills 450px.
 const GHOST_PREVIEW_LINES = 40
-const TEMP_MARKDOWN_PROJECT = 'fleet-markdown-chip-temp'
-const TEMP_MARKDOWN_FILE = 'content.md'
 const TEMP_MARKDOWN_W = 800
 const TEMP_MARKDOWN_H = 1200
 
@@ -132,13 +128,6 @@ export const filterDropPreview = {
   intentKey: null as string | null,
 }
 
-function encodeUtf8Base64(text: string): string {
-  const bytes = new TextEncoder().encode(text)
-  let binary = ''
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return btoa(binary)
-}
-
 function isTemporaryMarkdownProofFixture(meta: Record<string, unknown>) {
   if (meta.wmManagedSurfaceProofFixture !== true) return false
   if (typeof window === 'undefined') return false
@@ -162,66 +151,6 @@ function temporaryMarkdownProofFixtureUrl(title: string, markdown: string) {
   }[ch] || ch))
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapedTitle}</title></head><body><main><h1>${escapedTitle}</h1><pre>${escapedMarkdown}</pre></main></body></html>`
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
-}
-
-async function ensureTemporaryMarkdownProject() {
-  const createRes = await fetch('/api/projects', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name: TEMP_MARKDOWN_PROJECT,
-      title: 'Markdown chip',
-      format: 'markdown',
-      mainFile: TEMP_MARKDOWN_FILE,
-    }),
-  })
-  if (!createRes.ok && createRes.status !== 409) {
-    throw new Error(`project create failed: ${createRes.status}`)
-  }
-}
-
-async function waitForTemporaryMarkdownBuild(startedAt: number, allowExisting = false) {
-  const deadline = startedAt + 8000
-  while (Date.now() < deadline) {
-    const res = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}?t=${Date.now()}`)
-    if (res.ok) {
-      const project = await res.json()
-      const lastBuild = project.lastBuild ? Date.parse(project.lastBuild) : 0
-      if (project.buildStatus === 'success' && project.pages > 0 && (allowExisting || lastBuild >= startedAt - 1000)) return
-      if (project.buildStatus === 'error') throw new Error('markdown build failed')
-    }
-    await new Promise(resolve => setTimeout(resolve, 200))
-  }
-  throw new Error('markdown build timed out')
-}
-
-export async function createTemporaryMarkdownPageUrl(title: string, markdown: string) {
-  const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
-  const startedAt = Date.now()
-  await ensureTemporaryMarkdownProject()
-  const files = [{
-    path: TEMP_MARKDOWN_FILE,
-    content: encodeUtf8Base64(source),
-    encoding: 'base64',
-  }]
-  // Browser edits enter through the server-owned source-room checkout.
-  const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/source-room/files`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      files,
-      sourceManifest: normalizeSourceManifest(files.map(file => file.path), { format: 'markdown', mainFile: TEMP_MARKDOWN_FILE }),
-    }),
-  })
-  if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)
-  const pushResult = await pushRes.json().catch(() => null)
-  // Re-pushing identical bytes is still a revision, but it does not rebuild — so
-  // the wait below must accept the build that is already there or it spends its
-  // whole 8s deadline waiting for one that will never start. The old route said
-  // this with `unchanged: true`; the accept says it as `already-current`.
-  const noRebuild = pushResult?.status === 'already-current' || !!pushResult?.unchanged
-  await waitForTemporaryMarkdownBuild(startedAt, noRebuild)
-  return `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
 }
 
 function lockPageShapeAndSendPagesToBack(editor: Editor, shapeId: TLShapeId) {
@@ -268,6 +197,28 @@ function reportArtifactUrl(url?: string, path?: string) {
   return `/api/file?path=${encodeURIComponent(path)}`
 }
 
+// Live-only resolve for dropped markdown: the pill's path opens as the
+// versioned document of the open project, or nothing opens. Drag-carried
+// bytes and upload-URL fetches are never snapshotted anywhere along the way.
+async function resolveLiveMarkdownPart(projectName: string, sourcePath: string, title: string) {
+  const res = await fetch(`/api/projects/${projectName}/parts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sourcePath, title }),
+  })
+  const result = await res.json().catch(() => null)
+  if (!res.ok || !result?.ok || !result?.outputFile) return null
+  return {
+    url: `/docs/${projectName}/${result.outputFile}?t=${Date.now()}`,
+    outputFile: result.outputFile as string,
+  }
+}
+
+function openProjectName(): string | null {
+  if (typeof window === 'undefined') return null
+  return new URLSearchParams(window.location.search).get('project')
+}
+
 async function createReportArtifactShapeFromPill(
   editor: Editor,
   screenPoint: { x: number; y: number },
@@ -284,20 +235,21 @@ async function createReportArtifactShapeFromPill(
   const title = displayName || filePath?.split('/').pop() || 'Report artifact'
   const sourceKind = reportArtifactSourceKind(fileUrl, filePath, title)
   if (!sourceKind) return false
+  void content // Drag-carried bytes are never embedded; a markdown drop resolves the live document.
   let url = reportArtifactUrl(fileUrl, filePath)
   if (sourceKind === 'markdown') {
-    let markdown = content
-    if (!markdown || markdown === filePath || markdown === value) {
-      if (!fileUrl) {
-        showError?.('This Markdown file wasn’t uploaded, so it can’t be opened here.')
-        return true
-      }
-      if (!url) return false
-      const sourceRes = await fetch(url)
-      if (!sourceRes.ok) throw new Error(`markdown artifact read failed: ${sourceRes.status}`)
-      markdown = await sourceRes.text()
+    const projectName = openProjectName()
+    if (!projectName || !filePath) {
+      showError?.('This Markdown file isn’t part of the open document, so it can’t be attached here.')
+      return true
     }
-    url = await createTemporaryMarkdownPageUrl(title, markdown)
+    const resolved = await resolveLiveMarkdownPart(projectName, filePath, title)
+    if (!resolved) {
+      console.error('[fleet-pill] markdown artifact drop could not resolve; opening no document')
+      showError?.(CHIP_OPEN_FAILED)
+      return true
+    }
+    url = resolved.url
   }
   if (!url) return false
   await placeFleetShapeAtScreenPoint(editor, 'fleet-report-artifact', screenPoint.x, screenPoint.y, REPORT_ARTIFACT_W, REPORT_ARTIFACT_H, {
@@ -320,47 +272,36 @@ async function createMarkdownDocviewShapeFromPill(
   const valuePath = value.startsWith('file:') ? value.slice('file:'.length) : undefined
   const filePath = typeof pill.meta.filePath === 'string' ? pill.meta.filePath : valuePath
   const fileUrl = typeof pill.meta.fileUrl === 'string' ? pill.meta.fileUrl : undefined
-  const sourceAgent = typeof pill.meta.sourceAgent === 'string' ? pill.meta.sourceAgent : undefined
   const displayName = typeof pill.props.displayName === 'string' ? pill.props.displayName : undefined
   const title = displayName || filePath?.split('/').pop() || 'Markdown chip'
   const candidate = `${reportArtifactNameCandidate(fileUrl, filePath, title)} `
   const isMarkdownChip = pill.meta.markdownChip === true ||
     /\.(?:md|markdown)(?:$|[?#\s])/i.test(candidate)
   if (!isMarkdownChip) return false
-
-  let markdown = content
-  if (!markdown || markdown === filePath || markdown === value) {
-    // A chip outside a code block carries no source template, so its content
-    // IS the path and always lands here. Resolve it through the same chain as
-    // clicking the chip — an uploaded URL first, else the sender's file via
-    // resolve-chat-file — because the file lives on the sender's machine.
-    // A load failure opens NO document; the failure goes to the error surface.
-    try {
-      markdown = await fetchChatMarkdown(fileUrl || '', filePath || '', sourceAgent || '')
-    } catch (e) {
-      console.error('[fleet-pill] markdown chip drop could not load; opening no document:', e instanceof Error ? e.message : e)
-      showError?.(CHIP_OPEN_FAILED)
-      return true
-    }
-  }
+  void content // Drag-carried bytes are never embedded; the drop resolves the live document.
 
   try {
-    const projectName = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('project')
+    const projectName = openProjectName()
     if (!projectName) {
       showError?.('This Markdown file cannot be attached without an open document.')
       return true
     }
-    const materializedPart = await materializeMarkdownChip({ markdown, title, sourcePath: filePath })
-    if (!materializedPart.ok || !materializedPart.outputFile) {
-      showError?.(materializedPart.error || 'This Markdown file could not be attached to the project.')
+    if (!filePath) {
+      showError?.(CHIP_OPEN_FAILED)
       return true
     }
-    const url = `/docs/${projectName}/${materializedPart.outputFile}?t=${Date.now()}`
-    await createMarkdownDocviewFromContent(editor, pagePoint, title, markdown, {
+    const resolved = await resolveLiveMarkdownPart(projectName, filePath, title)
+    if (!resolved) {
+      console.error('[fleet-pill] markdown chip drop could not resolve; opening no document')
+      showError?.(CHIP_OPEN_FAILED)
+      return true
+    }
+    await createMarkdownDocviewFromContent(editor, pagePoint, title, '', {
       materializedDoc: projectName,
-      materializedFile: materializedPart.outputFile,
-      ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
-    }, url)
+      materializedFile: resolved.outputFile,
+      sharedDocPath: filePath,
+      sharedDoc: true,
+    }, resolved.url)
     return true
   } catch (e) {
     console.error('[fleet-pill] markdown chip drop failed; opening no document:', e instanceof Error ? e.message : e)
@@ -408,13 +349,16 @@ export async function createTemporaryMarkdownColumn(
 ) {
   const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
   const proofFixture = isTemporaryMarkdownProofFixture(meta)
-  let url = `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
+  let url: string
   if (overrideUrl) {
     url = overrideUrl
   } else if (proofFixture) {
     url = temporaryMarkdownProofFixtureUrl(title, source)
   } else {
-    url = await createTemporaryMarkdownPageUrl(title, source)
+    // No live URL, no column. The temp-project snapshot this branch used to
+    // build was the frozen copy; a caller that cannot resolve a live document
+    // fails here instead of embedding bytes.
+    throw new Error('markdown column requires a live document URL')
   }
   const identity = spatialDocumentIdentity(title, url, meta)
   const shapeId = spatialDocumentShapeId(identity)

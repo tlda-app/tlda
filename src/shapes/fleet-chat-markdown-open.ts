@@ -4,17 +4,14 @@ import { createTemporaryMarkdownColumn } from './FleetPillShape'
 import { getDeviceId, getHumanId, isDeviceReady } from '../fleet/fleet-data.mjs'
 import { dispatchManagedAnnotationViewerRequest } from '../wm/annotation-viewer-surface'
 import { clientPointToPage } from '../wm/viewport-coordinates'
-import { materializeMarkdownChip } from './markdown-chip-materialize'
 
 type MarkdownColumnOptions = {
   editor: Editor
   sourceShapeId: string
   title: string
-  markdown: string
   sourceEl: HTMLElement
   placementEl?: HTMLElement | null
   sourcePath?: string
-  sourceSection?: string
   logPrefix: string
   showError?: (message: string) => void
 }
@@ -27,21 +24,21 @@ type ChipSource = {
 type OpenMarkdownChipOptions = {
   target: HTMLElement
   stopPropagation: () => void
-  openMarkdownColumn: (title: string, markdown: string, sourceEl: HTMLElement, source?: ChipSource) => void | Promise<void>
+  openMarkdownColumn: (title: string, sourceEl: HTMLElement, source?: ChipSource) => void | Promise<void>
   showError?: (message: string) => void
 }
 
-// Opening a chip is a fetch and then a materialize POST before anything appears
-// on screen. Nothing marked the chip as working and nothing kept a second click
-// from starting a second chain, so a click that looked ignored and was clicked
-// again materialized a second project part, a second column and a second viewer
-// request — one intent, N objects. One open per chip at a time, and the chip
-// says so for as long as it runs.
+// Opening a chip is a live-resolve POST before anything appears on screen.
+// Nothing marked the chip as working and nothing kept a second click from
+// starting a second chain, so a click that looked ignored and was clicked
+// again opened a second column and a second viewer request — one intent, N
+// objects. One open per chip at a time, and the chip says so for as long as
+// it runs.
 const openingChips = new Set<string>()
 
 // Every way a chip open can fail says the same sentence, because they are the
 // same event to the person who clicked: the thing did not open. Which of the
-// four it was -- the file would not load, the project part would not write, the
+// three it was -- the path would not resolve, the column would not place, the
 // viewer would not take the surface -- is in the log line beside it, and that
 // is where it belongs. A message naming the stage would ask him to care about a
 // distinction he cannot act on.
@@ -82,43 +79,17 @@ function managedViewportSize() {
   }
 }
 
-export async function fetchMarkdownChipText(chipUrl: string, chipPath = ''): Promise<string> {
-  void chipPath // retained for the inbox caller's existing signature
-  const candidates = [chipUrl].filter(Boolean)
-  let lastError: unknown = null
-  for (const url of candidates) {
-    try {
-      const res = await fetch(url)
-      if (res.ok) return await res.text()
-      lastError = new Error(`HTTP ${res.status}`)
-    } catch (err) {
-      lastError = err
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error('markdown chip fetch failed')
-}
-
-async function resolveSenderFileUrl(chipPath: string, sourceAgent: string): Promise<string> {
-  const res = await fetch('/api/resolve-chat-file', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ agentId: sourceAgent, path: chipPath }),
-  })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const body = await res.json()
-  if (!body?.url) throw new Error('resolved chat file has no URL')
-  return body.url
-}
-
-export async function fetchChatMarkdown(chipUrl: string, chipPath: string, sourceAgent: string): Promise<string> {
-  if (chipUrl) return await fetchMarkdownChipText(chipUrl)
-  if (!chipPath || !sourceAgent) throw new Error('markdown chip has no uploaded URL or source agent')
-  const url = await resolveSenderFileUrl(chipPath, sourceAgent)
-  return await fetchMarkdownChipText(url)
-}
-
+/**
+ * Open a clicked Markdown chip as a live versioned document column.
+ *
+ * Frozen byte-copies were removed from this path: the chip's path resolves
+ * server-side (adopt-then-match against the project's declared markdown
+ * roots), and a path that is not a live document fails loudly with
+ * CHIP_OPEN_FAILED instead of snapshotting. No message bytes are fetched,
+ * uploaded, or stored anywhere along the way.
+ */
 export function openChatMarkdownColumn(options: MarkdownColumnOptions): Promise<void> {
-  const { editor, sourceShapeId, title, markdown, sourceEl, placementEl, sourcePath, sourceSection, logPrefix, showError } = options
+  const { editor, sourceShapeId, title, sourceEl, placementEl, sourcePath, logPrefix, showError } = options
   const sourceRect = sourceEl.getBoundingClientRect()
   const left = Math.max(12, sourceRect.left)
   const top = Math.max(12, sourceRect.bottom + 8)
@@ -129,20 +100,39 @@ export function openChatMarkdownColumn(options: MarkdownColumnOptions): Promise<
 
   // Returned, not voided: the caller's re-entrancy guard clears when this
   // settles, so the chip stays marked for exactly as long as the work runs.
-  return materializeMarkdownChip({ markdown, title, sourcePath, sourceSection }).then((materialized) => {
-    if (!materialized.ok || !materialized.outputFile || !projectName) {
-      log.error(logPrefix, 'markdown materialize failed; opening no document', {
-        title, sourcePath, sourceSection, project: projectName,
-        error: materialized.error || (projectName ? 'no output file' : 'no open document'),
+  const resolveLive = (!projectName || !sourcePath)
+    ? Promise.resolve<{ ok: false; error: string }>({
+        ok: false,
+        error: projectName ? 'no source path' : 'no open document',
+      })
+    : fetch(`/api/projects/${projectName}/parts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourcePath, title }),
+      }).then(async (res) => {
+        const result = await res.json().catch(() => null)
+        if (!res.ok || !result?.ok || !result?.outputFile) {
+          return { ok: false as const, error: result?.error || `HTTP ${res.status}` }
+        }
+        return { ok: true as const, outputFile: result.outputFile as string }
+      }).catch((err) => ({
+        ok: false as const,
+        error: err instanceof Error ? err.message : String(err),
+      }))
+  return resolveLive.then((resolved) => {
+    if (!resolved.ok || !projectName) {
+      log.error(logPrefix, 'markdown live resolve failed; opening no document', {
+        title, sourcePath, project: projectName,
+        error: resolved.ok ? 'no output file' : resolved.error,
       })
       showError?.(CHIP_OPEN_FAILED)
       return
     }
-    const url = `/docs/${projectName}/${materialized.outputFile}?t=${Date.now()}`
-    return createTemporaryMarkdownColumn(mainEditor, chipAnchor, title, markdown || title, {
+    const url = `/docs/${projectName}/${resolved.outputFile}?t=${Date.now()}`
+    return createTemporaryMarkdownColumn(mainEditor, chipAnchor, title, '', {
       sourceChatShapeId: sourceShapeId,
       materializedDoc: projectName,
-      materializedFile: materialized.outputFile,
+      materializedFile: resolved.outputFile,
     }, url)
   }).then((result) => {
     if (!result?.bounds) return
@@ -170,7 +160,7 @@ export function openChatMarkdownColumn(options: MarkdownColumnOptions): Promise<
     })
   }).catch((err) => {
     log.error(logPrefix, 'markdown annotation viewer create failed; nothing opened', {
-      title, sourcePath, sourceSection,
+      title, sourcePath,
       error: err instanceof Error ? err.message : String(err),
     })
     showError?.(CHIP_OPEN_FAILED)
@@ -182,10 +172,9 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
   const mdChip = target.closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
   if (!mdChip) return false
 
-  const chipUrl = mdChip.dataset.url || ''
-  const chipPath = mdChip.dataset.path || ''
-  const chipSection = mdChip.dataset.section || undefined
-  const sourceAgent = mdChip.closest('.chat-line')?.getAttribute('data-msg-from') || ''
+  const chipUrl = (mdChip as HTMLElement).dataset.url || ''
+  const chipPath = (mdChip as HTMLElement).dataset.path || ''
+  const chipSection = (mdChip as HTMLElement).dataset.section || undefined
 
   if (mdChip.classList.contains('src-chip')) {
     stopPropagation()
@@ -194,16 +183,16 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
     // still running is the same intent, not a second document.
     if (!beginChipOpen(mdChip, openKey)) return true
     const title = mdChip.getAttribute('title') || mdChip.textContent || 'source'
-    // Provenance chips are a shared-file chip plus a section focus, not a
-    // section-only snapshot — fetch the whole raw source file (same path as
-    // a plain file chip), never the rendered chat bubble text.
-    fetchChatMarkdown(chipUrl, chipPath, sourceAgent)
-      .then(text => openMarkdownColumn(title, text, mdChip, { path: chipPath, section: chipSection }))
-      // A load failure opens NO document. It used to open a markdown column whose
-      // body was "# Failed to load", which reads to the user as a real but broken
-      // document rather than as a failure. The failure goes to the error surface.
+    // Provenance chips are a shared-file chip plus a section focus. The path
+    // opens as the live versioned document; a chip with no path opens nothing
+    // and the failure goes to the error surface.
+    void Promise.resolve()
+      .then(() => {
+        if (!chipPath) throw new Error('source chip has no path')
+        return openMarkdownColumn(title, mdChip, { path: chipPath, section: chipSection })
+      })
       .catch(err => {
-        log.error('chat-chip', 'source chip failed to load; opening no document', {
+        log.error('chat-chip', 'source chip failed to open; opening no document', {
           title, path: chipPath, url: chipUrl, section: chipSection,
           error: err instanceof Error ? err.message : String(err),
         })
@@ -214,27 +203,20 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
   }
 
   const isMd = /\.(?:md|markdown)(?:$|[?#])/i.test(chipUrl || chipPath)
-  if (!isMd || (!chipUrl && (!chipPath || !sourceAgent))) return false
+  if (!isMd || !chipPath) return false
 
   stopPropagation()
   const openKey = chipOpenKey(chipUrl, chipPath)
   if (!beginChipOpen(mdChip, openKey)) return true
   const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
-  fetchChatMarkdown(chipUrl, chipPath, sourceAgent)
-    .then(text => {
-      const baseUrl = chipUrl ? chipUrl.substring(0, chipUrl.lastIndexOf('/') + 1) : ''
-      const resolved = baseUrl ? text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
-        if (src.startsWith('http') || src.startsWith('/')) return match
-        return `![${alt}](${baseUrl}${src})`
-      }) : text
-      return openMarkdownColumn(title, resolved, mdChip, { path: chipPath })
-    })
-    // Same rule as above: a failed fetch produces no document at all. A chip whose
-    // path only exists on the sending agent's machine cannot resolve from the
-    // server, and fabricating a "Failed to load" document out of that made a
-    // delivery failure look like a broken file.
+  // Same rule as above: a failed resolve produces no document at all. A chip
+  // whose path is not a live document of the open project cannot resolve from
+  // the server, and fabricating a "Failed to load" document out of that made a
+  // delivery failure look like a broken file.
+  void Promise.resolve()
+    .then(() => openMarkdownColumn(title, mdChip, { path: chipPath }))
     .catch(err => {
-      log.error('chat-chip', 'file chip failed to load; opening no document', {
+      log.error('chat-chip', 'file chip failed to open; opening no document', {
         title, path: chipPath, url: chipUrl,
         error: err instanceof Error ? err.message : String(err),
       })

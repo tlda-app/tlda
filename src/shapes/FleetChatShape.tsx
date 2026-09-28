@@ -3564,16 +3564,14 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => { docRef.current = doc }, [doc])
   const shapeContainerRef = useRef<HTMLDivElement | null>(null)
 
-  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement, source?: { path?: string; section?: string }) => {
+  const openMarkdownColumn = useCallback((title: string, sourceEl: HTMLElement, source?: { path?: string; section?: string }) => {
     return openChatMarkdownColumn({
       editor,
       sourceShapeId: shape.id,
       title,
-      markdown,
       sourceEl,
       placementEl: shapeContainerRef.current,
       sourcePath: source?.path,
-      sourceSection: source?.section,
       logPrefix: 'fleet-chat',
       showError: (message) => addToast({ title: message, severity: 'error' }),
     })
@@ -6806,8 +6804,8 @@ function FleetChatInner({ shape }: { shape: any }) {
           const markdown = source?.content.textContent || filePath
           const value = `file:${filePath}`
           // The drop resolves the file through the same chain as clicking the
-          // chip (uploaded URL, else the sender's file via resolve-chat-file),
-          // so the drag carries the same identity a click reads.
+          // chip (the live versioned document via the parts resolve), so the
+          // drag carries the same identity a click reads.
           const chatLine = mdCard.closest('[data-msg-from]') as HTMLElement | null
           drag = {
             pillId: null, pillType: 'doc' as any, value,

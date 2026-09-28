@@ -54,7 +54,7 @@ import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
 import { FleetHudRenderGate, useIsInViewport } from './useIsInViewport'
-import { CHIP_OPEN_FAILED, fetchMarkdownChipText, openChatMarkdownColumn } from './fleet-chat-markdown-open'
+import { CHIP_OPEN_FAILED, openChatMarkdownColumn } from './fleet-chat-markdown-open'
 import { log } from '../logger'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 import './fleet-chat.css'
@@ -720,34 +720,26 @@ function FleetInboxInner({ shape }: { shape: any }) {
     [openPartner, threads],
   )
   const openInboxMarkdownTag = useCallback((tag: InboxMarkdownTag, sourceEl: HTMLElement) => {
-    fetchMarkdownChipText(tag.url, tag.path)
-      .then((text) => {
-        const baseUrl = tag.url ? tag.url.substring(0, tag.url.lastIndexOf('/') + 1) : ''
-        const markdown = baseUrl ? text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
-          if (src.startsWith('http') || src.startsWith('/')) return match
-          return `![${alt}](${baseUrl}${src})`
-        }) : text
-        openChatMarkdownColumn({
-          editor,
-          sourceShapeId: shape.id,
-          title: tag.label,
-          markdown,
-          sourceEl,
-          placementEl: containerRef.current,
-          logPrefix: 'fleet-inbox',
-          showError,
-        })
+    // Live resolution only — the tag's path opens as the versioned document,
+    // or nothing opens. There is no byte fetch and no snapshot along the way.
+    // A failed resolve opens NO document — same rule as the chat chip path.
+    if (!tag.path) {
+      log.error('chat-chip', 'inbox chip has no path; opening no document', {
+        label: tag.label, url: tag.url,
       })
-      // A failed load opens NO document — same rule as the chat chip path. This
-      // used to open a markdown column whose body was "# Failed to load", which
-      // presents a delivery failure to the user as a real but broken document.
-      .catch(err => {
-        log.error('chat-chip', 'inbox chip failed to load; opening no document', {
-          label: tag.label, path: tag.path, url: tag.url,
-          error: err instanceof Error ? err.message : String(err),
-        })
-        showError(CHIP_OPEN_FAILED)
-      })
+      showError(CHIP_OPEN_FAILED)
+      return
+    }
+    void openChatMarkdownColumn({
+      editor,
+      sourceShapeId: shape.id,
+      title: tag.label,
+      sourceEl,
+      placementEl: containerRef.current,
+      sourcePath: tag.path,
+      logPrefix: 'fleet-inbox',
+      showError,
+    })
   }, [editor, shape, showError])
 
   const openableItems = useMemo<DetailItem[]>(() => [

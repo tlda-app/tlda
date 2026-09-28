@@ -53,7 +53,7 @@ import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outli
 import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 import { compareHighlightFeedbackBySource, highlightFeedbackFromShape } from '../lib/highlight-feedback.mjs'
-import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
+import { resolveLiveProjectDocument } from '../lib/project-artifact-materializer.mjs'
 import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, STATUS_TASK_DOC_ROW_LIMIT, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
 import { markdownColumnFileForSource, markdownProjectRootColumn, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
 import { clipRecordingData, readRecordingPublication, writeCandidateClip, writeOwnerInterval, writePublishedRecording } from '../lib/recording-publication.mjs'
@@ -552,7 +552,7 @@ router.get('/:name', requireRead, async (req, res) => {
  * So the click declares the document, the source tree renders it live, and no
  * copy is made. Everything after this is the machinery that already existed:
  * the root makes it a closure member of the settle, `markdownProjectRootColumn`
- * makes it a column, and `realizeProjectMarkdownArtifact` returns the live URL
+ * makes it a column, and `resolveLiveProjectDocument` returns the live URL
  * because it is now a declared root.
  *
  * Three things this must not do.
@@ -649,28 +649,24 @@ async function adoptClickedFileAsDocumentRoot(req, name, sourcePath) {
   return { adopted: true, path: answer.path }
 }
 
-// Materialize shared/embedded markdown as a real, synced column of this project
-// (not a separate project, not a temp snapshot) — the same manifest/rebuild
-// pipeline that already backs project parts/notes.
+// Resolve a clicked file chip to a live versioned document of this project:
+// adopt the path as a document root when the owning daemon allows it, then
+// match it against the declared markdown roots. Frozen byte-copies were
+// removed from this route -- a file that is not a live document fails loudly
+// instead of snapshotting into parts/.
 router.post('/:name/parts', requireOperatorWrite, async (req, res) => {
   try {
     const adoption = await adoptClickedFileAsDocumentRoot(req, req.params.name, req.body?.sourcePath)
-    const result = await realizeProjectMarkdownArtifact({
+    const result = await resolveLiveProjectDocument({
       project: req.params.name,
-      markdown: req.body?.markdown,
       sourcePath: req.body?.sourcePath,
       title: req.body?.title,
-      actor: req.body?.actor,
       provenance: req.body?.provenance,
     })
     if (!result.ready) {
-      const status = result.status === 'not materialized' && /no project resolved/i.test(result.error || '') ? 404 : 400
+      const status = /no project resolved/i.test(result.error || '') ? 404 : 400
       return res.status(status).json({ ok: false, error: result.error, ...result })
     }
-    // A click that resolved to a document the project already renders wrote
-    // nothing, so there is no change to announce. `project-changed` here would
-    // be a reload of every open panel to report that nothing happened.
-    if (!result.live) emitGlobalEvent('project-changed', { name: req.params.name })
     res.json({ ok: true, ...result, ...(adoption ? { adoption } : {}), outputFile: markdownColumnFileForSource(result.projectPath) })
   } catch (e) {
     const message = e?.message || String(e)
@@ -826,26 +822,6 @@ router.get('/:name/parts/:partId/markdown', requireRead, async (req, res) => {
   } catch (e) {
     const message = e?.message || String(e)
     const status = /not found|exists on disk|Path .* does not exist/i.test(message) ? 404 : 500
-    res.status(status).json({ ok: false, error: message })
-  }
-})
-
-// Write back a project-owned markdown artifact part.
-router.put('/:name/parts/:partId/markdown', requireOperatorWrite, async (req, res) => {
-  try {
-    const result = await writeProjectMarkdownArtifact({
-      project: req.params.name,
-      projectArtifactId: req.params.partId,
-      markdown: req.body?.markdown,
-      title: req.body?.title,
-      actor: req.body?.actor,
-      provenance: req.body?.provenance,
-    })
-    emitGlobalEvent('project-changed', { name: req.params.name })
-    res.json({ ok: true, ...result })
-  } catch (e) {
-    const message = e?.message || String(e)
-    const status = /not found|not in the parts manifest|missing/i.test(message) ? 404 : /requires|invalid|mismatch|not an artifact/i.test(message) ? 400 : 500
     res.status(status).json({ ok: false, error: message })
   }
 })

@@ -99,7 +99,6 @@ import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
 import { ProjectContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { NoteDropHandler } from './NoteDropHandler'
-import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { presentationDocumentForRoutedDeck, setCurrentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { presentationLocationMatchesPage, presentationPath, presentationPathWithCourse, presentationRoute } from './presentationRoute'
 import { PAGES_FROM, STORE_HTTP } from './activeConfig'
@@ -1922,7 +1921,6 @@ export function SvgDocumentEditor({ document, roomId, initialCamera, classroomMa
     >
       <DarkModeSync />
       <NoteDropHandler />
-      <MarkdownDropHandler />
       {isPresentation && <SlideNavWrapper document={presentationDocument} />}
     </Tldraw>
     </VersionStampContext.Provider>

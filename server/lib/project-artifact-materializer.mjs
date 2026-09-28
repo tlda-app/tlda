@@ -1,260 +1,51 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
+// Live resolution for clicked file chips: adopt-then-match against the
+// project's declared markdown roots, or fail loudly.
+//
+// Frozen byte-copies were removed from this path. A clicked file that is not
+// (or cannot become) a live document root of the project no longer
+// snapshots into parts/ -- it returns not-ready, and the client shows the
+// shared chip failure sentence. Existing parts keep rendering through the
+// parts list and markdown routes, which never imported this module.
+import { existsSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
-import { randomUUID, createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 
-import { createProjectPartRecord } from '../../shared/project-parts.mjs'
-import { parseMarkdownPart } from '../../shared/project-parts.mjs'
-import { checkpointProjectPartWritebackOffloop, readProject, listProjects, projectPartsRoot } from './project-store.mjs'
+import { readProject, listProjects, projectPartsRoot } from './project-store.mjs'
 import { referencedRootsFromPaths } from '../../shared/source-manifest.mjs'
 import { normalizeDocumentRoots } from '../../shared/document-roots.mjs'
 
-const execFileP = promisify(execFile)
-import {
-  readProjectPartsManifest,
-  upsertProjectPartsManifest,
-} from './project-parts-scanner.mjs'
-import {
-  mergeWritebackMetadata,
-} from './project-part-writeback.mjs'
-import { resolveContainedPath } from './path-containment.mjs'
-
-export const PROJECT_ARTIFACT_KIND = 'artifact'
-export const PROJECT_ARTIFACT_DIR = 'parts'
-
-export async function realizeProjectMarkdownArtifact({
-  project = null,
-  cwd = null,
-  markdown = null,
-  sourcePath = null,
-  title = null,
-  actor = null,
-  provenance = {},
-  projectsProvider = listProjects,
-  git = runGit,
-  idFactory = randomUUID,
-  now = () => new Date().toISOString(),
-  writebackOptions = {},
-  logger = console,
-} = {}) {
-  const resolved = await resolveArtifactProject({ project, cwd, projectsProvider })
+export async function resolveLiveProjectDocument({ project = null, sourcePath = null, title = null, provenance = null } = {}) {
+  const resolved = await resolveArtifactProject({ project })
   if (!resolved) {
-    return notReadyPayload({
-      status: 'not materialized',
-      title,
-      sourcePath,
+    return {
+      kind: 'project-document',
+      title: title || null,
+      state: 'failed',
+      status: 'no project resolved',
+      project: project || null,
+      projectArtifactId: null,
+      sourcePath: sourcePath || null,
       provenance,
-      error: 'No project resolved for artifact',
-    })
-  }
-
-  // A file this project ALREADY renders live is not a thing to copy. Opening it
-  // from chat used to write a second markdown file into `parts/` and put the
-  // panel on THAT, so an edit to the source never reached the panel and nothing
-  // on screen said which of the two copies was in front of you. Measured
-  // 2026-08-23 on a disposable project: source edited after the click, the live
-  // column at `/docs/<p>/index.html` carried the new paragraph and the part at
-  // `/docs/<p>/parts/<id>.html` did not.
-  //
-  // The copy could only ever diverge. A part's bytes are written by exactly two
-  // functions -- this one and writeProjectMarkdownArtifact -- and both take them
-  // from a request body. Nothing re-reads `metadata.sourcePath`: its three
-  // readers are the re-click match below, the carry-forward in the writer, and
-  // `referencedSourcePaths`, which seeds membership.
-  const liveDocument = await liveProjectDocumentPath(resolved.name, sourcePath)
-  if (liveDocument) {
-    return liveDocumentPayload({ project: resolved.name, projectPath: liveDocument, title, provenance })
-  }
-
-  const root = projectPartsRoot(resolved.name)
-  let source
-  try {
-    source = readMarkdownArtifactSource({ markdown, sourcePath, allowedRoot: root })
-  } catch (e) {
-    return notReadyPayload({
-      status: e.code === 'SOURCE_UNREADABLE' ? 'source unreadable' : e.code === 'SOURCE_NOT_ROUTED' ? 'owner-missing' : 'not materialized',
-      title,
-      sourcePath,
-      provenance,
-      error: e.message,
-    })
-  }
-  mkdirSync(join(root, PROJECT_ARTIFACT_DIR), { recursive: true })
-
-  // Re-clicking the same chip/source file should update its existing column,
-  // not pile up a fresh duplicate every time — match by resolved sourcePath.
-  if (sourcePath) {
-    const resolvedSourcePath = resolve(expandHome(sourcePath))
-    const manifest = readProjectPartsManifest(root)
-    const existing = manifest.parts.find(part =>
-      part.kind === PROJECT_ARTIFACT_KIND && part.metadata?.sourcePath === resolvedSourcePath
-    )
-    if (existing) {
-      return writeProjectMarkdownArtifact({
-        project: resolved.name,
-        projectArtifactId: existing.id,
-        markdown: source.markdown,
-        title,
-        actor,
-        provenance,
-        git,
-        now,
-        writebackOptions,
-        logger,
-      })
+      error: `no project resolved for ${project || '(none)'}`,
+      ready: false,
     }
   }
-
-  const id = idFactory()
-  const projectPath = uniqueArtifactPath(root, id)
-  const localPath = join(root, projectPath)
-  const artifactTitle = title || source.title || 'Untitled artifact'
-  const body = stripMarkdownFrontmatter(source.markdown).trimStart()
-  const content = artifactMarkdown({ id, title: artifactTitle, body })
-
-  const writebackResult = await checkpointProjectPartWritebackOffloop({
-    filePath: localPath,
-    content,
-    nowValue: now(),
-    ...writebackOptions,
-  })
-  const manifest = upsertArtifactManifest(root, {
-    id,
-    path: projectPath,
-    title: artifactTitle,
-    sourcePath: source.sourcePath || sourcePath,
-    provenance,
-    createdAt: now(),
-    hash: sha256(content),
-    writeback: writebackResult.writeback,
-  })
-
-  const actorInfo = normalizeActor(actor)
-  const gitResult = await commitArtifact(root, {
-    projectPath,
-    manifestPath: join('.tlda', 'parts.json'),
-    title: artifactTitle,
-    actor: actorInfo,
-    git,
-    logger,
-    enabled: writebackResult.ok,
-  })
-
-  return artifactPayload({
-    id,
-    title: artifactTitle,
+  const livePath = await liveProjectDocumentPath(resolved.name, sourcePath)
+  if (livePath) {
+    return liveDocumentPayload({ project: resolved.name, projectPath: livePath, title, provenance })
+  }
+  return {
+    kind: 'project-document',
+    title: title || null,
+    state: 'failed',
+    status: 'not a live document',
     project: resolved.name,
-    projectRoot: root,
-    projectPath,
-    localPath,
-    content,
-    sourcePath: source.sourcePath || sourcePath,
+    projectArtifactId: null,
+    sourcePath: sourcePath || null,
     provenance,
-    manifest,
-    gitResult,
-    writeback: writebackResult.writeback,
-    writebackOk: writebackResult.ok,
-  })
-}
-
-export async function writeProjectMarkdownArtifact({
-  project,
-  projectArtifactId,
-  projectPath = null,
-  markdown,
-  title = null,
-  actor = null,
-  provenance = {},
-  git = runGit,
-  now = () => new Date().toISOString(),
-  writebackOptions = {},
-  logger = console,
-} = {}) {
-  if (!project) throw new Error('Project artifact writeback requires project')
-  if (!projectArtifactId && !projectPath) throw new Error('Project artifact writeback requires projectArtifactId or projectPath')
-  if (markdown == null) throw new Error('Project artifact writeback requires markdown')
-
-  const root = projectPartsRoot(project)
-  const manifest = readProjectPartsManifest(root)
-  const normalizedPath = projectPath ? normalizeProjectPath(projectPath) : null
-  const existing = manifest.parts.find(part =>
-    (projectArtifactId && part.id === projectArtifactId) ||
-    (normalizedPath && part.path === normalizedPath)
-  )
-  if (!existing) throw new Error('Project artifact is not in the parts manifest')
-  if (existing.kind !== PROJECT_ARTIFACT_KIND) throw new Error(`Project part ${existing.id} is not an artifact`)
-
-  const targetPath = normalizeProjectPath(existing.path || existing.storage?.path)
-  if (!targetPath || targetPath.includes('\0') || targetPath.startsWith('/') || targetPath.split('/').includes('..')) {
-    throw new Error('Project artifact has invalid path')
+    error: `not a live document of ${resolved.name}: ${sourcePath || '(no path)'}`,
+    ready: false,
   }
-  const localPath = join(root, targetPath)
-  if (!existsSync(localPath)) throw new Error('Project artifact file is missing')
-
-  const parsed = parseMarkdownPart(String(markdown), { contextualTitle: existing.title })
-  if (parsed.id && parsed.id !== existing.id) {
-    throw new Error(`Project artifact id mismatch: expected ${existing.id}, got ${parsed.id}`)
-  }
-  const nextTitle = title || parsed.title || existing.title || 'Untitled artifact'
-  const body = stripMarkdownFrontmatter(String(markdown)).trimStart()
-  const content = artifactMarkdown({ id: existing.id, title: nextTitle, body })
-  const writebackResult = await checkpointProjectPartWritebackOffloop({
-    filePath: localPath,
-    content,
-    part: existing,
-    nowValue: now(),
-    ...writebackOptions,
-  })
-  const updatedAt = now()
-
-  const nextManifest = upsertArtifactManifest(root, {
-    id: existing.id,
-    path: targetPath,
-    title: nextTitle,
-    sourcePath: existing.metadata?.sourcePath || null,
-    provenance: {
-      ...(existing.metadata?.provenance || {}),
-      ...provenance,
-    },
-    createdAt: existing.metadata?.createdAt || updatedAt,
-    updatedAt,
-    hash: sha256(content),
-    writeback: writebackResult.writeback,
-  })
-
-  const actorInfo = normalizeActor(actor)
-  const gitResult = await commitArtifact(root, {
-    projectPath: targetPath,
-    manifestPath: join('.tlda', 'parts.json'),
-    title: nextTitle,
-    actor: actorInfo,
-    git,
-    logger,
-    messagePrefix: 'Update markdown artifact',
-    enabled: writebackResult.ok,
-  })
-
-  return artifactPayload({
-    id: existing.id,
-    title: nextTitle,
-    project,
-    projectRoot: root,
-    projectPath: targetPath,
-    localPath,
-    content,
-    sourcePath: existing.metadata?.sourcePath || null,
-    provenance: {
-      ...(existing.metadata?.provenance || {}),
-      ...provenance,
-      updatedAt,
-    },
-    manifest: nextManifest,
-    gitResult,
-    writeback: writebackResult.writeback,
-    writebackOk: writebackResult.ok,
-  })
 }
 
 export async function resolveArtifactProject({ project = null, cwd = null, projectsProvider = listProjects } = {}) {
@@ -312,8 +103,7 @@ export function resolveProjectCwd(cwd) {
  * the same set the Projects tab offers to open -- `/:name/files` builds its
  * `documents` list from exactly these, through `markdownProjectRootColumn`. So a
  * match always has a live column, whatever the parent project's own format is.
- * A markdown file that is merely reachable is not a document here, and still
- * becomes a part.
+ * A markdown file that is merely reachable is not a document here.
  *
  * `normalizeDocumentRoots` rather than `project.documentRoots`: a project whose
  * roots were never declared explicitly has none stored, and its main file is
@@ -335,11 +125,10 @@ export function resolveProjectCwd(cwd) {
  */
 async function liveProjectDocumentPath(projectName, sourcePath) {
   const normalized = String(sourcePath ?? '').replace(/\\/g, '/')
-  // A dropped OS file arrives as a bare filename -- MarkdownDropHandler passes
-  // `file.name` -- which is not a path on any machine. The tail-match's equality
-  // branch would sit it straight on top of a same-named project document, so
-  // dropping a `notes.md` would open the project's own notes.md and silently
-  // discard what was dropped. A path has a directory in it.
+  // A bare filename is not a path on any machine. The tail-match's equality
+  // branch would sit it straight on top of a same-named project document, so a
+  // `notes.md` with no directory would open the project's own notes.md. A path
+  // has a directory in it.
   if (!normalized.includes('/')) return null
 
   const project = await readProject(projectName)
@@ -362,14 +151,14 @@ function declaredMarkdownRootPaths(project) {
 }
 
 /**
- * The response for a click that opened the live document instead of copying it.
+ * The response for a click that resolved to the live document.
  *
  * `projectPath` is the whole contract: the route maps it through
- * `markdownColumnFileForSource` into `outputFile`, which is the only field the
- * three client callers of this route read. The shape that comes out is the one
- * the Projects tab already builds for a live document -- same `/docs/<p>/<f>`
- * url, same `materializedDoc`/`materializedFile` meta -- and `props.source` now
- * resolves to the real source file rather than to a part under `parts/`.
+ * `markdownColumnFileForSource` into `outputFile`. The shape that comes out is
+ * the one the Projects tab already builds for a live document -- same
+ * `/docs/<p>/<f>` url, same `materializedDoc`/`materializedFile` meta -- and
+ * `props.source` resolves to the real source file rather than to a part
+ * under `parts/`.
  */
 function liveDocumentPayload({ project, projectPath, title, provenance }) {
   return {
@@ -389,239 +178,6 @@ function liveDocumentPayload({ project, projectPath, title, provenance }) {
     render: { kind: 'markdown', project, projectPath },
     ready: true,
     recipientRef: null,
-  }
-}
-
-function readMarkdownArtifactSource({ markdown, sourcePath, allowedRoot = null }) {
-  if (markdown != null) {
-    const text = String(markdown)
-    return { markdown: text, title: titleFromMarkdown(text) }
-  }
-  if (sourcePath) {
-    const attempted = resolve(expandHome(sourcePath))
-    let resolved
-    try {
-      resolved = resolveContainedPath(allowedRoot, expandHome(sourcePath))
-    } catch {
-      const err = new Error(`Source markdown is not routed through the project owner: ${attempted}`)
-      err.code = 'SOURCE_NOT_ROUTED'
-      throw err
-    }
-    try {
-      const text = readFileSync(resolved, 'utf8')
-      return { markdown: text, title: titleFromMarkdown(text), sourcePath: resolved }
-    } catch (e) {
-      const err = new Error(`Source markdown is not readable: ${resolved}`)
-      err.code = 'SOURCE_UNREADABLE'
-      err.cause = e
-      throw err
-    }
-  }
-  throw new Error('Project artifact materialization requires markdown or sourcePath')
-}
-
-function upsertArtifactManifest(root, { id, path, title, sourcePath, provenance, createdAt, updatedAt, hash, writeback = null }) {
-  const part = createProjectPartRecord({
-    id,
-    kind: PROJECT_ARTIFACT_KIND,
-    path,
-    title,
-    storage: { type: 'project', path },
-    metadata: mergeWritebackMetadata(compactObject({
-      sourcePath: sourcePath ? resolve(expandHome(sourcePath)) : null,
-      provenance,
-      createdAt,
-      updatedAt,
-      hash,
-    }), writeback),
-  })
-  return upsertProjectPartsManifest(root, part)
-}
-
-function artifactMarkdown({ id, title, body }) {
-  return [
-    '---',
-    `tlda-id: ${id}`,
-    `tlda-kind: ${PROJECT_ARTIFACT_KIND}`,
-    `title: ${yamlScalar(title)}`,
-    '---',
-    '',
-    body || `# ${title}`,
-    '',
-  ].join('\n')
-}
-
-function uniqueArtifactPath(root, id) {
-  const shortId = id.replace(/-/g, '').slice(0, 8)
-  let candidate = join(PROJECT_ARTIFACT_DIR, `${shortId}.md`)
-  let n = 1
-  while (existsSync(join(root, candidate))) {
-    candidate = join(PROJECT_ARTIFACT_DIR, `${shortId}-${n}.md`)
-    n++
-  }
-  return normalizeProjectPath(candidate)
-}
-
-function artifactPayload({ id, title, project, projectRoot, projectPath, localPath, content, sourcePath, provenance, manifest, gitResult, writeback = null, writebackOk = true }) {
-  const readable = writebackOk && isReadableFile(localPath)
-  const ref = artifactRecipientRef({
-    id,
-    title,
-    projectPath,
-    localPath: readable ? localPath : null,
-    hash: sha256(content),
-    sourceAgent: provenance.sourceAgent || provenance.source_agent || null,
-    provenance,
-  })
-  return {
-    kind: PROJECT_ARTIFACT_KIND,
-    title,
-    state: readable ? 'available' : 'failed',
-    status: readable ? 'ready' : writeback?.status || 'not materialized',
-    project,
-    projectArtifactId: id,
-    projectPath,
-    localPath: readable ? localPath : null,
-    localPathVerified: readable,
-    targetPath: localPath,
-    contentType: 'text/markdown',
-    hash: sha256(content),
-    sourceAgent: provenance.sourceAgent || provenance.source_agent || null,
-    provenance: compactObject({
-      ...provenance,
-      sourcePath: sourcePath ? resolve(expandHome(sourcePath)) : null,
-    }),
-    writeback,
-    error: readable ? null : writeback?.message || 'Artifact writeback did not land',
-    render: {
-      kind: 'markdown',
-      project,
-      projectPath,
-      localPath: readable ? localPath : null,
-    },
-    git: gitResult,
-    manifestPath: join(projectRoot, '.tlda', 'parts.json'),
-    ready: readable,
-    recipientRef: readable ? ref : null,
-    manifest,
-  }
-}
-
-function notReadyPayload({ status, title, sourcePath, provenance, error }) {
-  return {
-    kind: PROJECT_ARTIFACT_KIND,
-    title: title || null,
-    state: 'failed',
-    status,
-    projectArtifactId: null,
-    localPath: null,
-    localPathVerified: false,
-    targetPath: sourcePath ? resolve(expandHome(sourcePath)) : null,
-    contentType: 'text/markdown',
-    sourceAgent: provenance?.sourceAgent || provenance?.source_agent || null,
-    provenance,
-    error,
-    ready: false,
-    recipientRef: null,
-  }
-}
-
-function artifactRecipientRef({ id, title, projectPath, localPath, hash, sourceAgent, provenance }) {
-  return {
-    kind: PROJECT_ARTIFACT_KIND,
-    state: 'available',
-    status: 'ready',
-    title,
-    localPath,
-    projectPath,
-    projectArtifactId: id,
-    contentType: 'text/markdown',
-    hash,
-    sourceAgent,
-    provenance,
-  }
-}
-
-async function commitArtifact(root, { projectPath, manifestPath, title, actor, git, logger, messagePrefix = 'Realize markdown artifact', enabled = true }) {
-  if (!enabled) return { committed: false, skipped: true, reason: 'writeback-not-landed' }
-  if (!isGitRepo(root)) return { committed: false, reason: 'not a git repo' }
-  try {
-    await git(['add', projectPath, manifestPath], root)
-    const status = await git(['status', '--porcelain=v1', '--', projectPath, manifestPath], root)
-    if (!status.trim()) return { committed: false, reason: 'no changes' }
-    const message = `${messagePrefix}: ${truncate(title, 72)}`
-    await git([
-      '-c', `user.name=${actor.name}`,
-      '-c', `user.email=${actor.email}`,
-      'commit',
-      `--author=${actor.name} <${actor.email}>`,
-      '-m', message,
-      '--',
-      projectPath,
-      manifestPath,
-    ], root)
-    const hash = git(['rev-parse', 'HEAD'], root)
-    return { committed: true, hash, version: hash, message, author: `${actor.name} <${actor.email}>` }
-  } catch (e) {
-    logger.warn?.(`[project-artifact] git writeback skipped in ${root}: ${e.message}`)
-    return { committed: false, reason: e.message }
-  }
-}
-
-function normalizeActor(actor) {
-  if (!actor) return { name: 'project-artifact', email: 'project-artifact@tlda.local' }
-  if (typeof actor === 'string') return { name: actor, email: actor }
-  return {
-    name: actor.friendlyName || actor.friendly_name || actor.name || actor.id || 'project-artifact',
-    email: actor.fleetId || actor.fleet_id || actor.email || actor.id || 'project-artifact@tlda.local',
-  }
-}
-
-function titleFromMarkdown(markdown) {
-  const body = stripMarkdownFrontmatter(markdown)
-  const heading = body.match(/^#\s+(.+?)\s*$/m)
-  if (heading) return heading[1].replace(/\s*\{#[\w-]+\}\s*$/, '').trim()
-  const first = body.split(/\r?\n/).map(line => line.trim()).find(Boolean)
-  return first ? truncate(first.replace(/[*_`~[\]()]/g, ''), 80) : null
-}
-
-function stripMarkdownFrontmatter(markdown) {
-  return String(markdown ?? '').replace(/^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, '')
-}
-
-function yamlScalar(value) {
-  return JSON.stringify(String(value ?? 'Untitled artifact'))
-}
-
-function sha256(value) {
-  return createHash('sha256').update(String(value ?? '')).digest('hex')
-}
-
-function isReadableFile(path) {
-  try {
-    if (!path || !existsSync(path)) return false
-    readFileSync(path)
-    return true
-  } catch {
-    return false
-  }
-}
-
-// Filesystem checks, not subprocesses -- identical reasoning and measurements to
-// task-doc-materializer: a `git rev-parse` to answer "is this a repo / where is
-// its root" cost ~47ms of blocked event loop per call. `.git` is a directory in
-// a clone and a FILE in a linked worktree, so existsSync is the correct test.
-function isGitRepo(dir) {
-  return gitTopLevel(dir) !== null
-}
-
-function gitTopLevel(cwd) {
-  let dir = resolve(cwd)
-  for (;;) {
-    if (existsSync(join(dir, '.git'))) return dir
-    const parent = dirname(dir)
-    if (parent === dir) return null
-    dir = parent
   }
 }
 
@@ -650,18 +206,16 @@ function normalizeProjectPath(path) {
   return path.split(sep).join('/')
 }
 
-function compactObject(obj) {
-  return Object.fromEntries(Object.entries(obj || {}).filter(([, value]) => value != null))
-}
-
-function truncate(value, max) {
-  const s = String(value ?? '')
-  return s.length <= max ? s : `${s.slice(0, max - 3)}...`
-}
-
-async function runGit(args, cwd) {
-  // Async: the synchronous WAIT, not the subprocess, is what blocked the server
-  // event loop. See task-doc-materializer for the same fix and its measurements.
-  const { stdout } = await execFileP('git', args, { cwd, encoding: 'utf8' })
-  return stdout.trim()
+// Filesystem checks, not subprocesses -- identical reasoning and measurements to
+// task-doc-materializer: a `git rev-parse` to answer "is this a repo / where is
+// its root" cost ~47ms of blocked event loop per call. `.git` is a directory in
+// a clone and a FILE in a linked worktree, so existsSync is the correct test.
+function gitTopLevel(cwd) {
+  let dir = resolve(cwd)
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
 }
