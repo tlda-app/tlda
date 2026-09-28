@@ -2785,6 +2785,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
         startOf: (key: string) => chatScrollStartOf(itemKeys, heightOf, key),
         maxTop: contentEnd - viewportHeightRef.current,
       })
+      console.info('[decide-reason]', JSON.stringify({ action: decision.action, reason: (decision as { reason?: string }).reason ?? null, top: decision.top ?? null, contentEnd, maxTop: contentEnd - viewportHeightRef.current, anchorKey: pendingRestore.anchorKey ?? null, anchorOffset: (pendingRestore as { anchorOffset?: number }).anchorOffset ?? null, atTail, savedFilterKey: (pendingRestore as { filterKey?: string }).filterKey ?? null, resetKey })) // TEMPORARY v7: decide-reason trace, revert with result
       if (decision.action === 'hold' && decision.reason === 'beyond-tail') {
         log.metric('chat-scroll', 'restore holding beyond committable tail', {
           panelId: persistKey,
