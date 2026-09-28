@@ -2506,6 +2506,7 @@ type AnchoredChatListProps<T extends AnchoredChatItem> = {
   // Fired when a pending scroll restore commits, so the parent can supersede
   // an in-flight goToTail loop before it steps over the commit.
   onScrollRestoreCommit?: () => void
+  getGoToTailRunId?: () => number // TEMPORARY v9: run id for the decide line, revert with result
 }
 
 function browserLocalStorage(): Storage | null {
@@ -2529,6 +2530,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
   onAtBottomChange,
   setScroller,
   onScrollRestoreCommit,
+  getGoToTailRunId,
 }, ref) {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const restoreOwnershipRef = useRef(createRestoreOwnership())
@@ -2800,6 +2802,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
         startOf: (key: string) => chatScrollStartOf(itemKeys, heightOf, key),
         maxTop: contentEnd - viewportHeightRef.current,
       })
+      console.info('[decide-reason]', JSON.stringify({ action: decision.action, reason: (decision as { reason?: string }).reason ?? null, top: decision.top ?? null, contentEnd, maxTop: contentEnd - viewportHeightRef.current, anchorKey: pendingRestore.anchorKey ?? null, anchorOffset: (pendingRestore as { anchorOffset?: number }).anchorOffset ?? null, atTail, savedFilterKey: (pendingRestore as { filterKey?: string }).filterKey ?? null, resetKey, owns: restoreOwnershipRef.current.owns === true, goToTailRun: getGoToTailRunId?.() ?? null })) // TEMPORARY v9: decide line with owns flag and run id, revert with result
       if (decision.action === 'hold' && decision.reason === 'beyond-tail') {
         log.metric('chat-scroll', 'restore holding beyond committable tail', {
           panelId: persistKey,
@@ -7461,6 +7464,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 resetKey={filterKey}
                 persistKey={shape.id}
                 onScrollRestoreCommit={handleScrollRestoreCommit}
+                getGoToTailRunId={() => goToTailRunRef.current} // TEMPORARY v9
                 style={{ flex: 1, minHeight: 0 }}
                 setScroller={setAnchoredChatScroller}
                 initialHistoryWindow={CHAT_FIRST_PAGE}
