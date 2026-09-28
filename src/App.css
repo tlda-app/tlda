@@ -1583,3 +1583,26 @@ html[data-theme="dark"] .identity-auto-notice {
   margin: 1px 0;
   opacity: var(--ui-tone-rest);
 }
+
+/* Index proposals, option B (2026-09-27): one centered 1100px column. Chat,
+   search, table and footer all share the same measure; the table gives up
+   full-bleed. Compresses the spacetime history cell (log-age scale, so recent
+   clusters stay legible — verified against real dots on testing).
+   min-width keeps phone (max-width: 520px) byte-identical. */
+@media (min-width: 521px) {
+  .index-top-chat {
+    width: min(1100px, 100%);
+    height: 420px;
+  }
+
+  .project-index-search-row {
+    max-width: 1100px;
+  }
+
+  .project-index {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .project-index-tools {
+    max-width: 1100px;
