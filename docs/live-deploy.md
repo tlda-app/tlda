@@ -440,11 +440,12 @@ trailing slash on `TMPDIR` makes `find` emit `/tmp//tlda-…`, and a `-path`
 comparison would then fail to match and delete the checkout the deploy is about
 to use.
 
-**The hook lives in `~/work/deploy/_utils/pre-receive-common.sh`, outside git.**
-So none of this is in any commit, `git log` will never show it, and a search of
-this tree for the fix will find only this paragraph. Editing it changes the
-release path for the next push with no review and no rollback but a backup —
-treat it accordingly.
+**The hook is versioned in `~/work/deploy/_utils/pre-receive-common.sh` (a local
+git repo), symlinked into `~/work/deploy/hooks/`.** So the fix is in that repo's
+history, `git log` there shows it, and a search of this tree for the fix will
+find only this paragraph. Editing it changes the release path for the next push
+with no review, and rollback is through the `_utils` history — treat it
+accordingly.
 
 ## Which boxes have a guarded remote
 
