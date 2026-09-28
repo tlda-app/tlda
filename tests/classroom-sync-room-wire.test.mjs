@@ -144,10 +144,25 @@ test('the sync socket asks who you are before letting you into a room', async t 
   const anonIntoAda = await upgrade(port, adaRoom, `token=${PUBLIC_TOKEN}`)
   assert.match(anonIntoAda, /403/, `the public link entered a student's layer: ${anonIntoAda}`)
 
-  const noCredential = await upgrade(port, BOOK_ROOM, '')
-  assert.doesNotMatch(noCredential, /101/, `an uncredentialed visitor was let in: ${noCredential}`)
+  // Truly credential-less, not just identity-less: gate #1 no longer 401s
+  // /sync/ at all, so this refusal comes from the room gate alone.
+  const nobodyIntoAda = await upgrade(port, adaRoom, '')
+  assert.match(nobodyIntoAda, /403/, `an uncredentialed visitor entered a student's layer: ${nobodyIntoAda}`)
+
+  // Enrolment token alone, no Bearer: the carrier the room gate was built
+  // for. Reaches the student's own layer, refused everywhere else.
+  const adaClassroomOnly = await upgrade(port, adaRoom, 'classroomToken=tok-ada')
+  assert.match(adaClassroomOnly, /101/, `a student was locked out of their own layer: ${adaClassroomOnly}`)
+
+  const boClassroomOnlyIntoAda = await upgrade(port, adaRoom, 'classroomToken=tok-bo')
+  assert.match(boClassroomOnlyIntoAda, /403/, `a student entered another student's layer: ${boClassroomOnlyIntoAda}`)
 
   // --- the accesses, without which the refusals prove nothing ---
+  // Skip's ruling is anonymous admission: no credential at all still reads
+  // the book. This assertion used to refuse; the flip IS the ruling.
+  const noCredential = await upgrade(port, BOOK_ROOM, '')
+  assert.match(noCredential, /101/, `an uncredentialed visitor was locked out of the book: ${noCredential}`)
+
   const publicIntoBook = await upgrade(port, BOOK_ROOM, `token=${PUBLIC_TOKEN}`)
   assert.match(publicIntoBook, /101/, `the public link was locked out of the book: ${publicIntoBook}`)
 

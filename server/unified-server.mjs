@@ -6288,7 +6288,20 @@ server.on('upgrade', async (req, socket, head) => {
   // misconfigured token should not be allowed to silently kill the local
   // daemon and take down activity cards / terminal cards. Token rotation
   // affects new connections only — established daemons stay up.
-  if (isTokenGatingEnabled() && !url.pathname.startsWith('/ws/fleet') && url.pathname !== '/ws/fleet-daemon') {
+  //
+  // /sync/ rooms are exempt because they carry their own gate:
+  // `classroomRoomAccess` below already decides for a caller with no identity
+  // at all — the book and its common layer stay open to the world, a student's
+  // layer is refused — so a Bearer [REDACTED] check here would not add a refusal,
+  // only keep the book's own readers out. Skip's ruling is anonymous
+  // admission: the unauthenticated reach the room gate, which grants them at
+  // most read on the book. The book-only scope lives in that verdict, not in
+  // a name check here — scoping this exemption by room name would duplicate
+  // the room parser (including its percent-encoding trap) to arrive at the
+  // same answer, and would keep enrolment-token carriers 401-blocked from
+  // their own layers. This is NOT the config flag: gate-off would
+  // everybodyGrant rw everything.
+  if (isTokenGatingEnabled() && !url.pathname.startsWith('/ws/fleet') && url.pathname !== '/ws/fleet-daemon' && !url.pathname.startsWith('/sync/')) {
     if (!resolveIdentity(extractToken(req))) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
       socket.destroy()
