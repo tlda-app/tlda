@@ -73,8 +73,9 @@ function searchTimeoutError(what, timeoutMs) {
   return new Error(
     `the fleet search child did not answer ${what} within ${timeoutMs}ms, `
     + `so it was killed and restarted — the query is no longer running and is no longer `
-    + `holding the search worker. Any other searches in flight were cancelled with it, `
-    + `because there is one child and no way to interrupt a single query inside it. `
+    + `holding the search worker. Any other searches in flight on that same worker `
+    + `were cancelled with it, because each worker is one child and there is no way `
+    + `to interrupt a single query inside it — searches on other workers were not affected. `
     + `Retrying is safe, but the same query will probably take the same time. `
     + `Why it happened, in the order worth suspecting: the query was expensive (an agent `
     + `term resolving to many ids is the usual cause, and a label like project:<name> can `

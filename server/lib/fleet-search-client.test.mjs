@@ -119,6 +119,26 @@ test('a request the child never answers rejects, and does not guess why', { time
   assert.ok(childBefore.killed, 'the timeout must kill the child, not just report')
 })
 
+test('the timeout says which searches died with the worker, not that all did', { timeout: 5000 }, async () => {
+  // The pool confines a recycle to its own worker (`recycling one worker does
+  // not cancel queries on the others`), but the error still said "one child",
+  // which reads as every in-flight search dying with it. Same-worker queries
+  // die; searches on other workers do not — the sentence must say that.
+  process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '150'
+  const client = new StubClient('/nonexistent.db', { workers: 1 })
+
+  await assert.rejects(
+    client.searchAll({ query: 'anything' }),
+    (error) => {
+      assert.match(error.message, /on that same worker/)
+      assert.match(error.message, /searches on other workers were not affected/)
+      assert.doesNotMatch(error.message, /there is one child/)
+      return true
+    },
+  )
+  assert.equal(client._pending.size, 0)
+})
+
 test('CONTROL: a slow-but-live reply still succeeds and is not failed by the bound', async () => {
   process.env.TLDA_SEARCH_REQUEST_TIMEOUT_MS = '2000'
   const client = new StubClient('/nonexistent.db', { workers: 1 })
