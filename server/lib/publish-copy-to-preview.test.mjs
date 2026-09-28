@@ -5,7 +5,7 @@ import { rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { copyBuildOutputToPreview, swapPreviewCopyIntoPlace } from './publish-copy.mjs'
+import { copyBuildOutputToPreview, staticAppSwitchHref, swapPreviewCopyIntoPlace } from './publish-copy.mjs'
 
 const TLDA = new URL('../..', import.meta.url).pathname
 const CONFIG = join(TLDA, 'config/deployments/preview-store')
@@ -40,10 +40,28 @@ test('the copy carries the build, the app, and this destination’s config', asy
   assert.match(readFileSync(join(staticDir, 'app.html'), 'utf8'), /window\.__TLDA_CONFIG__=/)
   const staticPage = readFileSync(join(staticDir, 'static', 'book', 'index.html'), 'utf8')
   assert.match(staticPage, /static page/)
-  assert.match(staticPage, /class="presentation-mode-switch" href="\/app\/book\/index\.html"[^>]*>App<\/a>/)
+  assert.match(staticPage, /class="presentation-mode-switch" href="\.\.\/\.\.\/app\/book\/index\.html"[^>]*>App<\/a>/)
   assert.match(result.store, /^wss:\/\//)
   // The manifest, because a file server has no API to ask for the document.
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(staticDir, 'manifest.json'), 'utf8')).documents), ['a-book'])
+})
+
+test('the switch link climbs out of its own directory on any base', () => {
+  // Shallow twin: static/book/index.html -> ../../app/book/index.html.
+  assert.equal(
+    staticAppSwitchHref('app/book/index.html', 'static/book/index.html'),
+    '../../app/book/index.html',
+  )
+  // Deep twin climbs further: the twin and the canvas page share a depth.
+  assert.equal(
+    staticAppSwitchHref('app/book/chapters/ch-x.html', 'static/book/chapters/ch-x.html'),
+    '../../../app/book/chapters/ch-x.html',
+  )
+  // Segments stay encoded; the climb is never root-relative.
+  assert.equal(
+    staticAppSwitchHref('app/book/my ch.html', 'static/book/my ch.html'),
+    '../../app/book/my%20ch.html',
+  )
 })
 
 test('a second copy replaces the first rather than merging into it', async () => {

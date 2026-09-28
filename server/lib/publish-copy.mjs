@@ -27,6 +27,20 @@ import { injectPresentationSwitch } from './presentation-switch.mjs'
  * SOURCE MAPS DO NOT GO OUT. They are 32MB of the 49MB build and they are for
  * whoever is debugging the app, not for a course site.
  */
+/**
+ * The App switch link a static twin carries back to its canvas page.
+ *
+ * Relative, never root-relative: a copy served from a project-pages subpath
+ * breaks a `/app/...` link, while a relative link resolves against the static
+ * page's own directory on every base. The twin sits at the same depth as the
+ * canvas page (one leading segment swapped), so climbing out of its directory
+ * always lands on the copy root.
+ */
+export function staticAppSwitchHref(file, staticFile) {
+  const climb = '../'.repeat(staticFile.split('/').length - 1)
+  return `${climb}${file.split('/').map(encodeURIComponent).join('/')}`
+}
+
 export async function patchStagedTreeForDestination({ staging, distDir, configDir, document = null }) {
   const previousConfigDir = process.env.TLDA_CONFIG_DIR
   const previousEnv = process.env.TLDA_ENV
@@ -103,7 +117,7 @@ export async function patchStagedTreeForDestination({ staging, distDir, configDi
           )
         }
         const staticHtml = await readFile(staticPath, 'utf8')
-        const href = `/${file.split('/').map(encodeURIComponent).join('/')}`
+        const href = staticAppSwitchHref(file, staticFile)
         await writeFile(staticPath, injectPresentationSwitch(staticHtml, href, 'App'))
       }
     }
