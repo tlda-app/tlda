@@ -7231,6 +7231,11 @@ function sendChannelLogin() {
     env_name: route.envName,
     daemon_key: route.daemonKey || undefined,
     metadata: { kind: harnessFromEnv().kind },
+    // This socket registers for pushes and ignores its reply: the server
+    // must not hand it the return notice, which is the agent's mail. Without
+    // the flag the channel login consumes a parked notice first and the
+    // agent's own login receives nothing.
+    channel: true,
   };
   // In a try: `durable()` resolves the coalesce entry SYNCHRONOUSLY, so a
   // throw here escapes into ResilientWS's 'open' listener, which has no

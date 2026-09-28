@@ -125,6 +125,7 @@ import { createHumanPresenceTracker } from './lib/human-presence.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { admitNeverJoinedVerdict, notifyOwningDaemonOfFailure } from './lib/never-joined-admission.mjs'
 import { admitWakeBaseResolved } from './lib/wake-base-admission.mjs'
+import { loginReturnNoticeHandover } from './lib/login-return-notice.mjs'
 import { emitAgentDiedEvent } from './lib/agent-died-event.mjs'
 import { buildSpawnMailboxStatus } from './lib/spawn-mailbox-status.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
@@ -8030,9 +8031,15 @@ async function dispatchFleetWsMessage(ws, msg) {
       // A reanimate notice was parked for this agent and is handed over
       // whatever the timings; otherwise the notice is emitted only if the agent
       // was genuinely away — see `agentReturnNoticeIfAway`, which also excludes
-      // a freshly minted shell that has never run.
-      const pendingReanimateNotice = existing.metadata?.pendingReturnNotice || null
-      const returnNotice = pendingReanimateNotice || agentReturnNoticeIfAway(existing)
+      // a freshly minted shell that has never run. The MCP channel's own login
+      // is excluded from both: it registers for pushes and ignores its reply.
+      const handover = loginReturnNoticeHandover({
+        pendingNotice: existing.metadata?.pendingReturnNotice || null,
+        awayNotice: agentReturnNoticeIfAway(existing),
+        isChannelLogin: msg.channel === true,
+      })
+      const pendingReanimateNotice = handover.consume ? (existing.metadata?.pendingReturnNotice || null) : null
+      const returnNotice = handover.notice
       const now = new Date().toISOString()
       const agent = {
         ...existing,
