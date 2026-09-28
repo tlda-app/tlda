@@ -131,6 +131,17 @@ const ALLOWED = {
       + 'either side stays green while search silently blends three people\'s history.',
   },
 
+  'server/lib/search-model-filter-wire.test.mjs': {
+    count: 1,
+    category: 'wire test',
+    reason: 'Opens /ws/fleet to prove a `model:<alias>` search resolves against the sender\'s model once the '
+      + 'query has crossed the wire, including `from:` + `model:` composition across their two moments. The '
+      + 'transport library would answer from the client side of that boundary, so routing this through it '
+      + 'would test the library and not the server\'s filter compilation, which is the whole subject -- a '
+      + 'resolver that treated the alias as a name, or bound it to the recipient instead of the sender, '
+      + 'returns the wrong rows while every unit test on either side stays green.',
+  },
+
 
   'test/activity-operation-idempotency-wire.test.mjs': {
     count: 1,
