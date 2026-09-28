@@ -130,7 +130,7 @@ import { EditOperationStore } from '../daemon/edit-operation-store.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { launchMintProcess } from '../agent-launch/index.mjs'
-import { listRunningSessionNames, listSessionNames, sessionConfirmedDead, sessionPaneAlive, sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
+import { listRunningSessionNames, listSessionNames, sessionConfirmedDead, sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { sanitizeSessionName } from '../agent-launch/identity.mjs'
 import { resolvePartialMintRuntime } from '../daemon/partial-mint-runtime-recovery.mjs'
 import { resolvePartialMintPermissionAuthority } from '../daemon/partial-mint-permission-authority.mjs'
@@ -1472,10 +1472,30 @@ async function mintProcessConfirmedDead(facts) {
 const neverJoinedEmitted = new Set()
 
 function examineOneNeverJoinedRow(facts, source) {
+  // The resolver is derived the same way as the wake repair path: an unjoined
+  // row's late transcript is found by the same adapter that would have found
+  // it at mint. Single attempt — the sweep itself is the retry loop, which is
+  // what keeps a discovery deadline from converting "not yet" into "never".
+  const harness = facts?.processState?.harness || null
+  const lateResolver = harness ? liveIdentityResolverMap()[harness] || null : null
   return examineNeverJoinedRow({
     facts,
-    listSessions: () => listSessionNames({ tmuxSocket: TMUX_SOCKET }),
-    probeSession: session => sessionPaneAlive(session, { tmuxSocket: TMUX_SOCKET }),
+    livenessState: agentId => agentLiveness.stateFor(agentId),
+    resolveIdentity: lateResolver ? async row => lateResolver({
+      agent: {
+        id: row.fleetId || null,
+        friendly_name: row.friendlyName || null,
+        session_id: row.sessionId || row.provisionalSessionId || null,
+        cwd: row.processState?.cwd || row.launchRecipe?.cwd || null,
+        registered_at: row.createdAt || null,
+      },
+      tmuxSession: row.processState?.tmux_session || null,
+      tmuxArgs: TMUX_ARGS,
+      tmuxSocket: TMUX_SOCKET,
+      projectsBase: claudeProjectsBaseForConfig(row.launchRecipe?.config || {}),
+      processOwnedOnly: true,
+    }) : null,
+    adoptIdentity: session => daemonMintCore.recordSession(facts.mintId, session),
     emit: msg => sendMsg(msg),
     emitted: neverJoinedEmitted,
     daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
@@ -1492,15 +1512,18 @@ async function sweepNeverJoinedMints() {
     return
   }
   let emitted = 0
+  let joined = 0
   for (const facts of rows) {
     try {
-      if (await examineOneNeverJoinedRow(facts, 'daemon-never-joined-sweep')) emitted += 1
+      const verdict = await examineOneNeverJoinedRow(facts, 'daemon-never-joined-sweep')
+      if (verdict === 'absent' || verdict === 'leaked-alive') emitted += 1
+      else if (verdict === 'joined') joined += 1
     } catch (error) {
       // One bad row must not abort the sweep for every other unjoined mint.
       log.warn(`never-joined sweep failed for ${facts?.mintId}: ${error?.message || error}`)
     }
   }
-  if (emitted) log.info(`never-joined sweep: examined ${rows.length}, emitted ${emitted}`)
+  if (emitted || joined) log.info(`never-joined sweep: examined ${rows.length}, emitted ${emitted}, joined ${joined}`)
 }
 
 // F3(a) receive leg: the server declared a launch failed. Examine this
@@ -1515,8 +1538,16 @@ async function rpcLaunchFailedServerSide({ agent_id, agentId } = {}) {
   const facts = mintStore.getByFleetId(fleetId)
   if (!facts || facts.joinedAt) return { ok: true, examined: false, verdict: null }
   if ((facts.createdAt || '') >= neverJoinedCutoffIso()) return { ok: true, examined: false, verdict: null, reason: 'within launch-latency grace' }
-  const verdict = await examineOneNeverJoinedRow(facts, 'daemon-launch-failed-notice')
-  return { ok: true, examined: true, verdict }
+  // Late-adopt failures propagate out of the examination (a failed bind must
+  // not read as a completed join); the sweep will re-examine the row, so a
+  // failure here is a deferred examination, not a lost one.
+  try {
+    const verdict = await examineOneNeverJoinedRow(facts, 'daemon-launch-failed-notice')
+    return { ok: true, examined: true, verdict }
+  } catch (error) {
+    log.warn(`launch-failed-server-side examination failed for ${fleetId}: ${error?.message || error}`)
+    return { ok: true, examined: false, verdict: null, reason: 'examination-failed' }
+  }
 }
 
 // The bounded evidence a partial mint row can be checked against, in the order
@@ -1547,7 +1578,7 @@ function partialMintExpectedIdentity(facts) {
   return {
     fleetId: facts.fleetId || null,
     mintId: facts.mintId || null,
-    sessionId: facts.sessionId || null,
+    sessionId: facts.sessionId || facts.provisionalSessionId || null,
     friendlyName: facts.friendlyName || null,
     cwd: recipe.cwd || null,
     harness: recipe.kind || null,
@@ -1751,7 +1782,7 @@ daemonMintCore = createDaemonMintCore({
       agent: {
         id: processFact.fleet_id || params.fleet_id || null,
         friendly_name: processFact.name || params.name || null,
-        session_id: processFact.session_id || null,
+        session_id: processFact.session_id || processFact.provisional_session_id || null,
         cwd: processFact.cwd,
         registered_at: launchStartedAt,
       },
@@ -1844,7 +1875,12 @@ const wakeMint = createDaemonWakeCore({
       mintId: facts.mintId,
       fleetId: facts.fleetId,
       name: facts.friendlyName,
-      resumeId: facts.sessionId,
+      // Observed first, provisional second, with the provenance carried so
+      // the launch result keeps it: a wake of a never-joined mint resumes
+      // the launch emission, and recording that as observed would launder
+      // the provisional value through the wake path.
+      resumeId: facts.sessionId || facts.provisionalSessionId || null,
+      resumeIdObserved: facts.sessionId != null,
       requestedKind: facts.processState?.harness || facts.launchRecipe?.kind || 'codex',
       permissionGrant: wakePermission.permissionGrant,
       permissionSet: wakePermission.permissionSet,
@@ -2039,6 +2075,7 @@ async function rpcMint(params = {}) {
     daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
     tmux_session: facts.processState?.tmux_session || null,
     session_id: facts.sessionId,
+    provisional_session_id: facts.provisionalSessionId || null,
     joined,
     ...(!joined && !launchedPendingIdentity ? {
       reason: facts.registrationError ? 'registration-deferred' : 'join-failed',
@@ -2075,7 +2112,7 @@ async function rpcWake(params = {}) {
       agent: {
         id: facts.fleetId || null,
         friendly_name: facts.friendlyName || null,
-        session_id: facts.sessionId || null,
+        session_id: facts.sessionId || facts.provisionalSessionId || null,
         cwd: facts.processState.cwd,
         registered_at: facts.createdAt,
       },
@@ -2096,7 +2133,26 @@ async function rpcWake(params = {}) {
   }
   const out = await wakeMint(params)
   await announceWakeBaseResolution(out)
+  await recordWakeProvisionalSession(facts?.mintId, out)
   return out
+}
+
+// A wake that relaunched fresh rotated the provisional identity: the launch
+// emission names a new session while the column still holds the abandoned
+// one, and the next wake would resume the stale id into a loud stale-session
+// failure. wake-core persists the process fact but never touches identity
+// columns, so the column update is this post-step. Best effort by the same
+// contract as the announcement: the wake already succeeded.
+async function recordWakeProvisionalSession(mintId, out) {
+  const rotated = out?.provisional_session_id || out?.provisionalSessionId || null
+  if (!mintId || !rotated) return
+  try {
+    mintStore.updateProvisionalSession(mintId, rotated)
+  } catch (error) {
+    // The wake already succeeded: failing it on a stale bookkeeping column
+    // would report a live recovery as a failure. Next wake re-derives.
+    log.warn(`wake provisional session record failed for ${mintId}: ${error?.message || error}`)
+  }
 }
 
 // A wake that resumed under a non-configured base substituted surfaces: the

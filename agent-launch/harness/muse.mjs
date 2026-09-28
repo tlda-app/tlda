@@ -269,13 +269,27 @@ export async function resolveLiveSessionIdentity({ tmuxSession, tmuxArgs = [], t
   })
   const sessionId = museSessionIdFromPath(open)
   if (!sessionId) return null
+  // The transcript, not the identity file the adapter bound. These are two
+  // different files on muse; see `museTranscriptPathForSession`. Named
+  // `jsonlPath` to match claude.mjs, because that is the field anything
+  // tailing a session's activity already reads.
+  const jsonlPath = (_deps.transcriptPath || museTranscriptPathForSession)(sessionId)
+  // Observed means a transcript record, not a path — same rule as claude.mjs.
+  // The runtime json is held before the first turn is written, so resolving
+  // on it alone joins mints whose worker never produced a turn. A missing,
+  // unreadable, or recordless transcript is not-yet, not failure.
+  const read = _deps.readFileSync || fs.readFileSync
+  let observedRecord = false
+  try {
+    for (const line of read(jsonlPath, 'utf8').split(/\r?\n/).slice(0, 200)) {
+      if (!line) continue
+      try { JSON.parse(line); observedRecord = true; break } catch { continue }
+    }
+  } catch { return null }
+  if (!observedRecord) return null
   return {
     sessionId,
-    // The transcript, not the identity file the adapter bound. These are two
-    // different files on muse; see `museTranscriptPathForSession`. Named
-    // `jsonlPath` to match claude.mjs, because that is the field anything
-    // tailing a session's activity already reads.
-    jsonlPath: (_deps.transcriptPath || museTranscriptPathForSession)(sessionId),
+    jsonlPath,
     model: argFlag(runtime.args, '--model'),
     cwd: argFlag(runtime.args, '--workspace'),
   }

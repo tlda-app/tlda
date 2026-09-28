@@ -20,13 +20,14 @@ import { exactTmuxWindowTarget } from '../../shared/tmux-target.mjs'
 const CODEX_CONFIG_FILE = path.join(os.homedir(), '.codex', 'config.toml')
 const execFileP = promisify(execFile)
 
-export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, diagnose = false, processOwnedOnly = false } = {}) {
+export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, diagnose = false, processOwnedOnly = false, _deps = {} } = {}) {
   const unresolved = (failureStage) => diagnose ? { sessionId: null, jsonlPath: null, model: null, failureStage } : null
+  const run = _deps.execFile || execFileP
   if (!tmuxSession) return unresolved('pane')
   const tmuxPrefix = tmuxSocket ? ['-S', tmuxSocket] : tmuxArgs
   let paneOut
   try {
-    ;({ stdout: paneOut } = await execFileP('tmux', [...tmuxPrefix, 'list-panes', '-t', exactTmuxWindowTarget(tmuxSession), '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' }))
+    ;({ stdout: paneOut } = await run('tmux', [...tmuxPrefix, 'list-panes', '-t', exactTmuxWindowTarget(tmuxSession), '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' }))
   } catch {
     return unresolved('pane')
   }
@@ -34,7 +35,7 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   if (!panePids.length) return unresolved('pane')
   let psOut
   try {
-    ;({ stdout: psOut } = await execFileP('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
+    ;({ stdout: psOut } = await run('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
   } catch {
     return unresolved('pid')
   }
@@ -51,22 +52,31 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   const runtimePids = codexRuntimeCandidates({ panePids, children, runtimes })
   if (!runtimePids.length) return unresolved('pid')
   const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
-  const jsonlPath = await resolveOwnedCodexTranscript({ runtimePids, agent, launchTs, processOwnedOnly })
+  const jsonlPath = await resolveOwnedCodexTranscript({ runtimePids, agent, launchTs, processOwnedOnly,
+    ...(_deps.resolveTranscriptImpl ? { resolveTranscriptImpl: _deps.resolveTranscriptImpl } : {}),
+  })
   if (!jsonlPath) return unresolved('runtime-rollout')
   const sessionId = ledgerSessionId({ harness_kind: 'codex', jsonl_path: jsonlPath })
   if (!sessionId) return diagnose ? { sessionId: null, jsonlPath, model: null, failureStage: 'session-id' } : null
+  // Observed means a transcript record, not a path — same rule as claude.mjs:
+  // existence proves a launch attempt while a record proves a worker. An
+  // unreadable or recordless rollout is not-yet; the polling loop keeps
+  // waiting and the sweep retries after it gives up.
   let model = null
+  let observedRecord = false
   try {
     for (const line of fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/).slice(0, 200)) {
       if (!line) continue
       let entry
       try { entry = JSON.parse(line) } catch { continue }
+      observedRecord = true
       const value = entry?.payload?.model || entry?.model || entry?.message?.model || entry?.payload?.message?.model || entry?.response?.model || entry?.payload?.response?.model
       if (typeof value === 'string' && value.trim()) { model = value.trim(); break }
     }
   } catch {
-    return { sessionId, jsonlPath, model: null, ...(diagnose ? { failureStage: 'model' } : {}) }
+    return unresolved('transcript')
   }
+  if (!observedRecord) return unresolved('transcript')
   return { sessionId, jsonlPath, model, ...(diagnose && !model ? { failureStage: 'model' } : {}) }
 }
 

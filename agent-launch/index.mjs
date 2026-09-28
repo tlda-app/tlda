@@ -438,6 +438,13 @@ export async function launchMintProcess(params) {
     harnessOptions: modelResolved.spec?.harnessOptions || null,
   })
   const resumeId = params.resumeId || params.sessionId || params.session_id || null
+  // A resume re-presents an already-observed id — unless the caller is
+  // resuming a provisional one (a wake of a never-joined mint, whose only
+  // session is the launch emission). The result keeps the provenance:
+  // `session_id` is observed-only; the emission goes under
+  // `provisional_session_id`. Default true: caller-provided ids predate the
+  // distinction and keep their old meaning.
+  const resumeObserved = resumeId ? params.resumeIdObserved !== false : false
   const freshSessionId = requestedKind === 'claude' && !resumeId
     ? (params._deps?.randomUUID || randomUUID)()
     : null
@@ -552,7 +559,14 @@ export async function launchMintProcess(params) {
     cwd,
     harness: requestedKind,
     model,
-    session_id: requestedKind === 'bot' ? (resumeId || mintId) : (resumeId || freshSessionId),
+    // Bots keep the mint as the session: their identity is the mint by
+    // design, not a transcript to be observed. Everything else splits
+    // provenance — observed under `session_id`, emission under
+    // `provisional_session_id` — so the join gate never reads the emission.
+    session_id: requestedKind === 'bot' ? (resumeId || mintId) : (resumeObserved ? resumeId : null),
+    ...(requestedKind !== 'bot' && !resumeObserved && (resumeId || freshSessionId)
+      ? { provisional_session_id: resumeId || freshSessionId }
+      : {}),
     ...(sessionBase ? {
       session_base: sessionBase.projectsBase,
       session_base_kind: sessionBase.kind,
@@ -964,8 +978,11 @@ async function spawnRespawn(params) {
     model: localProcess.model || facts.launchRecipe?.model || null,
     // The session id is the mint record's, written from the login marker. It was
     // read off this object before it was ever put on it, so wake fell through to
-    // the permission ledger and resumed whatever that happened to hold.
-    sessionId: facts.sessionId || null,
+    // the permission ledger and resumed whatever that happened to hold. Observed
+    // first, provisional second: a wake of a never-joined mint has only the
+    // launch emission, and that is the resume candidate — this is a lookup
+    // hint, not an observation, so the fallback is legitimate here.
+    sessionId: facts.sessionId || facts.provisionalSessionId || null,
   }
   const recipeCwd = localProcess.cwd || facts.launchRecipe?.cwd || null
   if (!recipeCwd) {

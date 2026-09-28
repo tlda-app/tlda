@@ -267,18 +267,25 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   }
   if (!jsonlPath) return null
   const sessionId = ledgerSessionId({ harness_kind: 'claude', jsonl_path: jsonlPath }) || path.basename(jsonlPath, '.jsonl')
+  // Observed means a transcript record, not a path: a file can exist and be
+  // empty, and existence proves a launch attempt while a record proves a
+  // worker. An unreadable or recordless transcript is not-yet, not failure —
+  // the polling loop keeps waiting and the sweep retries after it gives up.
   let model = null
   let cwd = agent?.cwd || null
+  let observedRecord = false
   try {
     for (const line of read(jsonlPath, 'utf8').split(/\r?\n/).slice(0, 200)) {
       if (!line) continue
       let entry
       try { entry = JSON.parse(line) } catch { continue }
+      observedRecord = true
       if (!cwd && typeof entry.cwd === 'string') cwd = entry.cwd
       const value = entry?.model || entry?.message?.model || entry?.payload?.model
       if (typeof value === 'string' && value.trim()) { model = value.trim(); break }
     }
-  } catch { return { sessionId, jsonlPath, model: null, cwd } }
+  } catch { return null }
+  if (!observedRecord) return null
   return { sessionId, jsonlPath, model, cwd }
 }
 

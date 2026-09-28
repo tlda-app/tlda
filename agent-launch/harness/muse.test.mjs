@@ -215,7 +215,12 @@ const LIVE_FDS = [
 test('a live session is identified by the runtime json the process holds, with model and cwd off its argv', async () => {
   const identity = await resolveLiveSessionIdentity({
     tmuxSession: 'fleet-a',
-    _deps: { execFile: stubExec(), findOpenTranscript: stubOpenFds(LIVE_FDS), transcriptPath: id => `/Users/x/.local/share/muse/sessions/2026/09/12/${id}/session.jsonl` },
+    _deps: {
+      execFile: stubExec(),
+      findOpenTranscript: stubOpenFds(LIVE_FDS),
+      transcriptPath: id => `/Users/x/.local/share/muse/sessions/2026/09/12/${id}/session.jsonl`,
+      readFileSync: () => '{"turn":1}\n',
+    },
   })
   assert.equal(identity.sessionId, SESSION)
   assert.equal(identity.model, model)
@@ -251,14 +256,40 @@ test('the transcript path is derived from the session id by finding its date par
 })
 
 test('a session that has not written its first turn still has a transcript path', t => {
-  // The identity resolves as soon as the runtime json is held, which can beat
-  // the first transcript write. Returning null there would hand the launch
-  // path a session with nowhere to tail.
+  // Path derivation only: the directory names the transcript whether or not
+  // the first turn is written. Identity resolution is stricter — see below.
   const root = mkdtempSync(path.join(tmpdir(), 'muse-sessions-empty-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const dir = path.join(root, '2026', '09', '13', SESSION)
   mkdirSync(dir, { recursive: true })
   assert.equal(museTranscriptPathForSession(SESSION, { root }), path.join(dir, 'session.jsonl'))
+})
+
+test('a held runtime json with no transcript record is not an observed identity', async () => {
+  // The runtime json is held before the first turn is written, so resolving
+  // on it alone joins mints whose worker never produced a turn. Observed
+  // means a record in session.jsonl, not the held file.
+  for (const transcript of ['', '\n', 'not json\n']) {
+    const identity = await resolveLiveSessionIdentity({
+      tmuxSession: 'fleet-a',
+      _deps: {
+        execFile: stubExec(),
+        findOpenTranscript: stubOpenFds(LIVE_FDS),
+        transcriptPath: id => `/Users/x/.local/share/muse/sessions/2026/09/12/${id}/session.jsonl`,
+        readFileSync: () => transcript,
+      },
+    })
+    assert.equal(identity, null, JSON.stringify(transcript))
+  }
+  const unreadable = await resolveLiveSessionIdentity({
+    tmuxSession: 'fleet-a',
+    _deps: {
+      execFile: stubExec(),
+      findOpenTranscript: stubOpenFds(LIVE_FDS),
+      transcriptPath: () => null,
+    },
+  })
+  assert.equal(unreadable, null)
 })
 
 test('the muse adapter ignores the transcript and the lock, and takes the runtime json', () => {

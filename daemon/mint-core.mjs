@@ -52,12 +52,12 @@ export function recordedMintIdentity(store, mintId) {
 }
 
 // Whether a launch result still needs deferred session discovery. A result
-// that already names both the session id and its transcript path is bound;
-// anything less runs the harness resolver when one exists. This read
-// `session_id` alone, so a claude launch -- whose id is minted before it
-// starts but whose transcript appears only after its first write, under an
-// isolated CLAUDE_CONFIG_DIR the ingestor never scans -- skipped discovery
-// with no session_path and stayed unbound forever.
+// that already names both the observed session id and its transcript path is
+// bound; anything less runs the harness resolver when one exists. A fresh
+// claude launch carries only `provisional_session_id` — an emission, not an
+// observation — so it always qualifies, which is the point: the transcript
+// appears only after its first write, under an isolated CLAUDE_CONFIG_DIR the
+// ingestor never scans, and only the resolver goes looking there.
 export function launchNeedsIdentityDiscovery(processFact = {}, resolver = null) {
   if (!resolver) return false
   return !(processFact?.session_id && processFact?.session_path)
@@ -107,6 +107,13 @@ export function createDaemonMintCore({
         // The durable permission grant belongs to the launched seat, not to the
         // later transcript discovery. bindSeat records that grant immediately;
         // only the completed runtime identity marks the mint joined.
+        //
+        // `sessionId` here means observed: a transcript record seen by the
+        // ingestor's marker path or attested by a harness resolver. The
+        // launch-emitted pre-minted id lives in `provisionalSessionId` and
+        // this gate never reads it — joining on the emission is what made
+        // every fresh claude mint join at mint and blinded the never-joined
+        // sweep to the whole class.
         if (!current.sessionId || current.joinedAt) return store.get(mintIdValue)
         return store.markJoined(mintIdValue)
       })
@@ -115,6 +122,11 @@ export function createDaemonMintCore({
     return joining
   }
 
+  // Observed-identity writer. Every caller attests a transcript record: the
+  // ingestor's login-marker path, a harness resolver's discovery result, or a
+  // launch result resuming an already-observed id. Launch-emitted ids arrive
+  // under `provisional_session_id` and never reach this function under that
+  // key — see recordProcess.
   async function recordSession(mintIdValue, session) {
     const sessionId = resultFact(session, 'session_id', 'sessionId')
     const sessionPath = resultFact(session, 'session_path', 'sessionPath')
@@ -137,6 +149,18 @@ export function createDaemonMintCore({
     const current = store.get(mintIdValue)
     if (current?.processState && store.updateProcessState) store.updateProcessState(mintIdValue, process)
     else store.setFact(mintIdValue, 'process_state', process)
+    // The launch emission goes to the provisional column, never to the
+    // observed one: `recordSession` below only promotes `session_id`, which a
+    // launch result carries solely when resuming an already-observed id.
+    // Skipped when the same fact carries an observed id — the reconcile
+    // merge spreads the stored JSON, whose provisional key goes stale at
+    // promotion, and writing it back would resurrect it beside the observed
+    // value. The method check mirrors the updateSessionFacts fallback one
+    // function up — memory stub stores predate the column and skip it.
+    const provisionalId = resultFact(process, 'provisional_session_id', 'provisionalSessionId')
+    if (provisionalId && !resultFact(process, 'session_id', 'sessionId') && typeof store.updateProvisionalSession === 'function') {
+      store.updateProvisionalSession(mintIdValue, provisionalId)
+    }
     return recordSession(mintIdValue, process)
   }
 

@@ -88,6 +88,51 @@ test('a known session id with no transcript file stays missing rather than guess
   assert.equal(searched?.kind, 'claude')
 })
 
+test('an existing but recordless transcript stays missing — existence is not observation', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'claude-isolated-empty-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const projectsBase = path.join(root, 'agent-cfg', 'claude', 'projects')
+  const dir = path.join(projectsBase, '-Users-x-work-book')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(path.join(dir, `${SESSION}.jsonl`), '\n\n')
+  const identity = await resolveLiveSessionIdentity({
+    agent: { id: 'fleet:test', session_id: SESSION, cwd: '/Users/x/work/book', registered_at: new Date().toISOString() },
+    tmuxSession: 'fleet-test',
+    projectsBase,
+    _deps: { execFile: stubExec() },
+  })
+  assert.equal(identity, null)
+})
+
+test('a transcript of unparseable lines stays missing', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'claude-isolated-garbage-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const projectsBase = path.join(root, 'agent-cfg', 'claude', 'projects')
+  const dir = path.join(projectsBase, '-Users-x-work-book')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(path.join(dir, `${SESSION}.jsonl`), 'not json\n{{{oops\n')
+  const identity = await resolveLiveSessionIdentity({
+    agent: { id: 'fleet:test', session_id: SESSION, cwd: '/Users/x/work/book', registered_at: new Date().toISOString() },
+    tmuxSession: 'fleet-test',
+    projectsBase,
+    _deps: { execFile: stubExec() },
+  })
+  assert.equal(identity, null)
+})
+
+test('an unreadable transcript stays missing rather than resolving on the path', async () => {
+  const identity = await resolveLiveSessionIdentity({
+    agent: { id: 'fleet:test', session_id: SESSION, cwd: '/Users/x/work/book', registered_at: new Date().toISOString() },
+    tmuxSession: 'fleet-test',
+    _deps: {
+      execFile: stubExec(),
+      resolveTranscript: async () => '/nonexistent/sess.jsonl',
+      readFileSync: () => { throw new Error('EACCES') },
+    },
+  })
+  assert.equal(identity, null)
+})
+
 test('resolution without a known session id keeps the generic transcript search', async () => {
   let searched = null
   const identity = await resolveLiveSessionIdentity({

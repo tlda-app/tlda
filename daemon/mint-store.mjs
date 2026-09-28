@@ -43,6 +43,7 @@ function mintRow(row) {
     processState: decoded(row.process_state),
     sessionId: row.session_id,
     sessionPath: row.session_path,
+    provisionalSessionId: row.provisional_session_id ?? null,
     joinedAt: row.joined_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -98,6 +99,7 @@ export class MintStore {
         process_state TEXT,
         session_id TEXT,
         session_path TEXT,
+        provisional_session_id TEXT,
         joined_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -105,6 +107,13 @@ export class MintStore {
     `)
     const cols = this.db.prepare('PRAGMA table_info(daemon_mints)').all().map(col => col.name)
     if (!cols.includes('env_name')) this.db.exec('ALTER TABLE daemon_mints ADD COLUMN env_name TEXT')
+    // The pre-minted session id a launch emits before any worker exists. It
+    // used to land in `session_id`, which made the join gate read an emission
+    // as an observation: every fresh claude mint joined at mint, and the
+    // never-joined sweep structurally could not see the class. `session_id`
+    // now means observed only; the provisional value lives here, where no
+    // observed-reader looks, until an observation promotes past it.
+    if (!cols.includes('provisional_session_id')) this.db.exec('ALTER TABLE daemon_mints ADD COLUMN provisional_session_id TEXT')
     // Recover the environment of every mint that recorded it in `metadata` and
     // not in the column. `getByFriendlyName` filters on the column, so those
     // rows were unfindable by name — `tlda agent wake <name>` answered "no local
@@ -224,13 +233,37 @@ export class MintStore {
     if (sessionId == null && sessionPath == null) return this.get(mintId)
     const sets = []
     const values = []
-    if (sessionId != null) { sets.push('session_id = ?'); values.push(sessionId) }
+    if (sessionId != null) {
+      sets.push('session_id = ?')
+      values.push(sessionId)
+      // Promotion is one-way: an observed identity supersedes the emission,
+      // so the provisional column clears rather than lingering as a second
+      // answer. Every candidate-reader takes observed first anyway; this
+      // keeps "provisional" meaning "not yet observed" instead of "also".
+      sets.push('provisional_session_id = NULL')
+    }
     if (sessionPath != null) { sets.push('session_path = ?'); values.push(sessionPath) }
     const result = this.db.prepare(`
       UPDATE daemon_mints
       SET ${sets.join(', ')}, updated_at = ?
       WHERE mint_id = ?
     `).run(...values, now, mintId)
+    if (result.changes !== 1) throw new Error(`no daemon mint facts for ${mintId}`)
+    return this.get(mintId)
+  }
+
+  // Record a launch-emitted session id that no observation has confirmed.
+  // Overwrites like the other per-launch facts: a wake that relaunches fresh
+  // rotates the provisional identity, and setFact would call that a conflict.
+  // Deliberately not in COLUMNS for the same reason — this is never set once.
+  updateProvisionalSession(mintId, provisionalSessionId, now = new Date().toISOString()) {
+    if (!mintId) throw new Error('mint_id is required')
+    if (provisionalSessionId == null) return this.get(mintId)
+    const result = this.db.prepare(`
+      UPDATE daemon_mints
+      SET provisional_session_id = ?, updated_at = ?
+      WHERE mint_id = ?
+    `).run(provisionalSessionId, now, mintId)
     if (result.changes !== 1) throw new Error(`no daemon mint facts for ${mintId}`)
     return this.get(mintId)
   }
