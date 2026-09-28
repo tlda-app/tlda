@@ -175,12 +175,25 @@ function htmlPageFallbackSelection(
     const scrollY = doc.defaultView?.scrollY || 0
     const hits: Array<{ line?: number; text: string; rect: HtmlSelectionRect; distance: number }> = []
 
+    const sources: Array<{ el: Element; line?: number; text: string }> = []
     for (const el of renderedTextLineElements(doc)) {
-      const lineEl = sourceLineElement(el) || el
-      const line = lineFromElement(lineEl)
       const text = textFromElement(el)
       if (!text) continue
+      const lineEl = sourceLineElement(el) || el
+      sources.push({ el, line: lineFromElement(lineEl), text })
+    }
+    // Fix 3b: KaTeX carries the source TeX in an annotation node — read it
+    // rather than inferring. (Quarto/MathJax output has no equivalent node,
+    // so this covers KaTeX-rendered pages only.)
+    for (const math of [...doc.querySelectorAll('.katex')]) {
+      const tex = math.querySelector('annotation[encoding="application/x-tex"]')?.textContent?.trim()
+      if (!tex) continue
+      const lineEl = sourceLineElement(math)
+      const display = !!math.closest('.katex-display')
+      sources.push({ el: math, line: lineEl ? lineFromElement(lineEl) : undefined, text: display ? `$$${tex}$$` : `$${tex}$` })
+    }
 
+    for (const { el, line, text } of sources) {
       for (const rect of [...el.getClientRects()]) {
         if (rect.width <= 0 || rect.height <= 0) continue
         const candidate = {
@@ -212,10 +225,17 @@ function htmlPageFallbackSelection(
     const left = Math.min(...hits.map(hit => hit.rect.offsetLeft))
     const right = Math.max(...hits.map(hit => hit.rect.offsetLeft + hit.rect.width))
     const bottom = Math.max(...hits.map(hit => hit.rect.offsetTop + hit.rect.height))
-    const sourceLines = hits
-      .filter((hit): hit is typeof hit & { line: number } => hit.line != null)
-      .filter((hit, index, arr) => arr.findIndex(other => other.line === hit.line) === index)
-      .map(hit => ({ line: hit.line, text: hit.text }))
+    // One entry per line; a line's distinct texts (e.g. prose plus a formula
+    // read from its annotation) join rather than first-wins. Identical texts
+    // from wrapped rects still collapse to one, as before.
+    const textsByLine = new Map<number, string[]>()
+    for (const hit of hits) {
+      if (hit.line == null) continue
+      if (!textsByLine.has(hit.line)) textsByLine.set(hit.line, [])
+      const texts = textsByLine.get(hit.line)!
+      if (!texts.includes(hit.text)) texts.push(hit.text)
+    }
+    const sourceLines = [...textsByLine.entries()].map(([line, texts]) => ({ line, text: texts.join('\n') }))
     const selection: HtmlTextSelection = {
       shapeId: shape.id,
       text: hits.map(hit => hit.text).filter((text, index, arr) => arr.indexOf(text) === index).join('\n'),

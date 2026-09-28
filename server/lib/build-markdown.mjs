@@ -266,10 +266,14 @@ function mathPlugin(md) {
     if (/^[\s\\]*(newcommand|DeclareMathOperator|def\b)/.test(content.trim()) && !content.includes('=')) {
       return '' // suppress preamble block from output
     }
+    // Same line anchor every other block gets (see installLineAnchorPlugin):
+    // without it a formula reads back unanchored and the highlight cannot point.
+    const mapLine = tokens[idx].map?.[0]
+    const anchor = mapLine != null ? ` id="line-${mapLine + 1}"` : ''
     try {
-      return '<p>' + katex.renderToString(content, { throwOnError: false, strict: false, displayMode: true, macros: { ..._macros } }) + '</p>\n'
+      return `<p${anchor}>` + katex.renderToString(content, { throwOnError: false, strict: false, displayMode: true, macros: { ..._macros } }) + '</p>\n'
     } catch (e) {
-      return `<p class="math-error">${tokens[idx].content}</p>\n`
+      return `<p${anchor} class="math-error">${tokens[idx].content}</p>\n`
     }
   }
 }
