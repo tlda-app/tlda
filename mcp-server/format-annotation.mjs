@@ -179,13 +179,19 @@ export function formatAnnotationRef(refData) {
   let out = `[${type || 'annotation'}] ${color || ''}${locationRef}`.trimEnd()
 
   // Build passage: context lines with highlighted portions wrapped in ⟦⟧.
+  // Lines the resolver flagged ambiguous or low-confidence arrive marked —
+  // a co-nomination or a guess must say so rather than read as exact.
   if (sourceLines.length > 0) {
     const passageLines = sourceLines.map(sl => {
       if (!sl.highlighted) return sl.content
+      let text
       if (sl.hlStart != null && sl.hlEnd != null && sl.hlEnd > sl.hlStart) {
-        return sl.content.slice(0, sl.hlStart) + '⟦' + sl.content.slice(sl.hlStart, sl.hlEnd) + '⟧' + sl.content.slice(sl.hlEnd)
+        text = sl.content.slice(0, sl.hlStart) + '⟦' + sl.content.slice(sl.hlStart, sl.hlEnd) + '⟧' + sl.content.slice(sl.hlEnd)
+      } else {
+        text = '⟦' + sl.content + '⟧'
       }
-      return '⟦' + sl.content + '⟧'
+      if (sl.ambiguous === true || (sl.confidence != null && sl.confidence < 0.5)) text += ' ⚠ approximate'
+      return text
     })
     out += '\n  ' + passageLines.join('\n  ')
   } else {
