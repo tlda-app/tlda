@@ -32,6 +32,8 @@ import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelectio
 import { attachRglFigureSync } from '../rglFigureSync'
 import { GestureInterpreter } from '@tldraw/editor'
 import { PAGES_FROM } from '../activeConfig'
+import { filesBasePath } from '../pageSource'
+import { resolveShapeUrlForServeBase } from '../shapeUrlBase'
 import { ProjectContext } from '../PanelContext'
 import { presentationPath } from '../presentationRoute'
 import { clearHtmlHeadingOutline, setHtmlHeadingOutline } from '../htmlHeadingOutline'
@@ -1511,9 +1513,16 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     }
   }, [shape.id, editor])
 
+  // A published copy renders shapes synced from every other copy: a url
+  // authored under the live root 404s on a project-pages subpath, where the
+  // same bytes answer under this copy's base. Re-root render-locally — the
+  // room keeps whatever each author wrote, and each reader reads its own.
+  const shapeSrcUrl = PAGES_FROM === 'files' && shape.props.url
+    ? resolveShapeUrlForServeBase(shape.props.url, filesBasePath(import.meta.env.BASE_URL), window.location.origin)
+    : (shape.props.url ?? '')
   // Pass shape ID and auth token to iframe
-  const urlWithParams = shape.props.url
-    ? appendToken(shape.props.url + (shape.props.url.includes('?') ? '&' : '?') + `_tldaShape=${shape.id}`)
+  const urlWithParams = shapeSrcUrl
+    ? appendToken(shapeSrcUrl + (shapeSrcUrl.includes('?') ? '&' : '?') + `_tldaShape=${shape.id}`)
     : ''
   const iframeTitle = htmlPageIframeTitle(shape)
 
