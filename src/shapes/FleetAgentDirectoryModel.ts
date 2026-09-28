@@ -10,6 +10,8 @@ import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs'
 // @ts-ignore - vanilla JS module
 import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 import { machineOfDaemonKey } from '../../shared/agent-move-target.mjs'
+// @ts-ignore - vanilla JS module
+import { resolveModelAlias } from '../../shared/model-alias-history.mjs'
 
 const NICK_COLORS = ['#7a9ec8', '#9370db', '#c8956a', '#6aafb0', '#b87a95', '#c8b060']
 const nickMap = new Map<string, string>()
@@ -112,10 +114,14 @@ function readablePath(value: string): string {
 
 export function formatFleetAgentModel(model: string | null | undefined, options: FleetAgentDirectoryFormatOptions = {}): string {
   if (!model) return ''
+  // The recorded string is frozen at mint; a rename leaves old rows holding
+  // the retired alias. Resolve through the alias history first so the panel
+  // shows the current name for old and new rows alike, with no migration.
+  const current = resolveModelAlias(model)
   const catalog = options.spawnModels || []
-  const match = catalog.find((entry) => entry.alias === model || entry.id === model)
-  if (match) return match.description || match.alias || model
-  let s = model.includes('/') ? model.split('/').pop()! : model
+  const match = catalog.find((entry) => entry.alias === current || entry.id === current)
+  if (match) return match.description || match.alias || current
+  let s = current.includes('/') ? current.split('/').pop()! : current
   s = s.replace(/^claude-/, '')
   return s.replace(/[.\-]/g, '')
 }

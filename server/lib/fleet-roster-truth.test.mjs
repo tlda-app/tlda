@@ -46,3 +46,16 @@ test('fleet table rows retain native subagent parent identity used by lifecycle 
 
   assert.equal(result.agents[0].parent_agent_id, 'fleet:chief')
 })
+
+test('fleet table resolves a retired model alias to the current name in rows and counts', () => {
+  const result = summarizeFleetRosterTruth({
+    roster: [
+      { id: 'fleet:old', friendly_name: 'old', metadata: { model: 'muse-meta' }, runtime_status: { kind: 'ai', status: 'awake' } },
+      { id: 'fleet:new', friendly_name: 'new', metadata: { model: 'muse' }, runtime_status: { kind: 'ai', status: 'awake' } },
+    ],
+  })
+
+  assert.equal(result.agents[0].model, 'muse')
+  assert.equal(result.agents[1].model, 'muse')
+  assert.deepEqual(result.summary.models, [{ value: 'muse', count: 2 }])
+})

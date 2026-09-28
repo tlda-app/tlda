@@ -1,5 +1,6 @@
 import { activityHealthForProjection } from '../../shared/activity-health.mjs'
 import { fleetRosterCategory, runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
+import { resolveModelAlias } from '../../shared/model-alias-history.mjs'
 
 function agentName(agent) {
   return agent.friendly_name || agent.name || agent.id
@@ -32,7 +33,7 @@ function rowForAgent(agent, now = Date.now()) {
     // move": what the server sends is the thing to change.
     pending: !!agent.metadata?.shell,
     last_seen_ago_s: lastSeenMs == null ? null : Math.round(lastSeenMs / 1000),
-    model: agent.metadata?.model || null,
+    model: agent.metadata?.model ? resolveModelAlias(agent.metadata.model) : null,
     inbox_status: agent.metadata?.inboxStatus || null,
     inbox_status_tag: agent.metadata?.inboxStatusTag || null,
     delivery_channel: agent.metadata?.deliveryChannel || null,
@@ -82,7 +83,7 @@ export function summarizeFleetRosterTruth({
   const matchedRoster = matched || agentRoster
   const rows = matchedRoster.slice(0, capped).map(a => rowForAgent(a, now))
   const summary = {
-    models: countValues(matchedRoster, a => a.metadata?.model || null),
+    models: countValues(matchedRoster, a => a.metadata?.model ? resolveModelAlias(a.metadata.model) : null),
     inbox_statuses: countValues(matchedRoster, a => a.metadata?.inboxStatus || null),
     delivery_channels: countValues(matchedRoster, a => a.metadata?.deliveryChannel || null),
   }
