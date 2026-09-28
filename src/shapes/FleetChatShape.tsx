@@ -50,7 +50,7 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
-import { anchorChatScrollPosition, anchoredTailTop, chatScrollContentEnd, chatScrollStartOf, chatScrollStoreKey, collapseLandingScrollTop, createRestoreOwnership, decideScrollRestore, isReaderInputInFlight, nextEarlierChatHistoryWindow, nextRestoreOwnership, readChatScrollState, restoreCommitSupersedes, shouldPrefetchEarlierChatHistory, shouldSkipGoToTail, writeChatScrollState, CHAT_RESTORE_SETTLE_MS, CHAT_SCROLL_STORE_VERSION } from './chatViewportAnchor.mjs'
+import { anchorChatScrollPosition, anchoredTailTop, chatScrollStartOf, chatScrollStoreKey, collapseLandingScrollTop, decideScrollRestore, isReaderInputInFlight, nextEarlierChatHistoryWindow, readChatScrollState, shouldPrefetchEarlierChatHistory, writeChatScrollState, CHAT_SCROLL_STORE_VERSION } from './chatViewportAnchor.mjs'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 // @ts-ignore — vanilla JS module
 import {
@@ -312,11 +312,6 @@ type AnchoredChatItem = {
 type AnchoredChatListHandle = {
   scrollToTail: () => void
   isAtTail: () => boolean
-  // Whether a scroll restore owns positioning right now (adopted through the
-  // post-commit settle window). The parent's filter-reset effect yields to it
-  // instead of re-reading the persisted record, which the mount persist
-  // overwrites before the parent reads.
-  isRestoreOwner: () => boolean
 }
 
 type ChatRenderProbeKind =
@@ -2503,10 +2498,6 @@ type AnchoredChatListProps<T extends AnchoredChatItem> = {
   onTailModeChange?: (followingTail: boolean, detail: Record<string, unknown>) => void
   onAtBottomChange?: (atBottom: boolean) => void
   setScroller?: (el: HTMLDivElement | null) => void
-  // Fired when a pending scroll restore commits, so the parent can supersede
-  // an in-flight goToTail loop before it steps over the commit.
-  onScrollRestoreCommit?: () => void
-  getGoToTailRunId?: () => number // TEMPORARY v9: run id for the decide line, revert with result
 }
 
 function browserLocalStorage(): Storage | null {
@@ -2529,12 +2520,8 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
   onTailModeChange,
   onAtBottomChange,
   setScroller,
-  onScrollRestoreCommit,
-  getGoToTailRunId,
 }, ref) {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
-  const restoreOwnershipRef = useRef(createRestoreOwnership())
-  const restoreSettleTimerRef = useRef(0)
   const sliceRef = useRef<HTMLDivElement | null>(null)
   const heightByKeyRef = useRef<Map<string, number>>(new Map())
   const rowElsRef = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -2560,11 +2547,6 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
   const previousKeysRef = useRef<string[]>([])
   const [geometryVersion, setGeometryVersion] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(0)
-  // Mirror for the restore effect below (synced by a layout effect in
-  // declaration order): reading the state there would need it in the deps,
-  // and it re-measures on every layout pass — re-running the effect
-  // mid-settle re-pins the list to the tail on every scroll (the v2 miss).
-  const viewportHeightRef = useRef(viewportHeight)
   const itemKeys = useMemo(() => items.map(item => String(item.key)), [items])
   const itemKeySignature = useMemo(() => itemKeys.join('\u0001'), [itemKeys])
 
@@ -2697,11 +2679,10 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
     return Math.abs(modelTopRef.current - tailTop()) <= tailEpsRef.current
   }, [tailTop])
 
-  useImperativeHandle(ref, () => ({ scrollToTail, isAtTail, isRestoreOwner: () => restoreOwnershipRef.current.owns === true }), [isAtTail, scrollToTail])
+  useImperativeHandle(ref, () => ({ scrollToTail, isAtTail }), [isAtTail, scrollToTail])
 
   useEffect(() => () => {
     if (followOffSettleTimerRef.current) window.clearTimeout(followOffSettleTimerRef.current)
-    if (restoreSettleTimerRef.current) window.clearTimeout(restoreSettleTimerRef.current)
   }, [])
 
   const setScrollerRef = useCallback((el: HTMLDivElement | null) => {
@@ -2760,10 +2741,6 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
   }, [tailTop])
 
   useLayoutEffect(() => {
-    viewportHeightRef.current = viewportHeight
-  }, [viewportHeight])
-
-  useLayoutEffect(() => {
     const wasReset = previousResetKeyRef.current !== resetKey
     const previousKeys = previousKeysRef.current
     previousResetKeyRef.current = resetKey
@@ -2779,10 +2756,7 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
       didAdoptScrollRestoreRef.current = true
       if (previousKeys.length === 0) {
         const adopted = readChatScrollState(browserLocalStorage(), chatScrollStoreKey(persistKey))
-        if (adopted && adopted.tail !== true) {
-          pendingScrollRestoreRef.current = adopted
-          restoreOwnershipRef.current = nextRestoreOwnership(restoreOwnershipRef.current, 'adopt')
-        }
+        if (adopted && adopted.tail !== true) pendingScrollRestoreRef.current = adopted
       }
     }
     const pendingRestore = persistKey ? pendingScrollRestoreRef.current : null
@@ -2794,47 +2768,24 @@ export const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatL
       // to the tail on every scroll. Following with no departure pending is
       // exactly "the reader sits where the mount put them".
       const atTail = tailModeRef.current && !pendingDepartureRef.current
-      const contentEnd = chatScrollContentEnd(itemKeys, heightOf)
       const decision = decideScrollRestore({
         saved: pendingRestore,
         resetKey,
         atTail,
         startOf: (key: string) => chatScrollStartOf(itemKeys, heightOf, key),
-        maxTop: contentEnd - viewportHeightRef.current,
       })
-      console.info('[decide-reason]', JSON.stringify({ action: decision.action, reason: (decision as { reason?: string }).reason ?? null, top: decision.top ?? null, contentEnd, maxTop: contentEnd - viewportHeightRef.current, anchorKey: pendingRestore.anchorKey ?? null, anchorOffset: (pendingRestore as { anchorOffset?: number }).anchorOffset ?? null, atTail, savedFilterKey: (pendingRestore as { filterKey?: string }).filterKey ?? null, resetKey, owns: restoreOwnershipRef.current.owns === true, goToTailRun: getGoToTailRunId?.() ?? null })) // TEMPORARY v9: decide line with owns flag and run id, revert with result
-      if (decision.action === 'hold' && decision.reason === 'beyond-tail') {
-        log.metric('chat-scroll', 'restore holding beyond committable tail', {
-          panelId: persistKey,
-          top: decision.top ?? null,
-          contentEnd,
-          anchorKey: pendingRestore.anchorKey ?? null,
-        })
-      }
       if (decision.action === 'restore' && decision.top != null) {
         setModelTop(decision.top)
         // setModelTop arms the follow-off settle timer, but the reader was
         // already away from the tail before the reload — commit that now,
         // or a live arrival inside the settle window yanks back to the tail.
         setTailMode(false, () => scrollSnapshot(decision.top as number, modelTopRef.current))
-        restoreOwnershipRef.current = nextRestoreOwnership(restoreOwnershipRef.current, 'commit')
-        if (restoreSettleTimerRef.current) window.clearTimeout(restoreSettleTimerRef.current)
-        restoreSettleTimerRef.current = window.setTimeout(() => {
-          restoreSettleTimerRef.current = 0
-          restoreOwnershipRef.current = nextRestoreOwnership(restoreOwnershipRef.current, 'settle-elapsed')
-        }, CHAT_RESTORE_SETTLE_MS)
-        onScrollRestoreCommit?.()
         pendingScrollRestoreRef.current = null
         return
       }
       if (decision.action === 'hold') {
         scrollToTail()
         return
-      }
-      restoreOwnershipRef.current = nextRestoreOwnership(restoreOwnershipRef.current, 'abandon')
-      if (restoreSettleTimerRef.current) {
-        window.clearTimeout(restoreSettleTimerRef.current)
-        restoreSettleTimerRef.current = 0
       }
       pendingScrollRestoreRef.current = null
     }
@@ -4983,7 +4934,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const explicitScrollInputTimerRef = useRef(0)
   const followInvariantTimerRef = useRef(0)
   const goToTailRunRef = useRef(0)
-  const goToTailRunReasonRef = useRef<string | null>(null)
   const panelPointerIdsRef = useRef<Set<number>>(new Set())
   const deferredGeometryReconcileRef = useRef(false)
   const [atBottom, setAtBottom] = useState(true)
@@ -5113,7 +5063,6 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   const goToTail = useCallback((reason: string) => {
     const run = ++goToTailRunRef.current
-    goToTailRunReasonRef.current = reason
     userScrolledUpRef.current = false
     viewportAnchorRef.current = null
     setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
@@ -5163,14 +5112,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [shape.id, chatEventBufferKey])
 
   const scrollToBottom = useCallback(() => {
-    const ownsRestore = anchoredListRef.current?.isRestoreOwner() ?? false
-    if (shouldSkipGoToTail('jump-button', ownsRestore)) return
     goToTail('jump-button')
   }, [goToTail])
-
-  const handleScrollRestoreCommit = useCallback(() => {
-    if (restoreCommitSupersedes(goToTailRunReasonRef.current)) goToTailRunRef.current += 1
-  }, [])
 
   useEffect(() => {
     const el = chatLogEl
@@ -5197,18 +5140,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [chatLogEl, flushDeferredGeometry])
 
   // A committed filter change is a new conversation view and starts following.
-  // But when a scroll restore owns positioning — adopted through the
-  // post-commit settle window — the list positions itself, and a goToTail loop
-  // of up to 12 frames would yank over its commit. The list owns that flag;
-  // the parent used to re-read the persisted record here, which the mount
-  // persist overwrites first.
   useEffect(() => {
     noteFollowTransition(String(shape.id), 'filter-reset', {
       filterKey,
       bufferKey: chatEventBufferKey,
     })
-    const ownsRestore = anchoredListRef.current?.isRestoreOwner() ?? false
-    if (shouldSkipGoToTail('filter-change', ownsRestore)) return
     goToTail('filter-change')
   }, [filterKey, shape.id, goToTail, chatEventBufferKey])
 
@@ -7463,8 +7399,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                 items={allItems}
                 resetKey={filterKey}
                 persistKey={shape.id}
-                onScrollRestoreCommit={handleScrollRestoreCommit}
-                getGoToTailRunId={() => goToTailRunRef.current} // TEMPORARY v9
                 style={{ flex: 1, minHeight: 0 }}
                 setScroller={setAnchoredChatScroller}
                 initialHistoryWindow={CHAT_FIRST_PAGE}

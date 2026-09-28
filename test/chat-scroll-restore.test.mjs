@@ -3,16 +3,11 @@ import test from 'node:test'
 
 import {
   anchorChatScrollPosition,
-  chatScrollContentEnd,
   chatScrollStartOf,
   chatScrollStoreKey,
-  createRestoreOwnership,
   decideScrollRestore,
-  nextRestoreOwnership,
   readChatScrollState,
   resolveChatScrollRestore,
-  restoreCommitSupersedes,
-  shouldSkipGoToTail,
   writeChatScrollState,
 } from '../src/shapes/chatViewportAnchor.mjs'
 
@@ -60,12 +55,6 @@ test('start-of-key walks the same accumulation the list geometry uses', () => {
   assert.equal(chatScrollStartOf(['a', 'b', 'c'], h, 'b'), 100)
   assert.equal(chatScrollStartOf(['a', 'b', 'c'], h, 'c'), 180)
   assert.equal(chatScrollStartOf(['a', 'b', 'c'], h, 'zzz'), null)
-})
-
-test('content end totals the same walk', () => {
-  const h = heights([['a', 100], ['b', 80]])
-  assert.equal(chatScrollContentEnd(['a', 'b', 'c'], h), 260)
-  assert.equal(chatScrollContentEnd([], h), 0)
 })
 
 test('restore resolves anchor start plus offset', () => {
@@ -125,9 +114,9 @@ test('storage read tolerates missing and corrupt records', () => {
 // precede the synced filter or the anchored row, so a single refusal must
 // hold rather than fall to the tail.
 
-function decide(saved, resetKey, atTail, starts, maxTop) {
+function decide(saved, resetKey, atTail, starts) {
   const map = new Map(starts)
-  return decideScrollRestore({ saved, resetKey, atTail, startOf: (k) => map.get(k), maxTop })
+  return decideScrollRestore({ saved, resetKey, atTail, startOf: (k) => map.get(k) })
 }
 
 const ANCHORED = { v: 1, filterKey: FILTER, tail: false, anchorKey: 'b', anchorOffset: 50 }
@@ -135,125 +124,43 @@ const ANCHORED = { v: 1, filterKey: FILTER, tail: false, anchorKey: 'b', anchorO
 test('pending restore jumps when the filter matches and the key is present', () => {
   assert.deepEqual(
     decide(ANCHORED, FILTER, true, [['a', 0], ['b', 100]]),
-    { action: 'restore', top: 150, reason: 'restore' },
+    { action: 'restore', top: 150 },
   )
 })
 
 test('pending restore holds while the filter is still settling', () => {
-  assert.deepEqual(decide(ANCHORED, '[]', true, [['b', 100]]), { action: 'hold', reason: 'filter-settling' })
-  assert.deepEqual(decide(ANCHORED, '', true, [['b', 100]]), { action: 'hold', reason: 'filter-settling' })
-  assert.deepEqual(decide(ANCHORED, null, true, [['b', 100]]), { action: 'hold', reason: 'filter-settling' })
+  assert.deepEqual(decide(ANCHORED, '[]', true, [['b', 100]]), { action: 'hold' })
+  assert.deepEqual(decide(ANCHORED, '', true, [['b', 100]]), { action: 'hold' })
+  assert.deepEqual(decide(ANCHORED, null, true, [['b', 100]]), { action: 'hold' })
 })
 
 test('pending restore holds while the anchored row has not arrived', () => {
-  assert.deepEqual(decide(ANCHORED, FILTER, true, [['a', 0]]), { action: 'hold', reason: 'key-missing' })
-  assert.deepEqual(decide(ANCHORED, FILTER, true, []), { action: 'hold', reason: 'key-missing' })
+  assert.deepEqual(decide(ANCHORED, FILTER, true, [['a', 0]]), { action: 'hold' })
+  assert.deepEqual(decide(ANCHORED, FILTER, true, []), { action: 'hold' })
 })
 
 test('pending restore abandons on a genuine filter change', () => {
   assert.deepEqual(
     decide(ANCHORED, '[[["from","someone-else"]]]', true, [['b', 100]]),
-    { action: 'abandon', reason: 'filter-changed' },
+    { action: 'abandon' },
   )
 })
 
 test('pending restore abandons once the reader moves off the tail', () => {
   assert.deepEqual(
     decide(ANCHORED, FILTER, false, [['a', 0], ['b', 100]]),
-    { action: 'abandon', reason: 'not-at-tail' },
+    { action: 'abandon' },
   )
 })
 
 test('pending restore abandons records that can never resolve', () => {
   const starts = [['a', 0], ['b', 100]]
-  assert.deepEqual(decide(null, FILTER, true, starts), { action: 'abandon', reason: 'no-saved' })
-  assert.deepEqual(decide('x', FILTER, true, starts), { action: 'abandon', reason: 'no-saved' })
-  assert.deepEqual(decide({ ...ANCHORED, v: 2 }, FILTER, true, starts), { action: 'abandon', reason: 'version' })
-  assert.deepEqual(decide({ ...ANCHORED, tail: true }, FILTER, true, starts), { action: 'abandon', reason: 'saved-tail' })
-  assert.deepEqual(decide({ ...ANCHORED, filterKey: '' }, FILTER, true, starts), { action: 'abandon', reason: 'saved-filter-empty' })
-  assert.deepEqual(decide({ ...ANCHORED, anchorKey: '' }, FILTER, true, starts), { action: 'abandon', reason: 'anchor-key-empty' })
-  assert.deepEqual(decide({ ...ANCHORED, anchorOffset: -1 }, FILTER, true, starts), { action: 'abandon', reason: 'anchor-offset-bad' })
-  assert.deepEqual(decide({ ...ANCHORED, anchorOffset: '50' }, FILTER, true, starts), { action: 'abandon', reason: 'anchor-offset-bad' })
-})
-
-test('pending restore holds while the target is past the committable tail', () => {
-  const starts = [['a', 0], ['b', 100]]
-  assert.deepEqual(
-    decide(ANCHORED, FILTER, true, starts, 100),
-    { action: 'hold', reason: 'beyond-tail', top: 150 },
-  )
-})
-
-test('pending restore fires once the target is inside the committable tail', () => {
-  const starts = [['a', 0], ['b', 100]]
-  assert.deepEqual(
-    decide(ANCHORED, FILTER, true, starts, 150),
-    { action: 'restore', top: 150, reason: 'restore' },
-  )
-  assert.deepEqual(
-    decide(ANCHORED, FILTER, true, starts, 1000),
-    { action: 'restore', top: 150, reason: 'restore' },
-  )
-})
-
-test('absent maxTop preserves restore behavior exactly', () => {
-  const starts = [['a', 0], ['b', 100]]
-  assert.deepEqual(
-    decide(ANCHORED, FILTER, true, starts, undefined),
-    { action: 'restore', top: 150, reason: 'restore' },
-  )
-})
-
-// Restore ownership: the list owns positioning from adoption through the
-// post-commit settle window, and the parent's filter-reset effect yields to
-// it. This replaces reading the persisted record, which the mount persist
-// overwrites before the parent reads.
-
-test('ownership starts clear and adoption takes it', () => {
-  assert.deepEqual(createRestoreOwnership(), { owns: false, committed: false })
-  assert.deepEqual(nextRestoreOwnership(createRestoreOwnership(), 'adopt'), { owns: true, committed: false })
-})
-
-test('ownership survives the commit and clears when the settle window elapses', () => {
-  const adopted = nextRestoreOwnership(createRestoreOwnership(), 'adopt')
-  const committed = nextRestoreOwnership(adopted, 'commit')
-  assert.deepEqual(committed, { owns: true, committed: true })
-  assert.deepEqual(nextRestoreOwnership(committed, 'settle-elapsed'), { owns: false, committed: false })
-})
-
-test('ownership clears on abandon', () => {
-  const adopted = nextRestoreOwnership(createRestoreOwnership(), 'adopt')
-  assert.deepEqual(nextRestoreOwnership(adopted, 'abandon'), { owns: false, committed: false })
-  const committed = nextRestoreOwnership(adopted, 'commit')
-  assert.deepEqual(nextRestoreOwnership(committed, 'abandon'), { owns: false, committed: false })
-})
-
-test('a genuine filter change clears ownership through abandon', () => {
-  const decision = decide(ANCHORED, '[[["from","other"]]]', true, [['a', 0], ['b', 100]])
-  assert.equal(decision.action, 'abandon')
-  const adopted = nextRestoreOwnership(createRestoreOwnership(), 'adopt')
-  assert.deepEqual(nextRestoreOwnership(adopted, decision.action), { owns: false, committed: false })
-})
-
-test('ownership ignores commit and settle without adoption', () => {
-  const fresh = createRestoreOwnership()
-  assert.deepEqual(nextRestoreOwnership(fresh, 'commit'), fresh)
-  assert.deepEqual(nextRestoreOwnership(fresh, 'settle-elapsed'), fresh)
-  assert.deepEqual(nextRestoreOwnership(fresh, 'bogus'), fresh)
-})
-
-test('filter-change yields while a restore owns positioning', () => {
-  assert.equal(shouldSkipGoToTail('filter-change', true), true)
-  assert.equal(shouldSkipGoToTail('filter-change', false), false)
-})
-
-test('a user-initiated jump still tails while a restore owns positioning', () => {
-  assert.equal(shouldSkipGoToTail('jump-button', true), false)
-  assert.equal(shouldSkipGoToTail('jump-button', false), false)
-})
-
-test('a restore commit supersedes only a filter-change loop', () => {
-  assert.equal(restoreCommitSupersedes('filter-change'), true)
-  assert.equal(restoreCommitSupersedes('jump-button'), false)
-  assert.equal(restoreCommitSupersedes(undefined), false)
+  assert.deepEqual(decide(null, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide('x', FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, v: 2 }, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, tail: true }, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, filterKey: '' }, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, anchorKey: '' }, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, anchorOffset: -1 }, FILTER, true, starts), { action: 'abandon' })
+  assert.deepEqual(decide({ ...ANCHORED, anchorOffset: '50' }, FILTER, true, starts), { action: 'abandon' })
 })
