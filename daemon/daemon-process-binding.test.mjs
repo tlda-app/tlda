@@ -4,6 +4,7 @@ import test from 'node:test'
 import { isObservableDaemonProcessBinding } from '../agent-runtime/daemon-process-binding.mjs'
 import { shouldPromptSweepAgent } from '../agent-runtime/status-classifier.mjs'
 import { createAgentStatus } from './agent-status.mjs'
+import { createEvidenceAdmission } from './agent-evidence.mjs'
 
 test('a stored hibernating flag does not veto observation', () => {
   assert.equal(
@@ -41,12 +42,14 @@ test('the status scan reads a flagged-hibernating live pane instead of disarming
     sendMsg: msg => sent.push(msg),
     log: { info() {} },
     getAgents: () => agents,
+    getAdmit: () => admit,
     harnessForAgent: () => ({ kind: 'claude' }),
     isConnected: () => true,
     statusScanMs: 1000,
     setIntervalFn: () => ({ unref() {} }),
     capturePane: async () => ({ stdout: 'Working…\nesc to interrupt' }),
   })
+  const admit = createEvidenceAdmission({ activity: status, log: { info() {}, warn() {} } })
 
   status.armAgent('fleet:a')
   await status.scanStatus()

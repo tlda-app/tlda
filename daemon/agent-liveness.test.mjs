@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { BINDING_STATE, createAgentLiveness, PROCESS } from './agent-liveness.mjs'
+import { createEvidenceAdmission } from './agent-evidence.mjs'
 
 function setup(bindings, results) {
   const sent = []
@@ -9,7 +10,9 @@ function setup(bindings, results) {
     getBindings: () => bindings,
     checkProcesses: async rows => new Map(rows.map(row => [row.id, results[row.id] ?? PROCESS.UNKNOWN])),
     sendMsg: msg => sent.push(msg),
+    getAdmit: () => admit,
   })
+  const admit = createEvidenceAdmission({ liveness, log: { warn() {} } })
   return { liveness, sent }
 }
 
@@ -108,7 +111,9 @@ test('unbound dying agents emit false; the binding is gone either way', async ()
     getBindings: () => bindings,
     checkProcesses: async rows => new Map(rows.map(row => [row.id, results[row.id] ?? PROCESS.UNKNOWN])),
     sendMsg: msg => sent.push(msg),
+    getAdmit: () => admit,
   })
+  const admit = createEvidenceAdmission({ liveness, log: { warn() {} } })
   await liveness.checkAll()
   await liveness.checkAll()
   results['fleet:a'] = PROCESS.DEAD
@@ -192,7 +197,9 @@ test('unbound awake agents transition to hibernating', async () => {
     getBindings: () => bindings,
     checkProcesses: async rows => new Map(rows.map(row => [row.id, PROCESS.ALIVE])),
     sendMsg: msg => sent.push(msg),
+    getAdmit: () => admit,
   })
+  const admit = createEvidenceAdmission({ liveness, log: { warn() {} } })
   await liveness.checkAll()
   await liveness.checkAll()
   assert.equal(sent.length, 1)
@@ -210,7 +217,9 @@ test('unbound never-awake bindings retire silently', async () => {
     getBindings: () => bindings,
     checkProcesses: async rows => new Map(rows.map(row => [row.id, PROCESS.ALIVE])),
     sendMsg: msg => sent.push(msg),
+    getAdmit: () => admit,
   })
+  const admit = createEvidenceAdmission({ liveness, log: { warn() {} } })
   await liveness.checkAll()
   assert.equal(liveness.stateFor('fleet:a'), BINDING_STATE.WAKING)
   bindings = []
@@ -230,7 +239,9 @@ test('unreadable bindings keep every state and emit nothing', async () => {
     checkProcesses: async rows => new Map(rows.map(row => [row.id, PROCESS.ALIVE])),
     sendMsg: msg => sent.push(msg),
     log: { warn: () => {}, info: () => {} },
+    getAdmit: () => admit,
   })
+  const admit = createEvidenceAdmission({ liveness, log: { warn() {} } })
   await liveness.checkAll()
   await liveness.checkAll()
   assert.equal(sent.length, 1)
@@ -247,7 +258,9 @@ test('check failures keep state and emit nothing', async () => {
     checkProcesses: async () => { throw new Error('tmux socket missing') },
     sendMsg: msg => sent.push(msg),
     log: { warn: () => {}, info: () => {} },
+    getAdmit: () => admit,
   })
+  const admit = createEvidenceAdmission({ liveness, log: { warn() {} } })
   await liveness.checkAll()
   assert.equal(sent.length, 0)
   assert.equal(liveness.stateFor('fleet:a'), null)

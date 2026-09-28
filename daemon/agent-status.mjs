@@ -38,6 +38,7 @@ export function createAgentStatus({
   sendMsg,
   log,
   getAgents,
+  getAdmit,
   harnessForAgent,
   isConnected,
   statusScanMs,
@@ -51,6 +52,7 @@ export function createAgentStatus({
   if (!Number.isFinite(statusScanMs) || statusScanMs <= 0) {
     throw new Error(`createAgentStatus requires statusScanMs (got ${JSON.stringify(statusScanMs)})`)
   }
+  if (typeof getAdmit !== 'function') throw new Error('agent status requires getAdmit')
 
   let interval = null
   let scanInFlight = false
@@ -106,12 +108,28 @@ export function createAgentStatus({
     return decision.prev
   }
 
+  // Consume one activity reading admitted as evidence. Pane classifications
+  // move the edge machine exactly as the scanner did; 'active' (transcript:
+  // observed doing something, classification pending) arms and notes the
+  // tool without emitting. Returns whether the agent reads busy.
+  function consumeActivity(agentId, activity, meta = {}) {
+    if (!agentId) return false
+    if (activity === 'active') {
+      armAgent(agentId)
+      noteToolActivity(agentId, meta?.tool)
+      return false
+    }
+    const effective = emitActivityEdge(agentId, activity)
+    return LIVE.has(activity) || LIVE.has(effective)
+  }
+
   async function scanAgent(agent) {
+    const atMs = Date.now()
     let pane = null
     try {
       ;({ stdout: pane } = await capturePane(agent.tmux_session))
     } catch {
-      emitActivityEdge(agent.id, STATUS.UNKNOWN)
+      getAdmit()({ agentId: agent.id, source: 'pane-scrape', atMs, activity: STATUS.UNKNOWN })
       armedSince.delete(agent.id)
       return false
     }
@@ -120,12 +138,17 @@ export function createAgentStatus({
       harnessForAgent(agent).kind,
       pane,
       classifierState.get(agent.id) || null,
-      Date.now(),
+      atMs,
     )
     if (classified.state) classifierState.set(agent.id, classified.state)
     else classifierState.delete(agent.id)
-    const effective = emitActivityEdge(agent.id, classified.activity)
-    return LIVE.has(classified.activity) || LIVE.has(effective)
+    const admitted = getAdmit()({
+      agentId: agent.id,
+      source: 'pane-scrape',
+      atMs,
+      activity: classified.activity,
+    })
+    return admitted?.activity === true
   }
 
   async function scanStatus() {
@@ -166,5 +189,5 @@ export function createAgentStatus({
     interval?.unref?.()
   }
 
-  return { armAgent, armBySession, isArmed, noteToolActivity, scanStatus, start }
+  return { armAgent, armBySession, isArmed, noteToolActivity, consumeActivity, scanStatus, start }
 }

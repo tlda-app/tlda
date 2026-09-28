@@ -116,6 +116,7 @@ import { createLocalArtifacts } from '../daemon/local-artifacts.mjs'
 import { createPromptPlan } from '../daemon/prompt-plan.mjs'
 import { createAgentStatus } from '../daemon/agent-status.mjs'
 import { createAgentLiveness, PROCESS as LIVENESS_PROCESS } from '../daemon/agent-liveness.mjs'
+import { createEvidenceAdmission } from '../daemon/agent-evidence.mjs'
 import { examineNeverJoinedRow, neverJoinedCutoffIso } from '../daemon/never-joined.mjs'
 import { createAgySupervisor } from '../daemon/agy-supervisor.mjs'
 import { createGooseSupervisor } from '../daemon/goose-supervisor.mjs'
@@ -503,8 +504,15 @@ function bufferActivity(agentId, evts) {
   if (activeBinding?.tmuxSession) alivenessCache.set(activeBinding.tmuxSession, true)
   const toolActivity = [...stampedEvents].reverse().find(event =>
     event?.tool && !String(event.tool).startsWith('_'))
-  if (activeBinding && toolActivity) agentStatus.noteToolActivity(agentId, toolActivity.tool)
-  if (activeBinding) agentStatus.armAgent(agentId)
+  if (activeBinding) {
+    admitEvidence({
+      agentId,
+      source: 'transcript',
+      atMs: daemonReceivedAtMs,
+      activity: 'active',
+      ...(toolActivity && typeof toolActivity.tool === 'string' ? { tool: toolActivity.tool } : {}),
+    })
+  }
   sendMsg({
     type: 'activity-health',
     agent_id: agentId,
@@ -1207,6 +1215,7 @@ const agentStatus = createAgentStatus({
   harnessForAgent: harnessRuntime.harnessForAgent,
   isConnected: () => _serverReady && _rws?.connected,
   statusScanMs: getStatusScanMs(),
+  getAdmit: () => admitEvidence,
 })
 
 // Process liveness: the daemon decides, the server writes down. Every bound
@@ -1232,7 +1241,13 @@ const agentLiveness = createAgentLiveness({
     }
     return observed
   },
+  getAdmit: () => admitEvidence,
 })
+
+// One input path for all status evidence. The probe, transcript tails and
+// pane scans admit envelopes; the machines decide; the server is told
+// verdicts. Hook and harness-event sources join the same function later.
+const admitEvidence = createEvidenceAdmission({ liveness: agentLiveness, activity: agentStatus, log })
 
 const promptPlan = createPromptPlan({
   tmuxArgs: TMUX_ARGS,

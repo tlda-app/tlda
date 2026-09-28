@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createAgentStatus } from './agent-status.mjs'
+import { createEvidenceAdmission } from './agent-evidence.mjs'
 
 function scanner({ panes }) {
   const sent = []
@@ -11,12 +12,14 @@ function scanner({ panes }) {
     sendMsg: msg => sent.push(msg),
     log: { info() {} },
     getAgents: () => agents,
+    getAdmit: () => admit,
     harnessForAgent: () => ({ kind: 'claude' }),
     isConnected: () => true,
     statusScanMs: 1000,
     setIntervalFn: () => ({ unref() {} }),
     capturePane: async () => ({ stdout: panes.shift() || '' }),
   })
+  const admit = createEvidenceAdmission({ activity: status, log: { info() {}, warn() {} } })
   return { status, sent }
 }
 

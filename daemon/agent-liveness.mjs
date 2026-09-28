@@ -15,6 +15,11 @@
 // server already reads everything else as hibernating, so re-emitting it
 // would be thousands of no-op writes plus their side effects on every boot.
 // A binding the daemon has never seen alive is silent until sighted.
+//
+// Process sightings arrive as evidence (see agent-evidence.mjs): the sweep
+// admits one envelope per observed binding, and consumeProcess moves the
+// machine. Today the probe is the only source setting process; the log
+// names the source only when it is not the probe.
 export const PROCESS = Object.freeze({
   ALIVE: 'alive',
   DEAD: 'dead',
@@ -33,11 +38,13 @@ export function createAgentLiveness({
   checkProcesses,
   sendMsg,
   log,
+  getAdmit,
   source = 'daemon-process-check',
 } = {}) {
   if (typeof getBindings !== 'function') throw new Error('agent liveness requires getBindings')
   if (typeof checkProcesses !== 'function') throw new Error('agent liveness requires checkProcesses')
   if (typeof sendMsg !== 'function') throw new Error('agent liveness requires sendMsg')
+  if (typeof getAdmit !== 'function') throw new Error('agent liveness requires getAdmit')
   const states = new Map()
 
   function emit(agentId, alive) {
@@ -80,42 +87,60 @@ export function createAgentLiveness({
       return states.size
     }
     const observedFor = id => observedById instanceof Map ? observedById.get(id) : observedById?.[id]
+    const admit = getAdmit()
+    const atMs = Date.now()
     for (const binding of bindings) {
       const agentId = binding.id
       const observed = observedFor(agentId)
       if (observed !== PROCESS.ALIVE && observed !== PROCESS.DEAD) continue
-      const state = states.get(agentId) || BINDING_STATE.HIBERNATING
-      if (observed === PROCESS.DEAD) {
-        if (state === BINDING_STATE.DYING) {
-          states.set(agentId, BINDING_STATE.HIBERNATING)
-          log?.info?.(`liveness transition: agent=${agentId} dying->hibernating`)
-          emit(agentId, false)
-          continue
-        }
-        if (state !== BINDING_STATE.AWAKE) {
-          states.set(agentId, BINDING_STATE.HIBERNATING)
-          continue
-        }
-        states.set(agentId, BINDING_STATE.DYING)
-        log?.info?.(`liveness transition: agent=${agentId} awake->dying`)
-        continue
-      }
-      if (state === BINDING_STATE.AWAKE) continue
-      if (state === BINDING_STATE.DYING) {
-        states.set(agentId, BINDING_STATE.AWAKE)
-        log?.info?.(`liveness transition: agent=${agentId} dying->awake`)
-        continue
-      }
-      if (state === BINDING_STATE.WAKING) {
-        states.set(agentId, BINDING_STATE.AWAKE)
-        log?.info?.(`liveness transition: agent=${agentId} waking->awake`)
-        emit(agentId, true)
-        continue
-      }
-      states.set(agentId, BINDING_STATE.WAKING)
-      log?.info?.(`liveness transition: agent=${agentId} hibernating->waking`)
+      admit({
+        agentId,
+        source: 'process-probe',
+        atMs,
+        process: observed === PROCESS.ALIVE ? 'alive' : 'dead',
+      })
     }
     return states.size
+  }
+
+  // Consume one process sighting admitted as evidence. The transition table
+  // is unchanged from the sweep-driven form: suspicion in both directions,
+  // emits only on verdict changes.
+  function consumeProcess(agentId, process, meta = {}) {
+    if (!agentId) return undefined
+    if (process !== 'alive' && process !== 'dead') return undefined
+    const via = meta?.source && meta.source !== 'process-probe' ? ` (via ${meta.source})` : ''
+    const state = states.get(agentId) || BINDING_STATE.HIBERNATING
+    if (process === 'dead') {
+      if (state === BINDING_STATE.DYING) {
+        states.set(agentId, BINDING_STATE.HIBERNATING)
+        log?.info?.(`liveness transition: agent=${agentId} dying->hibernating${via}`)
+        emit(agentId, false)
+        return BINDING_STATE.HIBERNATING
+      }
+      if (state !== BINDING_STATE.AWAKE) {
+        states.set(agentId, BINDING_STATE.HIBERNATING)
+        return BINDING_STATE.HIBERNATING
+      }
+      states.set(agentId, BINDING_STATE.DYING)
+      log?.info?.(`liveness transition: agent=${agentId} awake->dying${via}`)
+      return BINDING_STATE.DYING
+    }
+    if (state === BINDING_STATE.AWAKE) return BINDING_STATE.AWAKE
+    if (state === BINDING_STATE.DYING) {
+      states.set(agentId, BINDING_STATE.AWAKE)
+      log?.info?.(`liveness transition: agent=${agentId} dying->awake${via}`)
+      return BINDING_STATE.AWAKE
+    }
+    if (state === BINDING_STATE.WAKING) {
+      states.set(agentId, BINDING_STATE.AWAKE)
+      log?.info?.(`liveness transition: agent=${agentId} waking->awake${via}`)
+      emit(agentId, true)
+      return BINDING_STATE.AWAKE
+    }
+    states.set(agentId, BINDING_STATE.WAKING)
+    log?.info?.(`liveness transition: agent=${agentId} hibernating->waking${via}`)
+    return BINDING_STATE.WAKING
   }
 
   // Re-declare current awake verdicts. Runs on (re)connect so missed
@@ -145,5 +170,5 @@ export function createAgentLiveness({
     states.delete(agentId)
   }
 
-  return { checkAll, declareAll, stateFor, verdictFor, drop }
+  return { checkAll, consumeProcess, declareAll, stateFor, verdictFor, drop }
 }
