@@ -62,6 +62,14 @@ export function createAgentStatus({
   const classifierState = new Map()
   const prevActivity = new Map()
   const latestTool = new Map()
+  // Transcript-declared open turns, one per agent. A turn opens on
+  // transcript+thinking and closes on transcript+idle; those pairs are
+  // exactly codex turn edges (codexFactsToEnvelope is their only
+  // producer — the generic transcript admission only ever says 'active').
+  // While a turn is open, pane non-busy readings are held, not voted:
+  // reasoning phases show no pane spinner at all, so the pane would
+  // otherwise flip a mid-turn verdict idle within two scans.
+  const openTurn = new Set()
 
   function isArmed(agentId) {
     return armedSince.has(agentId)
@@ -88,6 +96,15 @@ export function createAgentStatus({
     classifierState.delete(agentId)
     prevActivity.delete(agentId)
     latestTool.delete(agentId)
+    openTurn.delete(agentId)
+  }
+
+  // Close an open turn without voting. Called on confirmed process death
+  // (admitEvidence, when the liveness machine reaches hibernating): a dead
+  // process ends the turn, so a crashed agent cannot pin thinking forever.
+  // Idempotent; closing a turn that was never opened is a no-op.
+  function closeTurn(agentId) {
+    if (agentId) openTurn.delete(agentId)
   }
 
   function emitActivityEdge(agentId, next) {
@@ -111,13 +128,24 @@ export function createAgentStatus({
   // Consume one activity reading admitted as evidence. Pane classifications
   // move the edge machine exactly as the scanner did; 'active' (transcript:
   // observed doing something, classification pending) arms and notes the
-  // tool without emitting. Returns whether the agent reads busy.
+  // tool without emitting. Transcript thinking/idle are turn edges: they
+  // open/close the agent's turn as well as voting. While a turn is open,
+  // pane idle AND pane unknown are held — unknown is a failed capture,
+  // not a reading, and both would otherwise outvote the transcript's
+  // positive claim of work. Pane thinking/compacting still flow; they
+  // agree with the open turn. Returns whether the agent reads busy.
   function consumeActivity(agentId, activity, meta = {}) {
     if (!agentId) return false
     if (activity === 'active') {
       armAgent(agentId)
       noteToolActivity(agentId, meta?.tool)
       return false
+    }
+    if (meta?.source === 'transcript' && activity === STATUS.THINKING) openTurn.add(agentId)
+    if (meta?.source === 'transcript' && activity === STATUS.IDLE) openTurn.delete(agentId)
+    if (meta?.source === 'pane-scrape' && openTurn.has(agentId)
+      && (activity === STATUS.IDLE || activity === STATUS.UNKNOWN)) {
+      return true
     }
     const effective = emitActivityEdge(agentId, activity)
     return LIVE.has(activity) || LIVE.has(effective)
@@ -189,5 +217,5 @@ export function createAgentStatus({
     interval?.unref?.()
   }
 
-  return { armAgent, armBySession, isArmed, noteToolActivity, consumeActivity, scanStatus, start }
+  return { armAgent, armBySession, isArmed, noteToolActivity, consumeActivity, closeTurn, scanStatus, start }
 }

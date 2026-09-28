@@ -35,6 +35,15 @@
 // call must not break the sweep it arrived in. Pane scrape claiming
 // process is a caller bug — dead panes capture fine — so the claim is
 // dropped (the activity half is still admitted) and warned.
+//
+// One cross-machine edge lives here, because admission is the only place
+// that sees both results: when the liveness machine reaches hibernating
+// on a dead sighting, the activity machine's open turn (if any) closes.
+// Death ends the turn — a crashed agent must not pin thinking. Only the
+// confirmed verdict closes: a first dead sighting lands in dying, and a
+// flap must not end a live turn.
+
+import { BINDING_STATE } from './agent-liveness.mjs'
 
 export const EVIDENCE_SOURCE = Object.freeze({
   PROCESS_PROBE: 'process-probe',
@@ -76,8 +85,10 @@ export function createEvidenceAdmission({ liveness, activity, log, now = () => D
     }
     if (tool !== undefined && typeof tool !== 'string') return drop('bad tool', envelope)
     const meta = { source, atMs, tool: tool ?? null }
+    const processResult = process !== undefined ? liveness?.consumeProcess?.(agentId, process, meta) : undefined
+    if (process === 'dead' && processResult === BINDING_STATE.HIBERNATING) activity?.closeTurn?.(agentId)
     return {
-      process: process !== undefined ? liveness?.consumeProcess?.(agentId, process, meta) : undefined,
+      process: processResult,
       activity: activityValue !== undefined ? activity?.consumeActivity?.(agentId, activityValue, meta) : undefined,
     }
   }

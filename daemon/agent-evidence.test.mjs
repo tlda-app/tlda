@@ -1,19 +1,24 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { BINDING_STATE } from './agent-liveness.mjs'
 import { createEvidenceAdmission, EVIDENCE_SOURCE, EVIDENCE_STALE_MS } from './agent-evidence.mjs'
 
-function setup() {
+function setup({ livenessResult = 'state' } = {}) {
   const warnings = []
   const processes = []
   const activities = []
+  const closedTurns = []
   const admit = createEvidenceAdmission({
-    liveness: { consumeProcess: (id, process, meta) => { processes.push([id, process, meta]); return 'state' } },
-    activity: { consumeActivity: (id, activity, meta) => { activities.push([id, activity, meta]); return true } },
+    liveness: { consumeProcess: (id, process, meta) => { processes.push([id, process, meta]); return livenessResult } },
+    activity: {
+      consumeActivity: (id, activity, meta) => { activities.push([id, activity, meta]); return true },
+      closeTurn: id => { closedTurns.push(id) },
+    },
     log: { warn: msg => warnings.push(msg) },
     now: () => 1_000_000,
   })
-  return { admit, warnings, processes, activities }
+  return { admit, warnings, processes, activities, closedTurns }
 }
 
 test('a full envelope routes each half to its machine', () => {
@@ -63,6 +68,21 @@ test('malformed envelopes are dropped with a warning, never thrown', () => {
   assert.equal(processes.length, 0)
   assert.equal(activities.length, 0)
   assert.equal(warnings.length, bad.length)
+})
+
+test('confirmed death closes the open turn; suspicion does not', () => {
+  const dead = { agentId: 'fleet:a', source: EVIDENCE_SOURCE.PROCESS_PROBE, atMs: 999_999, process: 'dead' }
+  const confirmed = setup({ livenessResult: BINDING_STATE.HIBERNATING })
+  confirmed.admit({ ...dead })
+  assert.deepEqual(confirmed.closedTurns, ['fleet:a'])
+
+  const suspicion = setup({ livenessResult: BINDING_STATE.DYING })
+  suspicion.admit({ ...dead })
+  assert.deepEqual(suspicion.closedTurns, [])
+
+  const alive = setup({ livenessResult: BINDING_STATE.AWAKE })
+  alive.admit({ ...dead, process: 'alive' })
+  assert.deepEqual(alive.closedTurns, [])
 })
 
 test('stale evidence is dropped at the boundary', () => {
