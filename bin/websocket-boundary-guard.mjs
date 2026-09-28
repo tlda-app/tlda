@@ -163,6 +163,16 @@ const ALLOWED = {
       + 'subject. Endpoint: /ws/fleet.',
   },
 
+  'test/chat-linters-ingress-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Sends raw `chat` frames over a bare socket to prove the server-side ingress gate refuses unlinted '
+      + 'sends and stores the rest. Same boundary reasoning as the activity-operation-idempotency wire test: '
+      + 'the socket must bypass the client transport library because the server ingress path is the subject, '
+      + 'and the MCP surface is covered separately by test/chat-linters-surface-wire.test.mjs, which drives '
+      + 'the real transport and constructs no socket of its own. Endpoint: /ws/fleet.',
+  },
+
   'bin/a-link-does-not-lower-access-test.mjs': {
     count: 1,
     category: 'tooling',
