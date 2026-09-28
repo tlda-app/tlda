@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -74,6 +74,8 @@ test('treeStats sums the whole tree', () => {
 test('profileOf classifies fleet profiles; pool recognized, other refused', () => {
   assert.equal(profileOf(MAIN), 'mcp-temp')
   assert.equal(profileOf('--user-data-dir=/Users/skip/Library/Caches/ms-playwright/daemon/x/ud-shared-2-chrome-for-testing foo'), 'pool:shared-2-chrome-for-testing')
+  assert.equal(profileOf('--user-data-dir=/Users/skip/Library/Caches/ms-playwright/daemon/x/ud-abtest-chrome-for-testing foo'), 'session:abtest-chrome-for-testing')
+  assert.equal(profileOf('--user-data-dir=/Users/skip/.chrome-debug foo'), 'voice')
   // Skip-like: a Chrome main with a non-fleet profile is 'other' — the
   // allowlist refuses it by construction, no URL check needed.
   assert.equal(profileOf('--user-data-dir=/Users/skip/Library/Application Support/Google/Chrome foo'), 'other')
@@ -161,6 +163,8 @@ test('runReapCold: pool refused by scope, unknown profile refused, MCP baselined
     [5000, 3000, 140000, '1:00', MAIN.replace('/tmp/playwright_chromiumdev_profile-abc', '/Users/skip/Library/Caches/ms-playwright/daemon/x/ud-shared-chrome-for-testing')],
     [6000, 3000, 140000, '1:00', MAIN.replace('/tmp/playwright_chromiumdev_profile-abc', '/Users/skip/Library/Application Support/Google/Chrome')],
     [7000, 4000, 140000, '1:00', MAIN],
+    [8000, 3000, 140000, '1:00', MAIN.replace('/tmp/playwright_chromiumdev_profile-abc', '/Users/skip/Library/Caches/ms-playwright/daemon/x/ud-abtest-chrome-for-testing')],
+    [9000, 3000, 140000, '1:00', MAIN.replace('/tmp/playwright_chromiumdev_profile-abc', '/Users/skip/.chrome-debug')],
     [4000, 4100, 37000, '0:20', SERVER],
     [4100, 3000, 50000, '2:00', '/Users/skip/.local/bin/muse --workspace /repo resume abc'],
   ]
@@ -177,6 +181,10 @@ test('runReapCold: pool refused by scope, unknown profile refused, MCP baselined
   assert.equal(byPid[6000].verdict, 'refuse')
   assert.equal(byPid[6000].guard, 'profile')
   assert.equal(byPid[7000].verdict, 'baseline')
+  assert.equal(byPid[8000].verdict, 'refuse')
+  assert.equal(byPid[8000].guard, 'session')
+  assert.equal(byPid[9000].verdict, 'refuse')
+  assert.equal(byPid[9000].guard, 'voice')
 })
 
 test('runReapCold: cold run trips and kills exactly the tripped pid', async () => {
@@ -218,4 +226,58 @@ test('runReapCold: identity change before kill refuses instead of killing', asyn
   const r = await runReapCold({ ...opts, now: t0 + 60 * 60 * 1000 })
   assert.equal(r.decisions[0].verdict, 'refuse')
   assert.equal(r.decisions[0].guard, 'identity')
+})
+
+function cacheFixture(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  const udd = join(dir, 'playwright_chromiumdev_profile-prune1')
+  for (const cache of ['Cache', 'Code Cache']) {
+    mkdirSync(join(udd, 'Default', cache), { recursive: true })
+    writeFileSync(join(udd, 'Default', cache, 'data_1'), Buffer.alloc(1024))
+  }
+  writeFileSync(join(udd, 'Default', 'Cookies'), Buffer.alloc(512))
+  return udd
+}
+
+test('runReapCold: reaped profile pruned after the confirmed-exit recheck', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'reap-cold-prune-'))
+  const stateFile = join(dir, 'state.json')
+  const udd = cacheFixture('reap-cold-prune-prof-')
+  const t0 = 1_000_000
+  const coldRows = () => browserRows({ mainCpu: '1:00', helperCpu: '0:30', profile: udd })
+  const exec = fakeExec({
+    tables: [psTable(coldRows()), psTable(coldRows()), psTable(coldRows()), psTable(coldRows()), psTable(filler())],
+    comms: [COMM_EMPTY, COMM_EMPTY, COMM_EMPTY],
+  })
+  const kills = []
+  const opts = { stateFile, windowMinutes: 30, execFileSync: exec, kill: (pid) => kills.push(pid), recheckMs: 0 }
+  await runReapCold({ ...opts, now: t0 })
+  await runReapCold({ ...opts, now: t0 + 30 * 60 * 1000 })
+  const r = await runReapCold({ ...opts, now: t0 + 60 * 60 * 1000 })
+  assert.equal(r.decisions[0].verdict, 'reaped')
+  assert.equal(r.decisions[0].detail.prunedBytes, 2048)
+  assert.equal(r.decisions[0].detail.pruned.length, 2)
+  assert.equal(existsSync(join(udd, 'Default', 'Cache')), false)
+  assert.equal(existsSync(join(udd, 'Default', 'Code Cache')), false)
+  assert.equal(existsSync(join(udd, 'Default', 'Cookies')), true)
+})
+
+test('runReapCold: surviving pid is never pruned', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'reap-cold-noprune-'))
+  const stateFile = join(dir, 'state.json')
+  const udd = cacheFixture('reap-cold-noprune-prof-')
+  const t0 = 1_000_000
+  const coldRows = () => browserRows({ mainCpu: '1:00', helperCpu: '0:30', profile: udd })
+  // The exit recheck still shows the main: SIGTERM delivered, pid persists.
+  const exec = fakeExec({
+    tables: [psTable(coldRows()), psTable(coldRows()), psTable(coldRows()), psTable(coldRows()), psTable(coldRows())],
+    comms: [COMM_EMPTY, COMM_EMPTY, COMM_EMPTY],
+  })
+  const opts = { stateFile, windowMinutes: 30, execFileSync: exec, kill: () => {}, recheckMs: 0 }
+  await runReapCold({ ...opts, now: t0 })
+  await runReapCold({ ...opts, now: t0 + 30 * 60 * 1000 })
+  const r = await runReapCold({ ...opts, now: t0 + 60 * 60 * 1000 })
+  assert.equal(r.decisions[0].verdict, 'still-alive')
+  assert.equal(existsSync(join(udd, 'Default', 'Cache')), true)
+  assert.equal(existsSync(join(udd, 'Default', 'Code Cache')), true)
 })

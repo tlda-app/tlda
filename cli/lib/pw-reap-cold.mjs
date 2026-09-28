@@ -21,14 +21,24 @@
  * the full command line immediately before the signal, and only pids that
  * re-verify as browser mains are signalled.
  *
- * CANDIDACY is an opt-in allowlist on user-data-dir: only `mcp-temp`
- * (per-agent MCP browsers) is ever reaped. Pool profiles are recognized
- * and explicitly refused — the pool has lease machinery with idle policies
- * and holds multiple agents' tabs plus warm classroom state, so its
- * lifecycle belongs to that path. Anything else (unknown profile, no
- * user-data-dir) is refused by the allowlist. Skip's browser is exempt by
- * this construction: it is not on the list, so no code path can name it,
- * regardless of whether it ever runs on a fleet box.
+ * CANDIDACY is an opt-in allowlist on user-data-dir, shared with the
+ * orphan sweep (`pw-profiles.mjs`, single home for the scheme table): only
+ * `mcp-temp` (per-agent MCP browsers) is ever reaped. Pool profiles are
+ * recognized and explicitly refused — the pool has lease machinery with
+ * idle policies and holds multiple agents' tabs plus warm classroom state,
+ * so its lifecycle belongs to that path. Other playwright-cli session
+ * profiles and the voice-lane debug profile are likewise recognized and
+ * refused by name. Anything else (unknown profile, no user-data-dir) is
+ * refused by the allowlist. Skip's browser is exempt by this construction:
+ * it is not on the list, so no code path can name it, regardless of
+ * whether it ever runs on a fleet box.
+ *
+ * POST-REAP PRUNE: a reaped profile's `Cache` / `Code Cache` are disposable
+ * (~1.5GB against ~60MB of real state at the heavy end) and regenerate, so
+ * after the confirmed-exit recheck proves the browser is gone, the prune
+ * wipes them — never before (a dying browser recreates cache mid-shutdown)
+ * and never when the pid survives (still-alive means a live browser holds
+ * the profile).
  *
  * NOT implemented (stated, not silently absent): the no-in-flight-call
  * guard exists as a requirement, not as code — the harness signal for it
@@ -41,6 +51,11 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
+import { profileOf, userDataDirOf, pruneProfileCaches } from './pw-profiles.mjs'
+
+// Single home for the scheme table is pw-profiles.mjs; re-exported so the
+// landed import surface keeps working.
+export { profileOf }
 
 export const DEFAULT_STATE_FILE = path.join(homedir(), '.config', 'tlda', 'pw-reap-cold-state.json')
 export const ALIVE_WINDOW_MS = 60 * 60 * 1000
@@ -103,14 +118,6 @@ export function treeStats(procs, root) {
     rssKB: members.reduce((s, p) => s + p.rssKB, 0),
     cpu: members.reduce((s, p) => s + p.cpu, 0),
   }
-}
-
-export function profileOf(command) {
-  const m = command.match(/user-data-dir=([^\s]+)/)
-  if (!m) return 'unknown'
-  if (m[1].includes('ud-shared')) return 'pool:' + (m[1].match(/ud-(shared[^/]*)/)?.[1] || '?')
-  if (m[1].includes('playwright_chromiumdev_profile')) return 'mcp-temp'
-  return 'other'
 }
 
 export function ownerOf(procs, pid) {
@@ -246,9 +253,16 @@ export async function runReapCold({
     const stats = treeStats(procs, m.pid)
     const base = { pid: m.pid, profile, owner, rssMB: Math.round(stats.rssKB / 1024) }
     if (profile !== 'mcp-temp') {
-      // Pool: recognized, out of scope. Everything else: not on the
-      // allowlist. Both refuse; the guard names which.
-      decisions.push({ ...base, verdict: 'refuse', guard: profile.startsWith('pool:') ? 'scope' : 'profile', reason: profile.startsWith('pool:') ? 'pool lifecycle belongs to leases; this reaper is MCP-only' : 'not on the candidacy allowlist' })
+      // Pool/session/voice: recognized, out of scope. Everything else: not
+      // on the allowlist. All refuse; the guard names which.
+      const guard = profile.startsWith('pool:') ? 'scope'
+        : profile.startsWith('session:') ? 'session'
+        : profile === 'voice' ? 'voice' : 'profile'
+      const reason = guard === 'scope' ? 'pool lifecycle belongs to leases; this reaper is MCP-only'
+        : guard === 'session' ? 'playwright-cli session profile; lifecycle belongs to the leases path'
+        : guard === 'voice' ? 'voice-lane debug Chrome; owned by the voice lane, never a reap candidate'
+        : 'not on the candidacy allowlist'
+      decisions.push({ ...base, verdict: 'refuse', guard, reason })
       continue
     }
     const ownerAwake = owner === 'unknown' ? null : awake.has(owner)
@@ -279,7 +293,25 @@ export async function runReapCold({
         alive = false
       }
       delete nextTrees[key]
-      decisions.push({ ...base, ownerAwake, verdict: alive ? 'still-alive' : 'reaped', detail: { ...detail, signal: 'SIGTERM' } })
+      if (!alive) {
+        // Confirmed exit: prune the reaped profile's regenerable caches.
+        // The dir comes from the re-verified target's command line — the
+        // process actually signaled — and a prune failure must not fail the
+        // reap, so it is recorded, not thrown.
+        const udd = userDataDirOf(target.command)
+        let prune = { prunedBytes: 0, pruned: [] }
+        if (udd) {
+          try {
+            const r = pruneProfileCaches(udd)
+            prune = { prunedBytes: r.prunedBytes, pruned: r.removed }
+          } catch (err) {
+            prune = { prunedBytes: 0, pruned: [], pruneError: err.message }
+          }
+        }
+        decisions.push({ ...base, ownerAwake, verdict: 'reaped', detail: { ...detail, signal: 'SIGTERM', ...prune } })
+      } else {
+        decisions.push({ ...base, ownerAwake, verdict: 'still-alive', detail: { ...detail, signal: 'SIGTERM' } })
+      }
     } else if (verdict === 'trip') {
       decisions.push({ ...base, ownerAwake, verdict: 'would-reap', detail })
     } else {
@@ -307,7 +339,7 @@ export function formatReport(result) {
   lines.push(`census(comm): browsers ${c.before.browsers.n}/${c.before.browsers.rssMB}MB → ${c.after.browsers.n}/${c.after.browsers.rssMB}MB; node ${c.before.node.n}/${c.before.node.rssMB}MB → ${c.after.node.n}/${c.after.node.rssMB}MB`)
   for (const d of result.decisions) {
     const who = `${d.pid} ${d.profile} owner=${d.owner}${d.ownerAwake == null ? '' : d.ownerAwake ? '(awake)' : '(idle)'}`;
-    if (d.verdict === 'reaped') lines.push(`  REAPED ${who} ${d.rssMB}MB cold-since=${d.detail.coldSince ? new Date(d.detail.coldSince).toISOString() : '?'} streak=${d.detail.coldStreak}`)
+    if (d.verdict === 'reaped') lines.push(`  REAPED ${who} ${d.rssMB}MB cold-since=${d.detail.coldSince ? new Date(d.detail.coldSince).toISOString() : '?'} streak=${d.detail.coldStreak}${d.detail.prunedBytes ? ` pruned=${(d.detail.prunedBytes / 1048576).toFixed(1)}MB` : ''}${d.detail.pruneError ? ` prune-error=${d.detail.pruneError}` : ''}`)
     else if (d.verdict === 'would-reap') lines.push(`  WOULD-REAP ${who} ${d.rssMB}MB streak=${d.detail.coldStreak}`)
     else if (d.verdict === 'refuse') lines.push(`  REFUSE(${d.guard}) ${who}: ${d.reason}`)
     else if (d.verdict === 'warm') lines.push(`  warm ${who} ${d.rssMB}MB Δ=${d.detail.cpuDeltaS}s`)

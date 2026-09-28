@@ -1417,6 +1417,8 @@ export async function cmdPw(args, repoRoot) {
         '  tlda-dev pw reap              close my assigned shared browser',
         '  tlda-dev pw reap-cold [--dry-run] [--window-minutes N]',
         '                            reap cold per-agent MCP browsers box-wide',
+        '  tlda-dev pw gc-profiles [--dry-run] [--root DIR] [--min-age-minutes N]',
+        '                            collect orphaned MCP browser profiles box-wide',
         '  tlda-dev pw center <region>   bring into the pointer viewport: doc | fleet',
         '                            | chat | agents | search | inbox | docview',
         '  tlda-dev pw console [level]   print console messages; supports --lines N',
@@ -1448,8 +1450,9 @@ export async function cmdPw(args, repoRoot) {
   }
 
   // While locked, refuse anything that could open or drive the browser. Only
-  // status / unlock / reap / reap-cold / help / lock are allowed through.
-  if (isDisabled() && !['status', 'unlock', 'reap', 'reap-cold', 'help', '--help', 'lock'].includes(verb)) {
+  // status / unlock / reap / reap-cold / gc-profiles / help / lock are
+  // allowed through.
+  if (isDisabled() && !['status', 'unlock', 'reap', 'reap-cold', 'gc-profiles', 'help', '--help', 'lock'].includes(verb)) {
     const info = disableInfo()
     const ago = info.ts ? `${Math.round((Date.now() - info.ts) / 1000)}s ago` : 'unknown when'
     console.error(
@@ -1460,7 +1463,7 @@ export async function cmdPw(args, repoRoot) {
     process.exit(3)
   }
 
-  if (!['status', 'reap', 'reap-cold', 'sweep', 'help', '--help', 'lock', 'unlock'].includes(verb)) {
+  if (!['status', 'reap', 'reap-cold', 'gc-profiles', 'sweep', 'help', '--help', 'lock', 'unlock'].includes(verb)) {
     enforceCanonicalSession()
   }
 
@@ -1485,6 +1488,41 @@ export async function cmdPw(args, repoRoot) {
     })
     console.log(formatReport(result))
     process.exit(result.decisions.some((d) => d.verdict === 'still-alive') ? 1 : 0)
+  }
+
+  if (verb === 'gc-profiles') {
+    // Box-wide, session-independent, takes no lock: it only ever removes
+    // candidate MCP temp profiles that no live command line references.
+    // Pool/session/voice profiles are refused by name; the sweep shares the
+    // reaper's allowlist but runs on a clock, not on the reap event.
+    const { collectOrphanProfiles, defaultGcRoots, formatGcReport, ORPHAN_MIN_AGE_MS } = await import('./pw-profiles.mjs')
+    const dryRun = rest.includes('--dry-run')
+    const roots = [...defaultGcRoots()]
+    const ageIdx = rest.indexOf('--min-age-minutes')
+    let minAgeMs = ORPHAN_MIN_AGE_MS
+    if (ageIdx !== -1) {
+      const n = Number(rest[ageIdx + 1])
+      if (!(n > 0)) {
+        console.error('gc-profiles: --min-age-minutes needs a positive number of minutes')
+        process.exit(2)
+      }
+      minAgeMs = n * 60 * 1000
+    }
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--root' && rest[i + 1]) roots.push(rest[i + 1])
+    }
+    const ps = spawnSync('ps', ['-Ao', 'pid,ppid,rss,time,command'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    const psText = ps.status === 0 ? (ps.stdout || '') : ''
+    // The instrument failed, the box is not empty: without a trustworthy
+    // process list no profile is provably unreferenced, so refuse the run
+    // rather than collect against a blind sweep.
+    if (ps.status !== 0 || psText.split('\n').length < 6) {
+      console.error('gc-profiles: ps snapshot failed or too thin; refusing to collect blind')
+      process.exit(1)
+    }
+    const result = collectOrphanProfiles({ roots, psText, minAgeMs, dryRun })
+    console.log(formatGcReport(result))
+    process.exit(result.decisions.some((d) => d.verdict === 'error') ? 1 : 0)
   }
 
   if (verb === 'console') {
