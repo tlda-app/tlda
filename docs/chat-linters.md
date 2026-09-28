@@ -1,13 +1,14 @@
 # Pre-send chat linters
 
-One explicit contract, per Skip's ruling (2026-09-28, messages 8679680–8679683):
-a message the sender marks as an outline must be file-backed, because outlines
-get edited. The sender marks the message; the server refuses a marked outline
-that carries no source file. Nothing is inferred from length or shape —
-ordinary messages, long or list-shaped, are never gated, and there is no depth
-requirement. An earlier revision gated long inline messages and inferred
-outlines from Markdown shape; Skip rejected that policy (messages 8679657–8679666),
-and this document describes only what replaced it.
+One claimed type triggers both validations, per Skip's rulings (2026-09-28):
+a message the sender marks as an outline must (1) be file-backed, because
+outlines get edited (messages 8679680–8679683), and (2) actually be an
+outline — a single structural depth fails as a flat list (messages
+8681563–8681565). The sender marks the message explicitly; ordinary unmarked
+chat is never scanned for length or shape. An earlier revision gated long
+inline messages and inferred outlines from Markdown shape without a marker;
+Skip rejected that policy (messages 8679657–8679666), and this document
+describes only what replaced it.
 
 ## The boundary (why the gate lives where it does)
 
@@ -50,12 +51,12 @@ help; fix the cause.`
   the body.
 - `test/chat-linters-ingress-wire.test.mjs` — boots a real server with a temp
   config dir and DB, then speaks the same WS `chat` frames the MCP sends:
-  marked-inline refusal, marked-filed/long/list/human acceptances, the
-  unconfigured path, and proof the refused send stored nothing.
+  both refusal modes, marked-nested/long/list/human acceptances, the
+  unconfigured path, and proof the refused sends stored nothing.
 - `test/chat-linters-surface-wire.test.mjs` — drives the real MCP `chat` tool
   handler over the real transport against a booted temp server, proving the
-  marker travels the whole path: marked-inline refusal, marked-filed/long/list
-  acceptances.
+  marker travels the whole path: both refusal modes plus marked-nested, long,
+  and list acceptances.
 - `server.yaml` `chatLinters:` key (see `shared/daemon-config-schema.mjs`).
   Absent means the linter is off. Read per send — chat volume makes a YAML
   read trivial, and the config is always fresh.
@@ -66,21 +67,27 @@ help; fix the cause.`
 chatLinters:
   outlineFileBacked:
     enabled: true
+  outlineDepth:
+    enabled: true
 ```
 
 ## Contract
 
-`lintChatOutbound({ source, outline, config })` returns `{ pass: true }` or
-`{ pass: false, linter, error }`. The `error` names the linter, the defect, and
-the fix — it becomes the refusal reason the sender sees — and carries no
+`lintChatOutbound({ text, source, outline, config })` returns `{ pass: true }`
+or `{ pass: false, linter, error }`. The `error` names the linter, the defect,
+and the fix — it becomes the refusal reason the sender sees — and carries no
 trailing period, because the refusal template appends one. Only an explicit
-`outline === true` marks a message; truthy non-booleans do not gate.
+`outline === true` marks a message; truthy non-booleans do not gate. File
+backing runs first, so a marked inline outline is told to move into a file
+before it is told to nest; depth runs only on marked messages, so unmarked
+chat is never shape-scanned. A marked message needs at least two list-shaped
+lines at one depth to fail — a single line is a note — and marked prose-heavy
+messages pass.
 
 ## Deliberate non-goals
 
-- No length rule and no shape inference. A previous revision had both; Skip
-  ruled them out.
-- No depth requirement on outlines. File-backed is the whole contract.
+- No length rule, and no shape inference on unmarked messages. A previous
+  revision had both without a marker; Skip ruled that out.
 - The `amend` path is ungated. It is the fix path for already-delivered
   messages.
 - Humans (Skip, `senderAgent.human` or the server owner id) are never gated.

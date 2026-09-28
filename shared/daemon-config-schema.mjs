@@ -166,10 +166,11 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // a hosted deployment, where a token file on the box would be the wrong
   // authority and an absent one must not quietly disable auth.
   'tokensFromEnvironmentOnly',
-  // Pre-send chat linters (`{ outlineFileBacked: { enabled } }`). Server-held
-  // config for the ingress gate in unified-server.mjs; the executables live in
-  // shared/chat-linters.mjs and ship with the deploy. Absent means the linter
-  // is off. See docs/chat-linters.md.
+  // Pre-send chat linters (`{ outlineFileBacked: { enabled }, outlineDepth:
+  // { enabled, maxProseLines } }`). Server-held config for the ingress gate in
+  // unified-server.mjs; the executables live in shared/chat-linters.mjs and
+  // ship with the deploy. Absent means every linter is off. See
+  // docs/chat-linters.md.
   'chatLinters',
 ])
 

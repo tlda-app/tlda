@@ -89,8 +89,13 @@ const SERVER_YAML_ON = [
   'chatLinters:',
   '  outlineFileBacked:',
   '    enabled: true',
+  '  outlineDepth:',
+  '    enabled: true',
   '',
 ].join('\n')
+
+const FLAT_BODY = '## plan\n\n- one\n- two\n'
+const NESTED_BODY = '## plan\n\n- one\n  - one-a\n- two\n'
 
 test('chat ingress enforces the explicit outline contract and nothing else', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-chat-linters-ingress-'))
@@ -171,40 +176,49 @@ os.setPriority = (...args) => {
     assert.match(String(refusedMarked.error), /outline-file-backed/)
     assert.match(String(refusedMarked.error), /no source file/)
 
-    // 2. The same marked outline with a source file is accepted.
-    const filedText = '## plan\n\n- one\n- two\n'
-    const acceptedFiled = await sendChat(ws, {
-      message: filedText, outline: true, to: DEAD_RECIPIENT, from: SENDER,
+    // 2. A marked flat outline with a source file fails depth as a list.
+    const refusedFlat = await sendChat(ws, {
+      message: FLAT_BODY, outline: true, to: DEAD_RECIPIENT, from: SENDER,
       source: { file: join(root, 'plan.md'), selector: '#plan' },
     })
-    assert.ok(acceptedFiled.result?.ok, `expected acceptance, got ${JSON.stringify(acceptedFiled)}`)
+    assert.ok(refusedFlat.error, `expected a refusal, got ${JSON.stringify(refusedFlat)}`)
+    assert.match(String(refusedFlat.error), /outline-depth/)
+    assert.match(String(refusedFlat.error), /single structural depth/)
 
-    // 3. An ordinary long message is accepted: length gates nothing.
+    // 3. A marked nested outline with a source file is accepted.
+    const acceptedNested = await sendChat(ws, {
+      message: NESTED_BODY, outline: true, to: DEAD_RECIPIENT, from: SENDER,
+      source: { file: join(root, 'plan.md'), selector: '#plan' },
+    })
+    assert.ok(acceptedNested.result?.ok, `expected acceptance, got ${JSON.stringify(acceptedNested)}`)
+
+    // 4. An ordinary long message is accepted: length gates nothing.
     const longText = `status ${'x'.repeat(2000)}`
     const acceptedLong = await sendChat(ws, { message: longText, to: DEAD_RECIPIENT, from: SENDER })
     assert.ok(acceptedLong.result?.ok, `expected long acceptance, got ${JSON.stringify(acceptedLong)}`)
 
-    // 4. An ordinary flat list is accepted: shape gates nothing.
+    // 5. An ordinary flat list is accepted: unmarked shape gates nothing.
     const flatList = '- alpha\n- beta\n- gamma\n'
     const acceptedList = await sendChat(ws, { message: flatList, to: DEAD_RECIPIENT, from: SENDER })
     assert.ok(acceptedList.result?.ok, `expected list acceptance, got ${JSON.stringify(acceptedList)}`)
 
-    // 5. Humans are never gated, even marked and fileless.
+    // 6. Humans are never gated, even marked, flat, and fileless.
     const acceptedHuman = await sendChat(ws, {
-      message: 'human outline', outline: true, to: DEAD_RECIPIENT, from: HUMAN_SENDER,
+      message: FLAT_BODY, outline: true, to: DEAD_RECIPIENT, from: HUMAN_SENDER,
     })
     assert.ok(acceptedHuman.result?.ok, `expected human acceptance, got ${JSON.stringify(acceptedHuman)}`)
 
-    // 6. Without the key, a marked fileless outline passes unchanged (config
+    // 7. Without the key, a marked flat filed outline passes unchanged (config
     // is read per send, so no restart is needed to prove the unconfigured path).
     writeFileSync(serverYamlPath, '# no chatLinters key\n')
     const unconfiguredText = 'unconfigured marked outline'
     const acceptedUnconfigured = await sendChat(ws, {
       message: unconfiguredText, outline: true, to: DEAD_RECIPIENT, from: SENDER,
+      source: { file: join(root, 'plan.md'), selector: '#plan' },
     })
     assert.ok(acceptedUnconfigured.result?.ok, `expected unconfigured acceptance, got ${JSON.stringify(acceptedUnconfigured)}`)
 
-    // 7. The refused send stored nothing: the sender's history holds exactly
+    // 8. The refused sends stored nothing: the sender's history holds exactly
     // the accepted sends.
     const burstPromise = waitForHistoryBurst(ws, 'lint-history')
     ws.send(JSON.stringify({
@@ -212,7 +226,7 @@ os.setPriority = (...args) => {
     }))
     const history = await burstPromise
     const chats = history.filter(event => event.type === 'chat')
-    assert.deepEqual(chats.map(event => event.text).sort(), [filedText, longText, flatList, unconfiguredText].sort())
+    assert.deepEqual(chats.map(event => event.text).sort(), [NESTED_BODY, longText, flatList, unconfiguredText].sort())
   } finally {
     ws?.close()
     child.kill('SIGKILL')

@@ -8978,12 +8978,12 @@ async function dispatchFleetWsMessage(ws, msg) {
     const processedAttachments = msg[INTERNAL_ATTACHMENTS_STORED] ? attachments : copyAttachmentsToUploadDir(attachments, RESOLVED_UPLOAD_DIR)
     const senderAgent = await fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
-    // Pre-send chat linters (docs/chat-linters.md). One explicit contract: a
-    // message the sender marks as an outline must carry a source file. A
-    // refused send is never stored; the refusal text reaches the sender through
-    // the existing serverRejected → NOT DELIVERED path. Humans (Skip) are never
-    // gated. Only an explicit true marks a message — the gate never infers
-    // from length or shape.
+    // Pre-send chat linters (docs/chat-linters.md). The claimed type triggers
+    // both validations: a marked outline must carry a source file and must
+    // actually be an outline (deeper than a flat list). A refused send is never
+    // stored; the refusal text reaches the sender through the existing
+    // serverRejected → NOT DELIVERED path. Humans (Skip) are never gated, and
+    // unmarked messages never reach the linters at all.
     if (rawOutline === true && from !== SERVER_OWNER_ID && senderAgent?.human !== true) {
       let chatLintersConfig
       try {
@@ -8994,7 +8994,7 @@ async function dispatchFleetWsMessage(ws, msg) {
         // sender cannot fix is worse than an unlinted message.
         console.error(`[chat-linters] server.yaml unreadable, linters off: ${e?.message || e}`)
       }
-      const lintVerdict = lintChatOutbound({ source, outline: rawOutline, config: chatLintersConfig })
+      const lintVerdict = lintChatOutbound({ text, source, outline: rawOutline, config: chatLintersConfig })
       if (!lintVerdict.pass) {
         controlPlaneTraces.append({
           trace_id: traceId,

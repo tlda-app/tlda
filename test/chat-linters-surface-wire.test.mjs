@@ -44,10 +44,16 @@ writeFileSync(join(configDir, 'server.yaml'), [
   'chatLinters:',
   '  outlineFileBacked:',
   '    enabled: true',
+  '  outlineDepth:',
+  '    enabled: true',
   '',
 ].join('\n'))
 const outlineFile = join(root, 'outline.md')
-writeFileSync(outlineFile, ['# Surface notes', '', '## the-plan', '', '- one', '- two', ''].join('\n'))
+writeFileSync(outlineFile, [
+  '# Surface notes', '',
+  '## the-plan', '', '- one', '- two', '',
+  '## nested-plan', '', '- one', '  - one-a', '- two', '',
+].join('\n'))
 
 const dbPath = join(root, 'fleet.sqlite')
 // Identity, fleet URL, and config dir are read at module scope, so the env
@@ -134,14 +140,24 @@ os.setPriority = (...args) => {
     assert.match(toolText(refused), /outline-file-backed/)
     assert.match(toolText(refused), /in place\. Re-sending/)
 
-    // The same marked outline with a source file is accepted.
-    const acceptedFiled = await handleFleetTool('chat', {
+    // A marked flat outline with a source file fails depth as a list.
+    const refusedFlat = await handleFleetTool('chat', {
       file: outlineFile,
       selector: 'the-plan',
       outline: true,
       to: DEAD_RECIPIENT,
     })
-    assert.equal(acceptedFiled.isError || false, false, `expected acceptance, got ${toolText(acceptedFiled)}`)
+    assert.equal(refusedFlat.isError, true, `expected refusal, got ${toolText(refusedFlat)}`)
+    assert.match(toolText(refusedFlat), /outline-depth/)
+
+    // A marked nested outline with a source file is accepted.
+    const acceptedNested = await handleFleetTool('chat', {
+      file: outlineFile,
+      selector: 'nested-plan',
+      outline: true,
+      to: DEAD_RECIPIENT,
+    })
+    assert.equal(acceptedNested.isError || false, false, `expected acceptance, got ${toolText(acceptedNested)}`)
 
     // An ordinary long message is accepted: length gates nothing.
     const acceptedLong = await handleFleetTool('chat', {
