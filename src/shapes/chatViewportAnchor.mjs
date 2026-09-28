@@ -89,6 +89,60 @@ export function chatScrollStoreKey(panelId) {
   return `tlda:chat-scroll:v1:${String(panelId || '')}`
 }
 
+// How long after a restore commits the list still owns positioning. Measured
+// on-surface (v8): the yank landed 110ms after the commit inside an ~836ms
+// mount-settling envelope (n=1); the goToTail loop budget is 12 frames
+// (~200ms). 2000ms covers the measured gap ~18x and the loop budget ~10x.
+// Criterion, not a round number: must exceed post-commit spurious
+// positioning during mount settling.
+export const CHAT_RESTORE_SETTLE_MS = 2000
+
+export function createRestoreOwnership() {
+  return { owns: false, committed: false }
+}
+
+// Restore-ownership transitions. The flag is set at adoption (in-memory, in a
+// layout effect) and read by the parent's filter-reset effect; it replaces
+// repair (1)'s localStorage re-read, which the mount persist overwrote first.
+// Events: 'adopt' | 'commit' | 'settle-elapsed' | 'abandon'. There is no
+// departure event by design: a lingering flag only blocks spurious re-runs,
+// and a genuine filter change clears via abandon first (decide maps a filter
+// mismatch to abandon) — so departure needs no transition of its own, and
+// adding one would risk the commit's own follow-off collapsing the window.
+export function nextRestoreOwnership(prev, event) {
+  const owns = prev?.owns === true
+  const committed = prev?.committed === true
+  switch (event) {
+    case 'adopt':
+      return { owns: true, committed: false }
+    case 'commit':
+      return owns ? { owns: true, committed: true } : prev
+    case 'settle-elapsed':
+      return committed ? { owns: false, committed: false } : prev
+    case 'abandon':
+      return { owns: false, committed: false }
+    default:
+      return prev
+  }
+}
+
+// Policy matrix for goToTail callers while a restore owns positioning, keyed
+// by the goToTail reason each caller passes. filter-change yields (the mount
+// run AND spurious re-runs); user-initiated callers never yield — a
+// deliberate jump-to-bottom during the settle window must still tail. Every
+// goToTail call site consults this with its own reason.
+export function shouldSkipGoToTail(reason, ownsRestore) {
+  if (ownsRestore !== true) return false
+  return reason === 'filter-change'
+}
+
+// Whether a restore commit supersedes the in-flight goToTail run: only a
+// filter-change loop is cancelled. A user-initiated loop in flight at commit
+// time is left alone (vanishingly rare, self-healing on re-press).
+export function restoreCommitSupersedes(inflightReason) {
+  return inflightReason === 'filter-change'
+}
+
 // The topmost item intersecting modelTop: the row the reader's viewport starts
 // in. `heightOf` resolves measured-or-estimated heights the same way the list
 // geometry does. Null when no row intersects, which is the tail case the

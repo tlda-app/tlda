@@ -6,9 +6,13 @@ import {
   chatScrollContentEnd,
   chatScrollStartOf,
   chatScrollStoreKey,
+  createRestoreOwnership,
   decideScrollRestore,
+  nextRestoreOwnership,
   readChatScrollState,
   resolveChatScrollRestore,
+  restoreCommitSupersedes,
+  shouldSkipGoToTail,
   writeChatScrollState,
 } from '../src/shapes/chatViewportAnchor.mjs'
 
@@ -198,4 +202,58 @@ test('absent maxTop preserves restore behavior exactly', () => {
     decide(ANCHORED, FILTER, true, starts, undefined),
     { action: 'restore', top: 150, reason: 'restore' },
   )
+})
+
+// Restore ownership: the list owns positioning from adoption through the
+// post-commit settle window, and the parent's filter-reset effect yields to
+// it. This replaces reading the persisted record, which the mount persist
+// overwrites before the parent reads.
+
+test('ownership starts clear and adoption takes it', () => {
+  assert.deepEqual(createRestoreOwnership(), { owns: false, committed: false })
+  assert.deepEqual(nextRestoreOwnership(createRestoreOwnership(), 'adopt'), { owns: true, committed: false })
+})
+
+test('ownership survives the commit and clears when the settle window elapses', () => {
+  const adopted = nextRestoreOwnership(createRestoreOwnership(), 'adopt')
+  const committed = nextRestoreOwnership(adopted, 'commit')
+  assert.deepEqual(committed, { owns: true, committed: true })
+  assert.deepEqual(nextRestoreOwnership(committed, 'settle-elapsed'), { owns: false, committed: false })
+})
+
+test('ownership clears on abandon', () => {
+  const adopted = nextRestoreOwnership(createRestoreOwnership(), 'adopt')
+  assert.deepEqual(nextRestoreOwnership(adopted, 'abandon'), { owns: false, committed: false })
+  const committed = nextRestoreOwnership(adopted, 'commit')
+  assert.deepEqual(nextRestoreOwnership(committed, 'abandon'), { owns: false, committed: false })
+})
+
+test('a genuine filter change clears ownership through abandon', () => {
+  const decision = decide(ANCHORED, '[[["from","other"]]]', true, [['a', 0], ['b', 100]])
+  assert.equal(decision.action, 'abandon')
+  const adopted = nextRestoreOwnership(createRestoreOwnership(), 'adopt')
+  assert.deepEqual(nextRestoreOwnership(adopted, decision.action), { owns: false, committed: false })
+})
+
+test('ownership ignores commit and settle without adoption', () => {
+  const fresh = createRestoreOwnership()
+  assert.deepEqual(nextRestoreOwnership(fresh, 'commit'), fresh)
+  assert.deepEqual(nextRestoreOwnership(fresh, 'settle-elapsed'), fresh)
+  assert.deepEqual(nextRestoreOwnership(fresh, 'bogus'), fresh)
+})
+
+test('filter-change yields while a restore owns positioning', () => {
+  assert.equal(shouldSkipGoToTail('filter-change', true), true)
+  assert.equal(shouldSkipGoToTail('filter-change', false), false)
+})
+
+test('a user-initiated jump still tails while a restore owns positioning', () => {
+  assert.equal(shouldSkipGoToTail('jump-button', true), false)
+  assert.equal(shouldSkipGoToTail('jump-button', false), false)
+})
+
+test('a restore commit supersedes only a filter-change loop', () => {
+  assert.equal(restoreCommitSupersedes('filter-change'), true)
+  assert.equal(restoreCommitSupersedes('jump-button'), false)
+  assert.equal(restoreCommitSupersedes(undefined), false)
 })
