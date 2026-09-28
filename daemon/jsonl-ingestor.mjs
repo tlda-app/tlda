@@ -7,6 +7,7 @@ import path from 'path'
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
 import { terminalChatFromShapes } from '../agent-runtime/terminal-chat-authorship.mjs'
 import { codexRolloutIsTopLevel } from '../agent-runtime/resolve-transcript.mjs'
+import { codexFactsToEnvelope } from '../agent-runtime/codex-activity.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
   ACTIVITY_HEALTH_OK,
@@ -396,6 +397,7 @@ export function createJsonlIngestor({
   random = Math.random,
   museSessionsRoot = path.join(os.homedir(), '.local', 'share', 'muse', 'sessions'),
   museSessionIndexPath = path.join(os.homedir(), '.local', 'share', 'muse', 'session-index.db'),
+  getAdmit = null,
 }) {
   // ---------- cursor persistence ----------
 
@@ -1495,6 +1497,16 @@ export function createJsonlIngestor({
           // Best-effort: a missed beat must never fail the batch.
           sendMsg({ type: 'heartbeat', agent: agentId })
         }
+      } else if (output.type === 'codexStatus') {
+        // Turn/tool edges move the status machine only on the live tail.
+        // Catchup replays old records; admitting them would rewrite today's
+        // verdicts from yesterday's turns (record-ts staleness at admission
+        // is the backstop, this skip is the gate).
+        if (pw.catchupUntilOffset != null) continue
+        const admit = typeof getAdmit === 'function' ? getAdmit() : null
+        if (typeof admit !== 'function') continue
+        const envelope = codexFactsToEnvelope(output.facts, agentId)
+        if (envelope) admit(envelope)
       } else if (output.type === 'context') {
         if (!sendMsg({
           type: 'agent-context',

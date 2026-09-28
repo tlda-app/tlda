@@ -371,6 +371,42 @@ export function extractCodexStatusFacts(record) {
   return null
 }
 
+// Map status facts to a daemon evidence envelope (daemon/agent-evidence.mjs
+// is the contract authority; the 'transcript' literal is pinned against
+// EVIDENCE_SOURCE.TRANSCRIPT by the test, since agent-runtime cannot import
+// daemon/). PURE: facts + agent in, envelope out, or null to stay silent.
+//
+// Mapping, verified against live 0.156.1 behavior:
+//   turn open  -> thinking. A task_started is the harness DECLARING a turn,
+//     not a ping awaiting classification: reasoning phases show no pane
+//     spinner at all, so 'active' would leave the verdict idle mid-turn.
+//   turn close -> idle. Harness-declared turn end; the machine's 2-confirm
+//     hysteresis resolves it on the next pane idle scan, ~one scan period.
+//   tool open  -> active + tool name. Arms promptly and attaches the acting
+//     tool to the reading without moving the verdict.
+//   tool close -> silence. The tool-output activity event already pings.
+//
+// atMs is the RECORD's timestamp, deliberately: live records admit, while
+// catchup/backfill replays of old records go stale (>EVIDENCE_STALE_MS) and
+// drop at admission instead of moving the machine. Missing/unparseable ts
+// omits rather than laundering with now().
+export function codexFactsToEnvelope(facts, agentId) {
+  if (!facts || typeof facts !== 'object') return null
+  if (!agentId || typeof agentId !== 'string') return null
+  const atMs = typeof facts.ts === 'string' ? Date.parse(facts.ts) : NaN
+  if (!Number.isFinite(atMs)) return null
+  if (facts.turn === 'open' && typeof facts.turnId === 'string') {
+    return { agentId, source: 'transcript', atMs, activity: 'thinking' }
+  }
+  if (facts.turn === 'close' && typeof facts.turnId === 'string') {
+    return { agentId, source: 'transcript', atMs, activity: 'idle' }
+  }
+  if (facts.tool === 'open' && typeof facts.toolName === 'string') {
+    return { agentId, source: 'transcript', atMs, activity: 'active', tool: facts.toolName }
+  }
+  return null
+}
+
 export function parseCodexRecord(o) {
   const ts = o.timestamp
   const p = o.payload || {}

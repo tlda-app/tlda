@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { extractCodexStatusFacts } from './codex-activity.mjs'
+import { codexFactsToEnvelope, extractCodexStatusFacts } from './codex-activity.mjs'
+import { EVIDENCE_SOURCE } from '../daemon/agent-evidence.mjs'
 
 const TS = '2026-09-28T04:00:25.907Z'
+const AGENT = 'fleet:test-agent'
 
 test('task_started opens a turn with its id', () => {
   assert.deepEqual(
@@ -71,6 +73,54 @@ test('non-edge records carry no status signal', () => {
 test('task edges without a turn id are not edges', () => {
   assert.equal(extractCodexStatusFacts({ timestamp: TS, type: 'event_msg', payload: { type: 'task_started' } }), null)
   assert.equal(extractCodexStatusFacts({ timestamp: TS, type: 'event_msg', payload: { type: 'task_complete' } }), null)
+})
+
+test('turn open maps to a thinking envelope on the transcript source', () => {
+  const envelope = codexFactsToEnvelope(
+    { ts: TS, turnId: 'turn-1', turn: 'open', tool: null, callId: null, toolName: null },
+    AGENT,
+  )
+  assert.deepEqual(envelope, {
+    agentId: AGENT, source: EVIDENCE_SOURCE.TRANSCRIPT, atMs: Date.parse(TS), activity: 'thinking',
+  })
+})
+
+test('turn close maps to an idle envelope', () => {
+  const envelope = codexFactsToEnvelope(
+    { ts: TS, turnId: 'turn-1', turn: 'close', tool: null, callId: null, toolName: null },
+    AGENT,
+  )
+  assert.deepEqual(envelope, {
+    agentId: AGENT, source: EVIDENCE_SOURCE.TRANSCRIPT, atMs: Date.parse(TS), activity: 'idle',
+  })
+})
+
+test('tool open maps to an active envelope carrying the tool name', () => {
+  const envelope = codexFactsToEnvelope(
+    { ts: TS, turnId: null, turn: null, tool: 'open', callId: 'call-1', toolName: 'exec_command' },
+    AGENT,
+  )
+  assert.deepEqual(envelope, {
+    agentId: AGENT, source: EVIDENCE_SOURCE.TRANSCRIPT, atMs: Date.parse(TS), activity: 'active', tool: 'exec_command',
+  })
+})
+
+test('tool close stays silent; so do malformed facts', () => {
+  assert.equal(codexFactsToEnvelope(
+    { ts: TS, turnId: null, turn: null, tool: 'close', callId: 'call-1', toolName: null }, AGENT), null)
+  assert.equal(codexFactsToEnvelope(null, AGENT), null)
+  assert.equal(codexFactsToEnvelope(
+    { ts: TS, turnId: 'turn-1', turn: 'open', tool: null, callId: null, toolName: null }, null), null)
+  assert.equal(codexFactsToEnvelope(
+    { ts: TS, turnId: 'turn-1', turn: 'open', tool: null, callId: null, toolName: null }, ''), null)
+  assert.equal(codexFactsToEnvelope(
+    { ts: 'not a time', turnId: 'turn-1', turn: 'open', tool: null, callId: null, toolName: null }, AGENT), null)
+  assert.equal(codexFactsToEnvelope(
+    { ts: null, turnId: 'turn-1', turn: 'open', tool: null, callId: null, toolName: null }, AGENT), null)
+  assert.equal(codexFactsToEnvelope(
+    { ts: TS, turnId: null, turn: 'open', tool: null, callId: null, toolName: null }, AGENT), null)
+  assert.equal(codexFactsToEnvelope(
+    { ts: TS, turnId: null, turn: null, tool: 'open', callId: 'call-1', toolName: null }, AGENT), null)
 })
 
 test('string input parses; garbage returns null', () => {

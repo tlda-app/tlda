@@ -560,6 +560,7 @@ jsonlIngestor = createJsonlIngestor({
   harnessAdapters: harnessRuntime.harnessAdapters,
   permissionLedger,
   bufferActivity,
+  getAdmit: () => admitEvidence,
   bufferHistoricalActivity,
   extractActivityEvents: harnessRuntime.extractActivityEvents,
   activityDeliveryCounters: daemonActivityDeliveryCounters,

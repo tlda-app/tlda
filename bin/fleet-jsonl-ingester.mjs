@@ -12,7 +12,7 @@ import { pathToFileURL } from 'url'
 import chokidar from 'chokidar'
 import Database from 'better-sqlite3'
 import { parser as jsonlParser } from 'stream-json/jsonl/parser.js'
-import { parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
+import { extractCodexStatusFacts, parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
 import { createMuseRecordParser, museLoginMarkerFromRecord, parseMuseRecord } from '../agent-runtime/muse-activity.mjs'
 import {
   extractIdentityFromRecord,
@@ -267,6 +267,12 @@ export function extractRecordOutputs({ agentId, sessionId, harnessKind, terminal
   const museMarker = harnessKind === 'muse' ? museLoginMarkerFromRecord(record) : null
   const identity = museMarker ? { marker: museMarker } : extractIdentityFromRecord(record)
   if (identity) outputs.push({ type: 'identity', identity })
+  // Codex turn/tool edges for the daemon's status machine. Facts only — the
+  // parent maps them to evidence envelopes (and skips them on catchup replay).
+  if (harnessKind === 'codex') {
+    const statusFacts = extractCodexStatusFacts(record)
+    if (statusFacts) outputs.push({ type: 'codexStatus', facts: statusFacts })
+  }
   const ev = parseRecordForHarness(harnessKind, record)
   if (ev) {
     const activity = defaultActivityExtractor.extractActivityEvents([ev],
