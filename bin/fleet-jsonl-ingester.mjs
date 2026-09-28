@@ -65,6 +65,15 @@ export class WatchReadTailFile extends PassThrough {
     this.quitting = false
     this.reading = false
     this.pendingRead = false
+    this._quitResolve = null
+    this._quitPromise = new Promise(resolve => { this._quitResolve = resolve })
+  }
+
+  // A tail that has been quit (or whose stream ended/died) must never be
+  // written to again. Every await in the read loop is a point where quit()
+  // can land first, so the loop re-checks this after each one.
+  isWritable() {
+    return !this.quitting && !this.writableEnded && !this.destroyed
   }
 
   async start() {
@@ -116,6 +125,8 @@ export class WatchReadTailFile extends PassThrough {
       if (e?.code === 'ENOENT') return
       throw e
     }
+    // quit() may have run (and ended the stream) while stat was in flight.
+    if (!this.isWritable()) return
 
     if (this.offset === null) this.offset = stats.size
     if (stats.size <= this.offset) {
@@ -133,8 +144,23 @@ export class WatchReadTailFile extends PassThrough {
     try {
       const iterator = stream.iterator ? stream.iterator({ destroyOnReturn: false }) : stream
       for await (const chunk of iterator) {
+        if (!this.isWritable()) {
+          stream.destroy()
+          break
+        }
         this.offset += chunk.length
-        if (!this.write(chunk)) await new Promise(resolve => this.once('drain', resolve))
+        if (!this.write(chunk)) {
+          // Backpressure wait, but quit() wakes it: otherwise a tail quit
+          // while blocked here would hold `reading` forever and never settle.
+          await Promise.race([
+            new Promise(resolve => this.once('drain', resolve)),
+            this._quitPromise,
+          ])
+          if (!this.isWritable()) {
+            stream.destroy()
+            break
+          }
+        }
       }
     } finally {
       if (this.currentStream === stream) this.currentStream = null
@@ -142,11 +168,15 @@ export class WatchReadTailFile extends PassThrough {
   }
 
   emitFlush() {
+    // A quit tail's flush would be dropped downstream (the watcher is already
+    // stopped); skip it rather than waking a dead pipeline.
+    if (this.quitting) return
     setImmediate(this.emit.bind(this), 'flush', { lastReadPosition: this.offset || 0 })
   }
 
   async quit() {
     this.quitting = true
+    this._quitResolve?.()
     if (this.watcher) {
       try { await this.watcher.close() } catch (e) { this.emit('tail_error', e) }
     }
@@ -378,12 +408,80 @@ export function classifyUnattributedMuseSession({ promptCount = 0, firstPrompt =
   return 'probe'
 }
 
-export function collectMuseHistoricalSessions({ sessionsRoot, sessionIndexPath, indexRows = null } = {}) {
+// Records parsed between event-loop yields during the muse history walk.
+// The walk covers gigabytes of session JSONL; without yields it wedges this
+// child for ~10 minutes per daemon boot — no tail progresses, the parent
+// lag-retires every frozen tail in a loop, and the queued stops race resumed
+// reads at unwedge, which is where 'write after end' bursts come from.
+export const MUSE_HISTORY_YIELD_EVERY_RECORDS = 500
+const yieldToEventLoop = () => new Promise(resolve => setImmediate(resolve))
+
+async function collectMuseSessionFile(jsonlPath) {
+  const sessionId = path.basename(path.dirname(jsonlPath))
+  const parse = createMuseRecordParser()
+  const events = []
+  let marker = null
+  let observedPromptCount = 0
+  let observedFirstPrompt = ''
+  let recordOrdinal = 0
+  for (const line of fs.readFileSync(jsonlPath, 'utf8').split('\n')) {
+    if (!line.trim()) continue
+    let record
+    try { record = JSON.parse(line) } catch { continue }
+    recordOrdinal += 1
+    marker ||= museLoginMarkerFromRecord(record)
+    if (record?.payload_type === 'runtime.user_intent.accepted') {
+      const prompt = (record.payload?.refill_blocks || [])
+        .filter(block => block?.kind === 'text')
+        .map(block => block.text || '')
+        .join('')
+      if (prompt) {
+        observedPromptCount += 1
+        observedFirstPrompt ||= prompt
+      }
+    }
+    const parsed = parse(record)
+    if (!parsed) continue
+    const extracted = defaultActivityExtractor.extractActivityEvents([parsed],
+      museHistoryOperationStamper({
+        harnessKind: 'muse',
+        jsonlPath,
+        recordKey: record.id || record.sequence || recordOrdinal,
+      }))
+    events.push(...extracted)
+    if (recordOrdinal % MUSE_HISTORY_YIELD_EVERY_RECORDS === 0) await yieldToEventLoop()
+  }
+  return { sessionId, jsonlPath, marker, events, observedPromptCount, observedFirstPrompt }
+}
+
+async function *walkMuseHistoricalSessions({ sessionsRoot, sessionIndexPath, indexRows = null } = {}) {
   const files = museSessionFiles(sessionsRoot)
   const indexed = new Map((indexRows || museIndexRows(sessionIndexPath)).map(row => [row.session_id, row]))
-  const batches = []
-  const census = {
-    sessionsWalked: files.length,
+  yield { type: 'walked', count: files.length }
+  for (const jsonlPath of files) {
+    if (jsonlPath.includes(`${path.sep}subagent${path.sep}`)) {
+      yield { type: 'skipped', reason: 'subagent' }
+      continue
+    }
+    const found = await collectMuseSessionFile(jsonlPath)
+    if (found.marker?.fleet_id) {
+      yield { type: 'batch', agentId: found.marker.fleet_id, sessionId: found.sessionId, jsonlPath, events: found.events }
+      continue
+    }
+    const indexRow = indexed.get(found.sessionId)
+    yield {
+      type: 'skipped',
+      reason: classifyUnattributedMuseSession({
+        promptCount: indexRow?.prompt_count ?? found.observedPromptCount,
+        firstPrompt: indexRow?.first_user_prompt || found.observedFirstPrompt,
+      }),
+    }
+  }
+}
+
+function emptyMuseHistoryCensus() {
+  return {
+    sessionsWalked: 0,
     ingested: 0,
     skippedSubagent: 0,
     skippedProbe: 0,
@@ -391,78 +489,51 @@ export function collectMuseHistoricalSessions({ sessionsRoot, sessionIndexPath, 
     skippedAgentLaunchWithoutIdentity: 0,
     activityEvents: 0,
   }
+}
 
-  for (const jsonlPath of files) {
-    if (jsonlPath.includes(`${path.sep}subagent${path.sep}`)) {
-      census.skippedSubagent += 1
-      continue
-    }
-    const sessionId = path.basename(path.dirname(jsonlPath))
-    const parse = createMuseRecordParser()
-    const events = []
-    let marker = null
-    let observedPromptCount = 0
-    let observedFirstPrompt = ''
-    let recordOrdinal = 0
-    for (const line of fs.readFileSync(jsonlPath, 'utf8').split('\n')) {
-      if (!line.trim()) continue
-      let record
-      try { record = JSON.parse(line) } catch { continue }
-      recordOrdinal += 1
-      marker ||= museLoginMarkerFromRecord(record)
-      if (record?.payload_type === 'runtime.user_intent.accepted') {
-        const prompt = (record.payload?.refill_blocks || [])
-          .filter(block => block?.kind === 'text')
-          .map(block => block.text || '')
-          .join('')
-        if (prompt) {
-          observedPromptCount += 1
-          observedFirstPrompt ||= prompt
-        }
-      }
-      const parsed = parse(record)
-      if (!parsed) continue
-      const extracted = defaultActivityExtractor.extractActivityEvents([parsed],
-        museHistoryOperationStamper({
-          harnessKind: 'muse',
-          jsonlPath,
-          recordKey: record.id || record.sequence || recordOrdinal,
-        }))
-      events.push(...extracted)
-    }
-    if (marker?.fleet_id) {
+function countMuseHistorySkipped(census, reason) {
+  if (reason === 'subagent') census.skippedSubagent += 1
+  else if (reason === 'noPrompt') census.skippedNoPrompt += 1
+  else if (reason === 'agentLaunchWithoutIdentity') census.skippedAgentLaunchWithoutIdentity += 1
+  else census.skippedProbe += 1
+}
+
+export async function collectMuseHistoricalSessions(opts = {}) {
+  const batches = []
+  const census = emptyMuseHistoryCensus()
+  for await (const item of walkMuseHistoricalSessions(opts)) {
+    if (item.type === 'walked') census.sessionsWalked = item.count
+    else if (item.type === 'batch') {
       census.ingested += 1
-      census.activityEvents += events.length
-      batches.push({ agentId: marker.fleet_id, sessionId, jsonlPath, events })
-      continue
+      census.activityEvents += item.events.length
+      batches.push({ agentId: item.agentId, sessionId: item.sessionId, jsonlPath: item.jsonlPath, events: item.events })
     }
-    const indexRow = indexed.get(sessionId)
-    const reason = classifyUnattributedMuseSession({
-      promptCount: indexRow?.prompt_count ?? observedPromptCount,
-      firstPrompt: indexRow?.first_user_prompt || observedFirstPrompt,
-    })
-    if (reason === 'noPrompt') census.skippedNoPrompt += 1
-    else if (reason === 'agentLaunchWithoutIdentity') census.skippedAgentLaunchWithoutIdentity += 1
-    else census.skippedProbe += 1
+    else countMuseHistorySkipped(census, item.reason)
   }
   return { census, batches }
 }
 
 export async function runMuseHistoryBackfillJob(job) {
-  const result = collectMuseHistoricalSessions(job)
-  for (const batch of result.batches) {
-    for (let i = 0; i < batch.events.length; i += 100) {
-      await sendJobBatch(job, {
-        activities: [{
-          agentId: batch.agentId,
-          sessionId: batch.sessionId,
-          jsonlPath: batch.jsonlPath,
-          events: batch.events.slice(i, i + 100),
-        }],
-      })
+  const census = emptyMuseHistoryCensus()
+  for await (const item of walkMuseHistoricalSessions(job)) {
+    if (item.type === 'walked') census.sessionsWalked = item.count
+    else if (item.type === 'skipped') countMuseHistorySkipped(census, item.reason)
+    else {
+      census.ingested += 1
+      census.activityEvents += item.events.length
+      for (let i = 0; i < item.events.length; i += 100) {
+        await sendJobBatch(job, {
+          activities: [{
+            agentId: item.agentId,
+            sessionId: item.sessionId,
+            jsonlPath: item.jsonlPath,
+            events: item.events.slice(i, i + 100),
+          }],
+        })
+      }
     }
   }
-  return result.census
+  return census
 }
 
 export async function runSearchBackfillJob(job) {

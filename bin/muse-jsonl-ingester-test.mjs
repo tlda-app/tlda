@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { collectMuseHistoricalSessions, extractRecordOutputs, museHistoryOperationStamper } from './fleet-jsonl-ingester.mjs'
+import { MUSE_HISTORY_YIELD_EVERY_RECORDS, collectMuseHistoricalSessions, extractRecordOutputs, museHistoryOperationStamper } from './fleet-jsonl-ingester.mjs'
 import { activityEventMessage } from '../agent-runtime/activity-send.mjs'
 import { sessionIdForJsonlPath } from '../daemon/jsonl-ingestor.mjs'
 
@@ -167,7 +167,7 @@ test('a live Muse tail stamps the same operation identity the backfill derives',
   )
 })
 
-test('the live tail and the backfill stamp one record with one identity', () => {
+test('the live tail and the backfill stamp one record with one identity', async () => {
   const root = mkdtempSync(join(tmpdir(), 'muse-history-parity-'))
   const marker = 'TLDA_LOGIN_MARKER {"type":"tlda-login-marker","version":1,"fleet_id":"fleet:parity","harness_kind":"muse"}'
   try {
@@ -188,7 +188,7 @@ test('the live tail and the backfill stamp one record with one identity', () => 
         kind: 'run', event: { kind: 'tool_result_batch_committed', results: [{ text: marker }] },
       }),
     ].join('\n') + '\n')
-    const { batches } = collectMuseHistoricalSessions({ sessionsRoot: root, sessionIndexPath: null })
+    const { batches } = await collectMuseHistoricalSessions({ sessionsRoot: root, sessionIndexPath: null })
     assert.equal(batches.length, 1)
     assert.equal(batches[0].events.length, 1)
     const backfillId = batches[0].events[0].operationId
@@ -206,7 +206,7 @@ test('the live tail and the backfill stamp one record with one identity', () => 
   }
 })
 
-test('a deferred pretty card keeps the tool-use record identity on both paths', () => {
+test('a deferred pretty card keeps the tool-use record identity on both paths', async () => {
   const live = liveActivityFor([
     committedRecord('pretty-commit', 'pretty-stamp-call', 'mcp__tlda__screenshot', '{}'),
     terminalRecord('pretty-terminal', 'pretty-stamp-call', 'mcp__tlda__screenshot'),
@@ -244,7 +244,7 @@ test('a deferred pretty card keeps the tool-use record identity on both paths', 
         kind: 'run', event: { kind: 'tool_result_batch_committed', results: [{ text: marker }] },
       }),
     ].join('\n') + '\n')
-    const { batches } = collectMuseHistoricalSessions({ sessionsRoot: root, sessionIndexPath: null })
+    const { batches } = await collectMuseHistoricalSessions({ sessionsRoot: root, sessionIndexPath: null })
     assert.equal(batches.length, 1)
     assert.equal(batches[0].events.length, 1)
     assert.equal(batches[0].events[0].operationId, live.events[0].operationId)
@@ -270,7 +270,7 @@ test('the muse stamper stays silent without a harness, path, or record key', () 
   assert.equal(stamper.operationIdFor(2), `muse-history:${LIVE_SESSION_ID}:r1:2`)
 })
 
-test('Muse history imports only self-identifying parents and reports every skipped class', () => {
+test('Muse history imports only self-identifying parents and reports every skipped class', async () => {
   const root = mkdtempSync(join(tmpdir(), 'muse-history-'))
   const writeSession = (id, records, suffix = '') => {
     const dir = join(root, '2026', '09', '13', id, suffix)
@@ -294,8 +294,8 @@ test('Muse history imports only self-identifying parents and reports every skipp
       { session_id: 'no-prompt', prompt_count: 0, first_user_prompt: null },
       { session_id: 'unidentified-launch', prompt_count: 1, first_user_prompt: '💻 Call mcp__tlda__login exactly once' },
     ]
-    const first = collectMuseHistoricalSessions({ sessionsRoot: root, indexRows })
-    const second = collectMuseHistoricalSessions({ sessionsRoot: root, indexRows })
+    const first = await collectMuseHistoricalSessions({ sessionsRoot: root, indexRows })
+    const second = await collectMuseHistoricalSessions({ sessionsRoot: root, indexRows })
     assert.deepEqual(first.census, {
       sessionsWalked: 5,
       ingested: 1,
@@ -314,6 +314,36 @@ test('Muse history imports only self-identifying parents and reports every skipp
       { agent_id: 'fleet:historical', operation_id: 'muse-history:identified:answer-record:0', historical: true },
     )
     assert.deepEqual(second, first, 'rerunning derives the same events and operation identities')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the muse history walk yields to the event loop instead of wedging the child', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'muse-history-yield-'))
+  try {
+    const dir = join(root, '2026', '09', '13', 'yield-session')
+    mkdirSync(dir, { recursive: true })
+    const records = []
+    for (let i = 0; i < MUSE_HISTORY_YIELD_EVERY_RECORDS + 50; i += 1) {
+      records.push(museRecord(`yield-commit-${i}`, 'runtime.session', {
+        kind: 'run',
+        event: {
+          kind: 'assistant_tool_calls_committed',
+          tool_calls: [{ call_id: `yield-call-${i}`, name: 'bash', args: '{}' }],
+        },
+      }))
+      records.push(museRecord(`yield-terminal-${i}`, 'tool_batch.effect.terminal', {
+        record: { call_id: `yield-call-${i}`, tool_name: 'bash', outcome: { kind: 'completed' } },
+      }))
+    }
+    writeFileSync(join(dir, 'session.jsonl'), `${records.join('\n')}\n`)
+    let ticked = false
+    const pending = collectMuseHistoricalSessions({ sessionsRoot: root, sessionIndexPath: null })
+    setImmediate(() => { ticked = true })
+    const { census } = await pending
+    assert.equal(census.sessionsWalked, 1)
+    assert.ok(ticked, 'a setImmediate scheduled mid-walk must run before the walk finishes')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
