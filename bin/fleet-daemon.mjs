@@ -2076,7 +2076,39 @@ async function rpcWake(params = {}) {
       })
     }
   }
-  return wakeMint(params)
+  const out = await wakeMint(params)
+  await announceWakeBaseResolution(out)
+  return out
+}
+
+// A wake that resumed under a non-configured base substituted surfaces: the
+// agent runs on the base that owns its session, not the lane bundle its
+// config names. The substitution must be announced, never silent — push the
+// verdict to the server, which parks it where the agent's login hands it
+// over and records it on the row. Best effort by contract: the wake already
+// succeeded, and a failed announcement must never fail it.
+async function announceWakeBaseResolution(out) {
+  const agentId = out?.fleetId || out?.fleet_id || null
+  if (!out?.session_base_mismatch || !agentId) return
+  try {
+    await sendMsg({
+      type: 'wake-base-resolved',
+      agent_id: agentId,
+      session_id: out?.sessionId || out?.session_id || null,
+      resolved: {
+        kind: out.session_base_kind || null,
+        name: out.session_base_name || null,
+        path: out.session_base || null,
+      },
+      configured: { path: out.session_base_configured || null },
+      daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
+      ts: new Date().toISOString(),
+    })
+  } catch (error) {
+    // The wake already succeeded: failing it on a lost announcement would
+    // report a delivered recovery as a failure.
+    log.warn(`wake-base-resolved push failed for ${agentId}: ${error?.message || error}`)
+  }
 }
 
 // Kill the agent's session and bring it back, entirely inside the daemon.
@@ -2130,6 +2162,7 @@ async function rpcRestart(params = {}) {
     }
   }
   const woke = await wakeMint(params)
+  await announceWakeBaseResolution(woke)
   // And a restart that killed and did not wake is a hibernate.
   return { ok: woke?.ok !== false, killed, woke }
 }

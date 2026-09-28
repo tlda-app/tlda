@@ -200,6 +200,12 @@ export function createDaemonWakeCore({
       } catch (error) {
         resumeError = error
       }
+      // A permanent resume error (stale session: the transcript is in no
+      // config base) will fail identically on every attempt. Retrying it is
+      // the storm, not diligence: six spawns against a session that cannot
+      // exist. The launch layer marks such errors `.permanent`; anything
+      // else keeps the existing retry behavior.
+      if (resumeError?.permanent) break
       runtimeConfirmed = await processAlive(latestProcess === facts.processState ? facts : { ...facts, processState: latestProcess })
       if (runtimeConfirmed) break
       if (attempt + 1 < attempts) {
@@ -215,6 +221,10 @@ export function createDaemonWakeCore({
       }
     }
     if (!runtimeConfirmed) {
+      // A permanent error already names the agent, the session, and the
+      // bases searched; wrapping it in the generic runtime sentence would
+      // bury the diagnosis it carries. Re-raise it as the wake's verdict.
+      if (resumeError?.permanent) throw resumeError
       const detail = resumeError?.message ? `: ${resumeError.message}` : ''
       throw new Error(`wake did not produce a live runtime for ${facts.mintId}${detail}`)
     }

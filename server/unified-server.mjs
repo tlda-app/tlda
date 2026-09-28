@@ -124,6 +124,7 @@ import { createAgentRuntimeStatusStore, RUNTIME_KIND, RUNTIME_STATUS } from './l
 import { createHumanPresenceTracker } from './lib/human-presence.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { admitNeverJoinedVerdict, notifyOwningDaemonOfFailure } from './lib/never-joined-admission.mjs'
+import { admitWakeBaseResolved } from './lib/wake-base-admission.mjs'
 import { emitAgentDiedEvent } from './lib/agent-died-event.mjs'
 import { buildSpawnMailboxStatus } from './lib/spawn-mailbox-status.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
@@ -11075,6 +11076,25 @@ async function handleDaemonWsMessage(ws, msg, context = {}) {
       if (outcome?.changed && outcome?.agentId) broadcastState([outcome.agentId])
     } catch (e) {
       await reportDaemonEventFailure(msg, 'never-joined-write', e)
+      throw e
+    }
+    return
+  }
+
+  // The daemon resumed a session from a base other than the configured one.
+  // Same contract as never-joined: the daemon decides from box evidence, the
+  // server verifies ownership, dedupes on the session, and writes down what
+  // it is told (row record + announcement parked for login).
+  if (type === 'wake-base-resolved') {
+    if (!fleetStore) return
+    try {
+      const outcome = await admitWakeBaseResolved({
+        store: fleetStore,
+        log: console,
+      }, { ...msg, daemon_key: msg.daemon_key || ws._daemonKey || null })
+      if (outcome?.changed && outcome?.agentId) broadcastState([outcome.agentId])
+    } catch (e) {
+      await reportDaemonEventFailure(msg, 'wake-base-resolved-write', e)
       throw e
     }
     return

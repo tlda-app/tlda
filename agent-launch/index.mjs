@@ -14,9 +14,11 @@ import { wrapSandboxCmd } from './fence.mjs'
 import { resolveLaunchPolicy, permissionMetadata } from './permissions.mjs'
 import { resolveCodexResumeHandle } from '../agent-runtime/codex-resume-resolver.mjs'
 import {
+  claudeProjectsBaseForConfig,
   codexRolloutPath,
   findClaudeSession,
   isRespawnIdentityCaughtUp,
+  resolveClaudeSessionBase,
   scanClaudeSessionIdentity,
   scanCodexRolloutIdentity,
   stripSyntheticTail,
@@ -407,6 +409,37 @@ export async function launchMintProcess(params) {
   const freshSessionId = requestedKind === 'claude' && !resumeId
     ? (params._deps?.randomUUID || randomUUID)()
     : null
+  // A claude resume launches where its session lives, not where the current
+  // config points: pre-changeover sessions sit under the default base while
+  // the project now configures a lane bundle, and launching under the wrong
+  // base replays "No conversation found" for a session that exists. The
+  // override below touches only the config-dir isolation (what spawnEnv reads
+  // off agentConfigDir); model, permissions, and harness options stay from the
+  // real config. A resume under a non-configured base is a substitution the
+  // caller must announce, so the result carries both bases.
+  let sessionBase = null
+  let sessionBaseConfigured = null
+  let launchConfig = config
+  if (requestedKind === 'claude' && resumeId) {
+    sessionBaseConfigured = claudeProjectsBaseForConfig(config || {})
+    const resolved = (params._deps?.resolveClaudeSessionBase || resolveClaudeSessionBase)(resumeId, {
+      configuredAgentConfigDir: typeof config?.agentConfigDir === 'string' ? config.agentConfigDir : null,
+    })
+    sessionBase = resolved?.found || null
+    if (!sessionBase) {
+      const searched = (resolved?.searched || []).join(', ') || '(no base searched)'
+      const error = new SpawnError(
+        'stale-session',
+        `cannot resume ${name}: session ${resumeId} is in no config base (searched ${searched})`,
+        { session_id: resumeId, searched_bases: resolved?.searched || [] },
+      )
+      error.permanent = true
+      throw error
+    }
+    if (sessionBase.projectsBase !== sessionBaseConfigured) {
+      launchConfig = { ...config, agentConfigDir: sessionBase.agentConfigDir }
+    }
+  }
   const { cmd, sendKeys } = await buildCommand({
     requestedKind,
     adapter,
@@ -427,8 +460,8 @@ export async function launchMintProcess(params) {
     leasePolicy: launchPolicy.leasePolicy,
     enforceFence: !!params.enforceFence,
     harnessOptions: launchPolicy.harnessOptions,
-    config,
-    env: spawnEnv(params, config, requestedKind),
+    config: launchConfig,
+    env: spawnEnv(params, launchConfig, requestedKind),
     // Same rule as the wake path below: the caller wins field by field, and the
     // declaration supplies what it did not say. A fresh mint that passes a script
     // and no env used to reach the bot with neither.
@@ -488,6 +521,13 @@ export async function launchMintProcess(params) {
     harness: requestedKind,
     model,
     session_id: requestedKind === 'bot' ? (resumeId || mintId) : (resumeId || freshSessionId),
+    ...(sessionBase ? {
+      session_base: sessionBase.projectsBase,
+      session_base_kind: sessionBase.kind,
+      session_base_name: sessionBase.name,
+      session_base_configured: sessionBaseConfigured,
+      session_base_mismatch: sessionBase.projectsBase !== sessionBaseConfigured,
+    } : {}),
     permission_grant: launchPolicy.permissionGrant,
     permission_set: launchPolicy.permissionSet,
     machine_id: params.machineId || null,

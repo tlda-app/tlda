@@ -22,6 +22,46 @@ export function claudeProjectsBaseForConfig(config = {}) {
   return claudeProjectsBase()
 }
 
+// Which config base owns a session id: the configured one, the default one,
+// or neither. Per-lane agentConfigDir (live from the 2026-09-26 changeover)
+// moved new sessions into bundle trees while pre-changeover sessions stay
+// under the default base; a resume that assumes the configured base replays
+// "No conversation found" for a session that exists elsewhere. Read-only:
+// find the owning base and launch there, never copy transcripts between
+// bases. Presence (not content) is the test — the harness is the authority
+// on whether a file resumes, and this only answers where it would look.
+export function resolveClaudeSessionBase(sessionId, { configuredAgentConfigDir = null, defaultBase = null } = {}) {
+  const configuredDir = typeof configuredAgentConfigDir === 'string' && configuredAgentConfigDir.trim()
+    ? configuredAgentConfigDir.trim()
+    : null
+  const candidates = []
+  if (configuredDir) {
+    candidates.push({
+      kind: 'bundle',
+      name: path.basename(configuredDir),
+      agentConfigDir: configuredDir,
+      projectsBase: claudeProjectsBaseForConfig({ agentConfigDir: configuredDir }),
+    })
+  }
+  candidates.push({
+    kind: 'default',
+    name: null,
+    agentConfigDir: null,
+    projectsBase: claudeProjectsBase(defaultBase),
+  })
+  const searched = []
+  const seen = new Set()
+  for (const candidate of candidates) {
+    if (seen.has(candidate.projectsBase)) continue
+    seen.add(candidate.projectsBase)
+    searched.push(candidate.projectsBase)
+    if (!sessionId) continue
+    const sessionPath = claudeJsonlPath(sessionId, { projectsBase: candidate.projectsBase })
+    if (sessionPath) return { found: { ...candidate, sessionPath }, searched }
+  }
+  return { found: null, searched }
+}
+
 function codexSessionsBase(base) {
   return base || path.join(os.homedir(), '.codex', 'sessions')
 }
