@@ -1398,7 +1398,27 @@ async function bindMintSeat(facts, processFact = facts?.processState || {}, crea
     permissionGrant: processFact.permission_grant,
     source: createdSource,
   })
-  if (!facts.sessionId) return
+  // No observed session yet: bind the process location WITHOUT a session
+  // identity. The liveness machine observes bindings by tmux session, and a
+  // grant-only row is invisible to it — without this, unjoined rows are
+  // machine-blind and the never-joined sweep (which reads the machine, never
+  // probes) stays silent for exactly the class it exists for. Session fields
+  // stay null until an observation fills them; every session-reader already
+  // gates on sessionId, so the location alone changes no routing.
+  if (!facts.sessionId) {
+    if (!processFact.tmux_session) return
+    permissionLedger.setSessionSync(facts.fleetId, {
+      sessionKind: processFact.harness,
+      tmuxSession: processFact.tmux_session,
+      model: processFact.model,
+      machineId: MACHINE_ID,
+      envName: ACTIVE_ENV,
+      daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+      cwd: processFact.cwd,
+      friendlyName: facts.friendlyName,
+    })
+    return
+  }
   permissionLedger.setSessionSync(facts.fleetId, {
     sessionId: facts.sessionId,
     sessionKind: processFact.harness,
@@ -1471,7 +1491,25 @@ async function mintProcessConfirmedDead(facts) {
 // so a restart re-emitting is harmless (acknowledged without re-notice).
 const neverJoinedEmitted = new Set()
 
-function examineOneNeverJoinedRow(facts, source) {
+async function examineOneNeverJoinedRow(facts, source) {
+  // Precondition repair, once per row: rows bound before the sessionless
+  // location bind carry a grant-only ledger row the machine cannot observe.
+  // Completing the binding is what makes the machine reading below exist;
+  // without it the sweep would stay silent for stranded rows forever. Local
+  // only — no route publication; the row is unjoined and nothing routes to it.
+  if (facts?.fleetId && facts?.processState?.tmux_session) {
+    try {
+      const binding = permissionLedger.get(facts.fleetId)
+      if (binding && !binding.tmuxSession) {
+        await bindMintSeat(facts, facts.processState, 'daemon-sweep-rebind')
+      }
+    } catch (error) {
+      // A failed repair defers, never misleads: the row is re-examined (and
+      // the repair retried) on the next sweep, and a failed bind must not
+      // read as an examined row.
+      log.warn(`never-joined rebind failed for ${facts.mintId}: ${error?.message || error}`)
+    }
+  }
   // The resolver is derived the same way as the wake repair path: an unjoined
   // row's late transcript is found by the same adapter that would have found
   // it at mint. Single attempt — the sweep itself is the retry loop, which is
