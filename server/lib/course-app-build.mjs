@@ -1,7 +1,8 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import { deriveCourseBookSpec } from './course-book-spec.mjs'
+import { quartoBookRoots } from './incremental-qmd-build.mjs'
 
 // Images are page dependencies that Quarto already owns.  They are not
 // publication entries: in particular, the real syllabus shows students the
@@ -33,6 +34,24 @@ function sourceForRenderedTarget(courseDir, target) {
   return null
 }
 
+/**
+ * A rendered deck link's source by chapter correspondence, when the file is absent.
+ *
+ * The published index names rendered pages (`decks/chapter-bootstrap-slides.html`)
+ * and the source is usually found by existence (`sourceForRenderedTarget`). But a
+ * deck whose chapter is declared in `_quarto.yml` yet whose `.qmd` is absent from
+ * this checkout is still a real course input — the declared chapter is what makes
+ * the link legitimate — so it resolves by stem match against the declared chapters
+ * rather than failing the build. Rendered form only: a source (`.qmd`) link naming
+ * no file is an incomplete checkout and still fails.
+ */
+function correspondenceSourceForTarget(target, chapterStems) {
+  if (!target.endsWith('-slides.html')) return null
+  const candidate = target.replace(/\.html$/i, '.qmd')
+  const stem = basename(candidate).replace(/-slides\.qmd$/i, '')
+  return chapterStems.has(stem) ? candidate : null
+}
+
 function addUnique(values, value) {
   if (value && !values.includes(value)) values.push(value)
 }
@@ -58,6 +77,9 @@ export function deriveCourseAppSpec(courseDir, indexFile) {
   const decks = []
   const assets = []
   const links = []
+  // The declared chapters, as stems, for deck correspondence below. Empty (and
+  // therefore strict) when the checkout declares no book.
+  const chapterStems = new Set(quartoBookRoots(root).map(chapter => basename(chapter).replace(/\.qmd$/i, '')))
   const text = readFileSync(indexPath, 'utf8')
   const matches = generatedHtml ? text.matchAll(HTML_LINK) : text.matchAll(MARKDOWN_LINK)
   for (const match of matches) {
@@ -68,7 +90,7 @@ export function deriveCourseAppSpec(courseDir, indexFile) {
       if (!published.startsWith('book/')) continue
       const target = published.slice('book/'.length)
       if (target === 'index.html') continue
-      const source = sourceForRenderedTarget(root, target)
+      const source = sourceForRenderedTarget(root, target) || correspondenceSourceForTarget(target, chapterStems)
       if (source) {
         links.push(target)
         if (source.endsWith('-slides.qmd')) addUnique(decks, source)
@@ -86,7 +108,12 @@ export function deriveCourseAppSpec(courseDir, indexFile) {
     const target = relative(root, absolute).replace(/\\/g, '/')
     links.push(target)
     let source = target.endsWith('.qmd') ? target : sourceForRenderedTarget(root, target)
-    if (source && existsSync(join(root, source))) {
+    let correspondedSource = null
+    if (!source && !target.endsWith('.qmd')) {
+      correspondedSource = correspondenceSourceForTarget(target, chapterStems)
+      if (correspondedSource) source = correspondedSource
+    }
+    if (source && (existsSync(join(root, source)) || source === correspondedSource)) {
       if (source.endsWith('-slides.qmd')) {
         addUnique(decks, source)
       } else {

@@ -154,3 +154,76 @@ test('a superseded or cancelled build does not mark the project broken', async t
   }
   assert.equal((await readProject('doc')).buildStatus, 'none', 'a cancelled build must not change the project status')
 })
+
+test('a non-descendant proposal is refused at admission without starting, and the refusal is recorded', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-disposition-refused-'))
+  await initProjectStore(root)
+  t.after(async () => {
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  })
+  createProject({ name: 'doc', mainFile: 'main.md', format: 'markdown' })
+  const lifecycle = await sourceLifecycleStore('doc')
+  const git = await lifecycle.gitRepository()
+  const base = await git.acceptRevision({ project: 'doc', files: [{ path: 'main.md', content: 'base' }], message: 'base' })
+  const winner = await git.acceptRevision({ project: 'doc', parent: base, files: [{ path: 'main.md', content: 'winner' }], message: 'winner' })
+  await git.advanceHead('doc', winner, null)
+  const stale = await git.acceptRevision({ project: 'doc', parent: base, files: [{ path: 'main.md', content: 'stale' }], message: 'stale' })
+
+  const started = []
+  const dispatcher = createDispatcherWithOptions({
+    start(job) { started.push(job.sourceRevision); return { cancel() {} } },
+  }, { store: new BuildQueueStore(':memory:') })
+  const row = await dispatcher.admitBuild('doc', { revision: stale, daemonId: 'd1', branch: 'main' })
+  assert.equal(row.state, 'killed')
+  assert.equal(row.terminal_reason, 'needs-rebase')
+  assert.deepEqual(started, [], 'a refused proposal must never start a worker')
+
+  const journal = lifecycle.listRevisionLifecycles('doc')
+  const refused = journal.find(item => item.sourceRevision === stale)
+  assert.equal(refused.build.state, 'superseded')
+  assert.equal(refused.build.result.ok, false)
+  assert.match(refused.build.result.reason, /not an ancestor/)
+  assert.equal(refused.build.result.stage, 'at-admission')
+  assert.equal(projectRevisionStatus(journal).status, 'superseded')
+  assert.equal((await readProject('doc')).buildStatus, 'none', 'a refused proposal must not mark the project broken — or building')
+})
+
+test('a job that stops being a descendant while queued never starts', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-disposition-stale-start-'))
+  await initProjectStore(root)
+  t.after(async () => {
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  })
+  createProject({ name: 'doc', mainFile: 'main.md', format: 'markdown' })
+  const lifecycle = await sourceLifecycleStore('doc')
+  const git = await lifecycle.gitRepository()
+  const base = await git.acceptRevision({ project: 'doc', files: [{ path: 'main.md', content: 'base' }], message: 'base' })
+  await git.advanceHead('doc', base, null)
+  const blocker = await git.acceptRevision({ project: 'doc', parent: base, files: [{ path: 'main.md', content: 'blocker' }], message: 'blocker' })
+  const stale = await git.acceptRevision({ project: 'doc', parent: base, files: [{ path: 'main.md', content: 'stale' }], message: 'stale' })
+
+  const runs = []
+  const dispatcher = createDispatcherWithOptions({
+    start(job, handlers) { const run = { job, handlers }; runs.push(run); return { cancel() {} } },
+  }, { store: new BuildQueueStore(':memory:'), maxConcurrency: 1 })
+  await dispatcher.admitBuild('doc', { revision: blocker, daemonId: 'd1', branch: 'main' })
+  await dispatcher.admitBuild('doc', { revision: stale, daemonId: 'd1', branch: 'main' })
+  assert.deepEqual(runs.map(run => run.job.sourceRevision), [blocker])
+  // The head moved without the queue being told: the crash window between a
+  // head advance and its notification, or a restart re-queueing a running row.
+  await git.advanceHead('doc', blocker, base)
+  await runs[0].handlers.onExit(0)
+  assert.deepEqual(runs.map(run => run.job.sourceRevision), [blocker])
+
+  const row = dispatcher.store.get('doc', stale)
+  assert.equal(row.state, 'killed')
+  assert.equal(row.terminal_reason, 'needs-rebase')
+  const journal = lifecycle.listRevisionLifecycles('doc')
+  const refused = journal.find(item => item.sourceRevision === stale)
+  assert.equal(refused.build.state, 'superseded')
+  assert.equal(refused.build.result.stage, 'before-start')
+  assert.equal(projectRevisionStatus(journal).status, 'superseded')
+  assert.equal((await readProject('doc')).buildStatus, 'none')
+})

@@ -247,3 +247,44 @@ test('a pending descendant of the published head survives kill-then-thin', async
   assert.equal(h.queue.inspect().pending.some(job => job.sourceRevision === 'pending'), true)
   await h.finishAll()
 })
+
+test('drain refuses a pending job that stopped being a descendant without starting it', async () => {
+  const heads = { paper: 'base' }
+  const h = harness({
+    slots: 1,
+    draws: [0.1, 0.2],
+    heads,
+    ancestors: { 'base>stale': true, 'moved>stale': false },
+  })
+  await h.submit('blocker', 'other')
+  await h.flush()
+  await h.submit('stale', 'a')
+  await h.flush()
+  assert.equal(h.queue.inspect().pending.some(job => job.sourceRevision === 'stale'), true)
+  // The head moved without the queue being told: the crash window between a
+  // head advance and its notification, or a restart re-queueing a running row.
+  heads.paper = 'moved'
+  await h.started[0].handlers.onExit(0)
+  await h.flush()
+  assert.deepEqual(h.started.map(x => x.job.sourceRevision), ['blocker'])
+  const row = h.queue.store.get('paper', 'stale')
+  assert.equal(row.state, 'killed')
+  assert.equal(row.terminal_reason, 'needs-rebase')
+  const disposition = h.dispositions.find(x => x.revision === 'stale')
+  assert.equal(disposition.state, 'killed')
+  assert.equal(disposition.result.reason, 'needs-rebase')
+  await h.finishAll()
+})
+
+test('an admission-time refusal is reported as a disposition, not just a row', async () => {
+  const h = harness({ slots: 1, draws: [0.1], heads: { paper: 'head' }, ancestors: { 'head>stale': false } })
+  const row = await h.submit('stale', 'a')
+  await h.flush()
+  assert.equal(row.state, 'killed')
+  assert.equal(row.terminal_reason, 'needs-rebase')
+  assert.equal(h.started.length, 0)
+  const disposition = h.dispositions.find(x => x.revision === 'stale')
+  assert.equal(disposition.state, 'killed')
+  assert.equal(disposition.result.reason, 'needs-rebase')
+  await h.finishAll()
+})

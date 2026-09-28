@@ -73,6 +73,40 @@ test('a linked deck is recognized outside a decks directory', () => {
   assert.deepEqual(deriveCourseAppSpec(root, 'index.qmd').decks, ['lectures/one-slides.qmd'])
 })
 
+test('a published deck link resolves by chapter correspondence when its source file is absent', () => {
+  const root = fixture()
+  writeFileSync(join(root, '_quarto.yml'), 'project:\n  type: tlda\nbook:\n  title: Course\n  chapters:\n    - index.qmd\n    - chapters/chapter-bootstrap.qmd\n')
+  writeFileSync(join(root, 'chapters/chapter-bootstrap.qmd'), '# Bootstrap\n')
+  const publication = join(mkdtempSync(join(tmpdir(), 'course-release-index-')), 'index.html')
+  writeFileSync(publication, '<a href="book/decks/chapter-bootstrap-slides.html">Bootstrap slides</a>\n')
+  const spec = deriveCourseAppSpec(root, publication)
+  assert.deepEqual(spec.decks, ['decks/chapter-bootstrap-slides.qmd'])
+  assert.ok(spec.links.includes('decks/chapter-bootstrap-slides.html'))
+})
+
+test('a published deck link without an in-list chapter still fails with the evidence inline', () => {
+  const root = fixture()
+  const publication = join(mkdtempSync(join(tmpdir(), 'course-release-index-')), 'index.html')
+  writeFileSync(publication, '<a href="book/decks/chapter-bootstrap-slides.html">Bootstrap slides</a>\n')
+  assert.throws(() => deriveCourseAppSpec(root, publication), /published link has no course input: book\/decks\/chapter-bootstrap-slides\.html/)
+})
+
+test('a published non-deck page without a source still fails', () => {
+  const root = fixture()
+  const publication = join(mkdtempSync(join(tmpdir(), 'course-release-index-')), 'index.html')
+  writeFileSync(publication, '<a href="book/chapters/not-there.html">Missing</a>\n')
+  assert.throws(() => deriveCourseAppSpec(root, publication), /published link has no course input: book\/chapters\/not-there\.html/)
+})
+
+test('a source index deck link in rendered form resolves by chapter correspondence', () => {
+  const root = fixture()
+  writeFileSync(join(root, '_quarto.yml'), 'project:\n  type: tlda\nbook:\n  title: Course\n  chapters:\n    - index.qmd\n    - chapters/chapter-bootstrap.qmd\n')
+  writeFileSync(join(root, 'chapters/chapter-bootstrap.qmd'), '# Bootstrap\n')
+  writeFileSync(join(root, 'index.qmd'), '[Slides](decks/chapter-bootstrap-slides.html)')
+  const spec = deriveCourseAppSpec(root, 'index.qmd')
+  assert.deepEqual(spec.decks, ['decks/chapter-bootstrap-slides.qmd'])
+})
+
 test('explicitly linked assets survive as relative app-site paths', () => {
   const root = fixture()
   const output = join(root, 'app-output')

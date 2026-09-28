@@ -120,7 +120,19 @@ export function createBuildQueue({
     while (activeCount < maxConcurrency) {
       const pending = store.list('pending')
       if (!pending.length) break
-      const row = store.start(pending[0].id)
+      const candidate = pending[0]
+      // Re-validated at START, not just at admission. The head may have moved
+      // while this job waited — or across a restart, which re-queues running
+      // rows as pending — and starting a build the publication must refuse burns
+      // a full render to learn what git already knows. Refused here it never
+      // starts; the publication-time check remains the backstop for a head that
+      // moves mid-render.
+      const head = await getCurrentHead(candidate.project)
+      if (head && !(await isAncestor(head, candidate.revision, candidate.project))) {
+        await settle(candidate, 'killed', { reason: 'needs-rebase', stage: 'before-start', head })
+        continue
+      }
+      const row = store.start(candidate.id)
       if (!row) continue
       start(row)
     }
@@ -302,6 +314,7 @@ export function createBuildQueue({
         store.removeTerminalRevision(project, revision)
         admittedRow = null
       }
+      let fastRefusal = null
       if (!admittedRow) {
         const fractionalPriority = random()
         if (!(fractionalPriority >= 0 && fractionalPriority < 1)) throw new Error('build queue random source must return a value in [0, 1)')
@@ -312,8 +325,13 @@ export function createBuildQueue({
           state: valid ? 'pending' : 'killed',
           reason: valid ? null : 'needs-rebase',
         }).row
+        if (!valid) fastRefusal = { reason: 'needs-rebase', stage: 'at-admission', head }
       }
       await recordAdmission(jobFromRow(admittedRow))
+      // A refusal is a disposition too: without this the revision keeps the
+      // `pending` build phase the admission just wrote and reads `building`
+      // forever, for a build that was never going to run.
+      if (fastRefusal) await recordDisposition(jobFromRow(admittedRow), 'killed', fastRefusal)
       if (!['complete', 'failed', 'killed'].includes(admittedRow.state)) {
         await thinPending(project)
         await drain()

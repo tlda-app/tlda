@@ -868,6 +868,35 @@ async function recordAdmission(job) {
  * `building` forever despite the failed queue row.
  */
 async function recordDisposition(job, state, result = null) {
+  // A stale refusal is RECORDED but never announced. `superseded` and
+  // `needs-rebase` both mean a newer revision replaced this build, so there is
+  // no failure to report — but without a terminal build phase the revision keeps
+  // the `pending` the admission wrote and reads `building` forever. The phase
+  // below is the record; buildStatus, sentinel and log are deliberately
+  // untouched (see the killed-guard test: a replaced build is not a broken one).
+  // `superseded` is the state because it is the word `projectRevisionStatus`
+  // reads; the queue's own reason rides in the result beside it.
+  if (state === 'killed' && ['superseded', 'needs-rebase'].includes(result?.reason)) {
+    if (job.sourceRevision) {
+      try {
+        const lifecycle = await sourceLifecycleStore(job.name)
+        lifecycle.recordRevisionAdmission(job.name, job.sourceRevision, job.acceptSeq)
+        lifecycle.recordRevisionPhase(job.name, job.sourceRevision, 'build', 'superseded', {
+          ok: false,
+          reason: result.reason === 'needs-rebase'
+            ? 'the project head is not an ancestor of this revision, so this build is behind what the project holds'
+            : 'a newer revision replaced this build while it was queued',
+          ...(result.stage ? { stage: result.stage } : {}),
+          ...(result.head ? { head: result.head } : {}),
+        })
+      } catch (e) {
+        // Best-effort bookkeeping: a failed phase write must not fail the
+        // disposition itself, which has already settled the queue row.
+        console.error(`[build] could not record stale refusal for ${job.name}: ${e?.message || e}`)
+      }
+    }
+    return
+  }
   if (state !== 'failed') return
   const reason = result?.error || result?.reason || 'build worker exited without recording a reason'
   const diagnostic = result?.errorStack ? `${reason}\n${result.errorStack}` : reason
