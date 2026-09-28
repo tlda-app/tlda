@@ -6889,6 +6889,19 @@ export function __setFleetTransportForTest(transport) {
   };
 }
 
+// Test-only teardown for tests that open the real fleet channel (see
+// test/chat-linters-surface-wire.test.mjs). Without this the channel's
+// reconnect loop and flush timers keep the event loop alive after the test
+// server shuts down and `node --test` never exits.
+export function __closeFleetChannelForTest() {
+  for (const timer of _fleetTransportFlushTimers.values()) clearTimeout(timer);
+  _fleetTransportFlushTimers.clear();
+  if (_channelRWS) {
+    try { _channelRWS.close(); } catch { /* teardown is best-effort; a closing socket has nothing to report */ }
+    _channelRWS = null;
+  }
+}
+
 export function shouldUseToolEnvForFleetRequest(type) {
   return type !== 'channel-notification-ack';
 }

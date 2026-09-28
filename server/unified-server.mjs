@@ -71,6 +71,7 @@ import { serverOwnerUpsertRow } from './lib/server-owner-row.mjs'
 import { resolveLocalImage } from '../shared/local-image.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
+import { lintChatOutbound } from '../shared/chat-linters.mjs'
 import { listModels as listSpawnModels, resolveModelSpec } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
 import { DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY, MINT_SLOTS } from '../shared/subscriptions.mjs'
@@ -8977,6 +8978,33 @@ async function dispatchFleetWsMessage(ws, msg) {
     const processedAttachments = msg[INTERNAL_ATTACHMENTS_STORED] ? attachments : copyAttachmentsToUploadDir(attachments, RESOLVED_UPLOAD_DIR)
     const senderAgent = await fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
+    // Pre-send chat linters (docs/chat-linters.md). A refused send is never
+    // stored; the refusal text reaches the sender through the existing
+    // serverRejected → NOT DELIVERED path, so no MCP change is needed. Humans
+    // (Skip) are never gated — the failure mode is agents vomiting at him.
+    if (from !== SERVER_OWNER_ID && senderAgent?.human !== true) {
+      let chatLintersConfig
+      try {
+        chatLintersConfig = loadServerConfig().chatLinters
+      } catch (e) {
+        // A config fault fails open (and loud): chat is the
+        // accessibility-critical channel, and refusing a send for a reason the
+        // sender cannot fix is worse than an unlinted message.
+        console.error(`[chat-linters] server.yaml unreadable, linters off: ${e?.message || e}`)
+      }
+      const lintVerdict = lintChatOutbound({ text, source, config: chatLintersConfig })
+      if (!lintVerdict.pass) {
+        controlPlaneTraces.append({
+          trace_id: traceId,
+          component: 'server',
+          operation: 'chat.lint-refused',
+          status: 'refused',
+          detail: { from, to: rawTo, linter: lintVerdict.linter },
+        })
+        error(lintVerdict.error)
+        return
+      }
+    }
     // Stamp the human sender's physical machine onto the message context so any
     // agent can see what machine Skip is on without inferring from Tailscale.
     // Resolved server-side from the connection's tailnet IP; fail-visible (omit
