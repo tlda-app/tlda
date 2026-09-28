@@ -313,6 +313,64 @@ export function parseCodexLine(jsonStr) {
   return parseCodexRecord(o)
 }
 
+const TOOL_CALL_TYPES = new Set(['custom_tool_call', 'function_call', 'tool_search_call'])
+
+// Status-relevant facts in one Codex rollout record, for the daemon's state
+// machine. PURE and envelope-agnostic: it reports what the record SAYS
+// (turn opened/closed, tool started/finished), never what status that means —
+// the machine owns transitions, including the three rules this stream needs:
+// a new task_started implicitly closes the prior turn, process death closes an
+// open turn, and thread_turns.sqlite is not a source (its inProgress rows go
+// stale). Verified against real rollouts, Codex 0.156.1.
+//
+// Returns null when the record carries no status signal. Deliberate nulls:
+// turn_context (turn identity, not an edge — task_started is the open edge),
+// item_completed (turn_id + item echo; the response_item pairs already bracket
+// tools, so counting both would double-report), and all message/reasoning/
+// token/session/world/compacted records.
+export function extractCodexStatusFacts(record) {
+  let o = record
+  if (typeof o === 'string') {
+    try { o = JSON.parse(o) } catch { return null }
+  }
+  if (!o || typeof o !== 'object') return null
+  const ts = typeof o.timestamp === 'string' ? o.timestamp : null
+  const p = o.payload && typeof o.payload === 'object' ? o.payload : null
+  if (!p) return null
+
+  if (o.type === 'event_msg') {
+    if (p.type === 'task_started' && typeof p.turn_id === 'string') {
+      return { ts, turnId: p.turn_id, turn: 'open', tool: null, callId: null, toolName: null }
+    }
+    if (p.type === 'task_complete' && typeof p.turn_id === 'string') {
+      return { ts, turnId: p.turn_id, turn: 'close', tool: null, callId: null, toolName: null }
+    }
+    return null
+  }
+
+  if (o.type === 'response_item') {
+    // An exec cell wraps inner native calls (see parseCodexRecord); for status
+    // the outer cell opening is sufficient — something started — so unlike the
+    // activity path this does not unwrap inner calls.
+    if (TOOL_CALL_TYPES.has(p.type)) {
+      return {
+        ts,
+        turnId: typeof p.turn_id === 'string' ? p.turn_id : null,
+        turn: null,
+        tool: 'open',
+        callId: p.call_id ?? null,
+        toolName: typeof p.name === 'string' ? p.name : p.type,
+      }
+    }
+    if (TOOL_OUTPUT_TYPES.has(p.type)) {
+      return { ts, turnId: null, turn: null, tool: 'close', callId: p.call_id ?? null, toolName: null }
+    }
+    return null
+  }
+
+  return null
+}
+
 export function parseCodexRecord(o) {
   const ts = o.timestamp
   const p = o.payload || {}
